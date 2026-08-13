@@ -66,6 +66,7 @@ class RunOptions:
     portal_browser: PortalBrowser
     mode: RunMode
     credentials: Credentials
+    otp_auto_fill: bool = False
 
 
 @dataclass(frozen=True)

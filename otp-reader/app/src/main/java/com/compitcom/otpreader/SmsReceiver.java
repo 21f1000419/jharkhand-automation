@@ -33,7 +33,8 @@ public final class SmsReceiver extends BroadcastReceiver {
         String otp = extract(message);
         if (otp == null) return;
         OtpStore.save(context, otp, sender, message);
-        Log.i(TAG, "OTP=" + otp + " FROM=" + sender);
+        OtpForwarder.forward(context, otp);
+        Log.i(TAG, "OTP received from " + sender);
     }
 
     static String extract(String message) {

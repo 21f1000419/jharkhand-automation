@@ -72,6 +72,10 @@ Every application action, workflow stage, error, and stop event is appended to o
 `%LOCALAPPDATA%\Compitcom\eStampAutomation\logs`. Use **Activity > Current Session…** for the current session and
 **Activity > Open Daily Log Folder** to view the persistent diagnostic files.
 
+## Optional Android OTP auto-fill
+
+Install the companion `otp-reader` APK on a phone you control. With both devices on the same Wi-Fi, open **OTP phone...** in the desktop app and enter its displayed server address and temporary pairing token in the Android app. Enable **Auto-fill eGRAS OTP from paired phone** before starting a batch. The phone forwards only a newly received OTP directly to the desktop, which fills the eGRAS OTP field; CAPTCHA and final submission remain manual. If no phone is paired, or no OTP arrives, the existing manual OTP checkpoint is used.
+
 ## Operating modes and controls
 
 - **Assisted errors** returns Chrome to the starting page and asks whether to retry or move to the next row. Next Row is the default.

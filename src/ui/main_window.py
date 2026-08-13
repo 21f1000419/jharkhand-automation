@@ -60,6 +60,7 @@ class MainWindow:
         valid_modes = {mode.value for mode in RunMode}
         saved_mode = config.last_mode if config.last_mode in valid_modes else RunMode.ASSISTED
         self.mode_var = tk.StringVar(value=saved_mode)
+        self.otp_auto_fill_var = tk.BooleanVar(value=config.otp_auto_fill)
         self.citizen_user_var = tk.StringVar()
         self.citizen_password_var = tk.StringVar()
         self.egras_user_var = tk.StringVar()
@@ -106,7 +107,7 @@ class MainWindow:
             container,
             text=(
                 "Visible browser automation for Jharkhand NGDRS/eGRAS. "
-                "OTP and payment remain manual in this version."
+                "Payment remains manual; eGRAS OTP can optionally auto-fill from a paired phone."
             ),
         ).pack(anchor="w", pady=(0, 10))
 
@@ -117,6 +118,9 @@ class MainWindow:
             side="left", padx=(8, 0)
         )
         ttk.Button(gemini_status, text="Browser profile status...", command=self._show_gemini_setup).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(gemini_status, text="OTP phone...", command=self._show_otp_phone_setup).pack(
             side="left", padx=(8, 0)
         )
 
@@ -250,6 +254,12 @@ class MainWindow:
             value=RunMode.CONTINUOUS,
             command=self._save_non_secret_settings,
         ).pack(side="left", padx=12)
+        ttk.Checkbutton(
+            modes,
+            text="Auto-fill eGRAS OTP from paired phone",
+            variable=self.otp_auto_fill_var,
+            command=self._save_non_secret_settings,
+        ).pack(side="left", padx=(12, 0))
 
         controls = ttk.Frame(container)
         controls.pack(fill="x", pady=(0, 8))
@@ -268,19 +278,35 @@ class MainWindow:
         table_frame.pack(fill="both", expand=True, pady=(0, 8))
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
-        columns = ("row", "status", "completed", "quantity", "error")
+        columns = ("row", "first_party", "second_party", "district", "amount", "status", "completed", "error")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
         headings = {
             "row": "CSV row",
+            "first_party": "First party",
+            "second_party": "Second party",
+            "district": "District",
+            "amount": "Amount",
             "status": "Status",
             "completed": "Completed",
-            "quantity": "Quantity",
             "error": "Last error",
         }
-        widths = {"row": 80, "status": 100, "completed": 85, "quantity": 75, "error": 620}
+        widths = {
+            "row": 65,
+            "first_party": 170,
+            "second_party": 170,
+            "district": 120,
+            "amount": 90,
+            "status": 100,
+            "completed": 85,
+            "error": 260,
+        }
         for column in columns:
             self.tree.heading(column, text=headings[column])
-            self.tree.column(column, width=widths[column], stretch=column == "error")
+            self.tree.column(
+                column,
+                width=widths[column],
+                stretch=column in {"first_party", "second_party", "error"},
+            )
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -441,6 +467,7 @@ class MainWindow:
         self.config.last_download_path = self.download_var.get().strip()
         self.config.last_article = self.article_var.get().strip()
         self.config.last_mode = self.mode_var.get()
+        self.config.otp_auto_fill = self.otp_auto_fill_var.get()
         browser = self.portal_browsers.get(self.portal_browser_var.get())
         if browser is not None:
             self.config.last_portal_browser_path = str(browser.executable)
@@ -563,6 +590,50 @@ class MainWindow:
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
+    def _show_otp_phone_setup(self) -> None:
+        self._record_ui_action("otp_phone_setup_clicked")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Pair Android OTP Reader")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Pair Android OTP Reader", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Keep the phone and this PC on the same Wi-Fi. In the Android app, enter the "
+                "server address and pairing token below, then enable SMS forwarding."
+            ),
+            wraplength=560,
+        ).pack(anchor="w", pady=(8, 12))
+        endpoint = self.controller.otp_receiver.server_address
+        token = self.controller.otp_receiver.token
+        for label, value in (("Server address", endpoint), ("Pairing token", token)):
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=label, width=15).pack(side="left")
+            entry = ttk.Entry(row, width=58)
+            entry.insert(0, value)
+            entry.configure(state="readonly")
+            entry.pack(side="left", fill="x", expand=True)
+
+        def copy_details() -> None:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(f"Server address: {endpoint}\nPairing token: {token}")
+            self._append_session_log("OTP phone pairing details copied to clipboard.")
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(14, 0))
+        ttk.Button(buttons, text="Copy details", command=copy_details).pack(side="left")
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left", padx=8)
+        ttk.Label(
+            frame,
+            text="The token changes when the desktop app restarts. OTPs are not saved or written to logs.",
+            foreground="#555555",
+            wraplength=560,
+        ).pack(anchor="w", pady=(12, 0))
+
     def _open_gemini(self) -> None:
         self._record_ui_action("open_gemini_setup_clicked")
         if not self._save_browser_settings(reconfigure=False):
@@ -632,6 +703,7 @@ class MainWindow:
                 egras_username=self.egras_user_var.get(),
                 egras_password=self.egras_password_var.get(),
             ),
+            otp_auto_fill=self.otp_auto_fill_var.get(),
         )
         self.starting = True
         self.run_status_var.set(f"Checking profile; opening {portal_browser.name}...")
@@ -784,9 +856,12 @@ class MainWindow:
                 "end",
                 values=(
                     row.get("row_number", ""),
+                    row.get("first_party_name", ""),
+                    row.get("second_party_name", ""),
+                    row.get("district", ""),
+                    row.get("amount", ""),
                     row.get("status", ""),
                     row.get("completed", "0"),
-                    row.get("quantity", "1"),
                     row.get("error", ""),
                 ),
             )

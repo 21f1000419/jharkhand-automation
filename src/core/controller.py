@@ -16,6 +16,7 @@ from core.controls import RunControls
 from core.models import RunOptions, UiEvent
 from core.workflow import WorkflowEngine
 from services.gemini_ocr import GeminiCaptchaSolver
+from services.otp_wifi import WifiOtpReceiver
 
 
 class AutomationController:
@@ -32,6 +33,7 @@ class AutomationController:
         self.gemini_browser: BrowserSession | None = None
         self.portal_browser: PortalBrowserSession | None = None
         self.solver: GeminiCaptchaSolver | None = None
+        self.otp_receiver = WifiOtpReceiver()
         self.run_task: asyncio.Task[None] | None = None
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._thread_main, name="automation-worker", daemon=True)
@@ -175,7 +177,7 @@ class AutomationController:
                 options.portal_browser, self._on_portal_browser_disconnected
             )
             page = await self.portal_browser.new_portal_page()
-            engine = WorkflowEngine(page, solver, self.controls, self.emit)
+            engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
             await engine.run(options)
         except asyncio.CancelledError:
             self.emit(UiEvent("run_stopped", "Automation stopped."))
@@ -225,6 +227,7 @@ class AutomationController:
         await asyncio.sleep(0)
         await self._close_portal_browser()
         await self._close_gemini_browser()
+        self.otp_receiver.close()
 
     def _submit(self, coroutine: Coroutine[Any, Any, Any]) -> None:
         if self.loop is None:

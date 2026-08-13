@@ -176,6 +176,10 @@ class CsvBatchStore:
                 "status": row["status"],
                 "completed": row["completed_quantity"],
                 "quantity": row["quantity"],
+                "district": row.get("district", ""),
+                "first_party_name": row.get("first_party_name", ""),
+                "second_party_name": row.get("second_party_name", ""),
+                "amount": row.get("amount", ""),
                 "error": row["last_error"],
             }
             for index, row in enumerate(self.rows)

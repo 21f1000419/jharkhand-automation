@@ -1,31 +1,25 @@
-# OTP Reader (Android)
+# Compitcom OTP Reader (Android)
 
-Minimal Android app for a device you own. It requests `RECEIVE_SMS` and `READ_SMS`, extracts a 4–8 digit OTP from a newly received SMS (and scans the latest 40 inbox SMS messages when opened), shows it in the app, and logs it to Android logcat.
+Android companion for a phone you control. It extracts a 4–8 digit OTP from newly received SMS messages and can send only that code directly to the desktop application over the same Wi-Fi. It never sends the SMS body or sender to a cloud service.
+
+## Pair with the desktop application
+
+1. Open the desktop app and choose **OTP phone...**.
+2. On the Android app, grant SMS permission.
+3. Enter the displayed **Server address** and **Pairing token**.
+4. Turn on **Forward new OTPs to desktop**, then tap **Save pairing**.
+5. In the desktop app, enable **Auto-fill eGRAS OTP from paired phone** before starting the batch.
+
+The Android app confirms its pairing to the desktop whenever you save it. If no paired phone is connected, or the phone does not send an OTP, the workflow uses the normal manual OTP checkpoint. Even after auto-fill, CAPTCHA and the portal’s final submit action remain manual.
+
+The token changes whenever the desktop application restarts. Keep both devices on the same private Wi-Fi; do not expose the desktop listener to the internet.
 
 ## Build and install
 
-Use Android Studio's **Open** command on this directory, then choose **Build > Build APK(s)**. Install its debug APK with:
-
 ```powershell
+cd otp-reader
+.\gradlew.bat assembleDebug
 adb install -r app\build\outputs\apk\debug\app-debug.apk
-adb shell am start -n com.compitcom.otpreader/.MainActivity
 ```
 
-Tap **Grant SMS permission** and approve the Android prompt.
-
-## Read an arriving OTP over ADB
-
-```powershell
-adb logcat -c
-adb logcat -s OTP_READER:I *:S
-```
-
-Example output: `OTP=123456 FROM=VM-EXAMPLE`.
-
-The latest stored value can also be read from a debug build:
-
-```powershell
-adb shell run-as com.compitcom.otpreader cat shared_prefs/latest_otp.xml
-```
-
-Do not send OTPs to a server or commit terminal logs containing them.
+The project copies the debug APK to `..\dist\otp-reader-debug.apk` after a successful debug build.

@@ -20,6 +20,7 @@ from core.models import (
 )
 from services.csv_store import CsvBatchStore
 from services.gemini_ocr import GeminiCaptchaSolver
+from services.otp_wifi import WifiOtpReceiver
 
 
 class WorkflowEngine:
@@ -29,11 +30,13 @@ class WorkflowEngine:
         solver: GeminiCaptchaSolver,
         controls: RunControls,
         emit: Callable[[UiEvent], None],
+        otp_receiver: WifiOtpReceiver,
     ) -> None:
         self.page = page
         self.solver = solver
         self.controls = controls
         self.emit = emit
+        self.otp_receiver = otp_receiver
         self.store: CsvBatchStore | None = None
         self.current_row: dict[str, str] | None = None
         self.current_stage = Stage.IDLE
@@ -55,6 +58,8 @@ class WorkflowEngine:
             self.controls,
             self._on_stage,
             self.emit,
+            self.otp_receiver,
+            options.otp_auto_fill,
         )
         try:
             pending = list(self.store.pending_rows())

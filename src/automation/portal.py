@@ -12,6 +12,7 @@ from core.controls import RunControls
 from core.models import AutomationError, Credentials, Stage, UiEvent
 from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
+from services.otp_wifi import WifiOtpReceiver
 
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
@@ -31,12 +32,17 @@ class PortalAutomation:
         controls: RunControls,
         on_stage: StageCallback,
         emit: EventCallback,
+        otp_receiver: WifiOtpReceiver,
+        otp_auto_fill: bool,
     ) -> None:
         self.page = page
         self.solver = solver
         self.controls = controls
         self.on_stage = on_stage
         self.emit = emit
+        self.otp_receiver = otp_receiver
+        self.otp_auto_fill = otp_auto_fill
+        self.otp_sequence_before_egras = otp_receiver.sequence
         self.stage = Stage.IDLE
         self.page.set_default_timeout(15_000)
 
@@ -209,14 +215,27 @@ class PortalAutomation:
                 ["#ImageButton1", "input.rigcp"],
                 expected_length=6,
             )
+            self.otp_sequence_before_egras = self.otp_receiver.sequence
             await click_first(self.page, ["#btnproceed", 'input[value="Proceed"]'])
             await self.page.wait_for_timeout(750)
 
         if await visible(self.page, "#txtOTP", 12_000):
             await self._stage(Stage.EGRAS_OTP)
+            if self.otp_auto_fill and self.otp_receiver.is_paired:
+                self.emit(UiEvent("otp_waiting", "Waiting up to 45 seconds for a paired phone OTP..."))
+                otp = await self.otp_receiver.wait_for_new(self.otp_sequence_before_egras, timeout_seconds=45)
+                if otp is not None:
+                    await self.page.locator("#txtOTP").fill(otp)
+                    self.emit(
+                        UiEvent("otp_filled", "OTP received from the paired phone and filled in eGRAS.")
+                    )
+            elif self.otp_auto_fill:
+                self.emit(
+                    UiEvent("otp_manual", "No paired phone is connected; use the manual eGRAS OTP step.")
+                )
             await self.controls.manual_checkpoint(
                 "egras_otp",
-                "Complete the eGRAS OTP and CAPTCHA in Chrome, then click Resume.",
+                "Complete the eGRAS CAPTCHA and submit the OTP in Chrome, then click Resume.",
             )
 
     async def choose_gateway(self) -> None:
