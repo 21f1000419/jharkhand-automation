@@ -30,7 +30,7 @@ The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\C
 
 ## Browser selection
 
-The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, Yandex Browser, and Mozilla Firefox. Choose one before starting; use **Refresh** after installing a browser. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** in the same picker and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. The custom choice is saved. Portal automation launches a separate, visible fresh session in that browser, without touching its existing tabs, saved profile, or browser downloads. Gemini continues to run only in its dedicated signed-in Chromium profile. Closing either browser during a batch stops the automation safely.
+The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, Yandex Browser, and Firefox. Choose one before starting; use **Refresh** after installing a browser. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** in the same picker and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Chromium choices run the selected installed browser. Because Playwright only reliably controls its managed Firefox build, Firefox-based choices run that fresh managed build rather than your normal Firefox/Zen installation; install it once with `.venv\Scripts\playwright.exe install firefox`. The custom choice is saved. Portal automation launches a separate, visible fresh session without touching saved browser profiles or downloads. Gemini continues to run only in its dedicated signed-in Chromium profile. Closing either browser during a batch stops the automation safely.
 
 ## CSV batches
 
@@ -43,7 +43,7 @@ district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan
 
 - `quantity` defaults to `1`.
 - `second_party_name` defaults to `NIL` and `pan` is optional.
-- Select or type the one Article to use for the entire batch in the application; it is not a CSV column.
+- Select or type the one Article to use for the current batch in the application; it is not a CSV column and is selected again each time the app opens.
 - District must match the visible portal option text.
 - Do not keep the CSV open in Excel while automation is running. If it becomes locked, the application pauses rather than losing progress.
 

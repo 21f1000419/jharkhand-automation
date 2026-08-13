@@ -46,7 +46,7 @@ class MainWindow:
         self.profile_var = tk.StringVar(value=str(config.profile_path))
         self.csv_var = tk.StringVar()
         self.download_var = tk.StringVar(value=config.last_download_path)
-        self.article_var = tk.StringVar(value=config.last_article)
+        self.article_var = tk.StringVar()
         self.portal_browser_var = tk.StringVar()
         valid_engines = {engine.value for engine in BrowserEngine}
         saved_custom_engine = (
@@ -204,7 +204,6 @@ class MainWindow:
         )
         self.article_box = ttk.Combobox(batch, textvariable=self.article_var, values=ARTICLE_OPTIONS)
         self.article_box.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(8, 0))
-        self.article_box.bind("<FocusOut>", self._save_non_secret_settings)
         ttk.Label(
             batch,
             text="Choose a listed article or type one. The portal validates it before every submission.",
@@ -280,6 +279,8 @@ class MainWindow:
         table_frame.columnconfigure(0, weight=1)
         columns = ("row", "first_party", "second_party", "district", "amount", "status", "completed", "error")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
+        self.tree.tag_configure("current", background="#bfdbfe")
+        self.tree.tag_configure("completed", background="#e5e7eb", foreground="#555555")
         headings = {
             "row": "CSV row",
             "first_party": "First party",
@@ -324,6 +325,10 @@ class MainWindow:
         activity_menu.add_command(label="Current Session…", command=self._show_session_log)
         activity_menu.add_command(label="Open Daily Log Folder", command=self._open_log_folder)
         menu.add_cascade(label="Activity", menu=activity_menu)
+
+        browser_menu = tk.Menu(menu, tearoff=False)
+        browser_menu.add_command(label="Install Managed Firefox", command=self._install_managed_firefox)
+        menu.add_cascade(label="Browser", menu=browser_menu)
         self.root.configure(menu=menu)
 
     def _initial_gemini_check(self) -> None:
@@ -383,7 +388,7 @@ class MainWindow:
             )
         return (
             "The portal opens in a fresh session; it does not use your personal browser profile "
-            "or saved login. Choose Custom browser for a browser installed in another location."
+            "or saved login. Firefox-based choices use Playwright's managed Firefox build."
         )
 
     def _refresh_portal_browsers(self) -> None:
@@ -465,7 +470,6 @@ class MainWindow:
 
     def _save_non_secret_settings(self, _event: object | None = None) -> None:
         self.config.last_download_path = self.download_var.get().strip()
-        self.config.last_article = self.article_var.get().strip()
         self.config.last_mode = self.mode_var.get()
         self.config.otp_auto_fill = self.otp_auto_fill_var.get()
         browser = self.portal_browsers.get(self.portal_browser_var.get())
@@ -634,6 +638,11 @@ class MainWindow:
             wraplength=560,
         ).pack(anchor="w", pady=(12, 0))
 
+    def _install_managed_firefox(self) -> None:
+        self._record_ui_action("install_managed_firefox_clicked")
+        self.run_status_var.set("Downloading managed Firefox...")
+        self.controller.install_managed_firefox()
+
     def _open_gemini(self) -> None:
         self._record_ui_action("open_gemini_setup_clicked")
         if not self._save_browser_settings(reconfigure=False):
@@ -783,6 +792,11 @@ class MainWindow:
                 messagebox.showwarning("CSV is locked", event.message, parent=self.root)
         elif event.kind == "resumed":
             self.run_status_var.set("Running")
+        elif event.kind == "firefox_installing":
+            self.run_status_var.set("Downloading managed Firefox...")
+        elif event.kind == "firefox_installed":
+            self.run_status_var.set("Managed Firefox ready")
+            messagebox.showinfo("Firefox ready", event.message, parent=self.root)
         elif event.kind in {"run_completed", "run_stopped", "browser_closed"}:
             self.starting = False
             self.running = False
@@ -795,7 +809,7 @@ class MainWindow:
                     self.gemini_status_var.set("Browser profile: setup required")
                 messagebox.showwarning("Browser closed", event.message, parent=self.root)
         elif event.kind == "batch_update":
-            self._render_rows(event.data.get("rows", []))
+            self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
         elif event.kind == "error_prompt":
             self._show_error_dialog(event)
         self._set_run_buttons()
@@ -847,13 +861,19 @@ class MainWindow:
             self._render_rows([])
             messagebox.showerror("CSV error", str(error), parent=self.root)
 
-    def _render_rows(self, rows: list[dict[str, str]]) -> None:
+    def _render_rows(self, rows: list[dict[str, str]], current_row: int | None = None) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
         for row in rows:
+            tags: tuple[str, ...] = ()
+            if row.get("row_number") == str(current_row):
+                tags = ("current",)
+            elif row.get("status") == "completed":
+                tags = ("completed",)
             self.tree.insert(
                 "",
                 "end",
+                tags=tags,
                 values=(
                     row.get("row_number", ""),
                     row.get("first_party_name", ""),

@@ -14,7 +14,6 @@ class AppConfig:
     chrome_executable: str = ""
     chrome_profile_path: str = ""
     last_download_path: str = ""
-    last_article: str = ""
     last_mode: str = "assisted"
     last_portal_browser_path: str = ""
     custom_portal_browser_path: str = ""

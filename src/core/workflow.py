@@ -40,6 +40,7 @@ class WorkflowEngine:
         self.store: CsvBatchStore | None = None
         self.current_row: dict[str, str] | None = None
         self.current_stage = Stage.IDLE
+        self.browser_interrupted = False
 
     async def run(self, options: RunOptions) -> None:
         self.store = CsvBatchStore(options.csv_path)
@@ -123,22 +124,32 @@ class WorkflowEngine:
 
             self.current_row = None
             self.current_stage = Stage.IDLE
+            self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
             self.emit(UiEvent("run_completed", "Batch pass finished. Failed rows remain retryable."))
         except (WorkflowStopped, asyncio.CancelledError):
-            if self.current_row is not None:
-                self.store.mark_stopped(
-                    self.current_row,
-                    self.current_stage,
-                    self.controls.stop_reason,
-                )
+            if self.current_row is not None and not self.browser_interrupted:
+                if "closed" in self.controls.stop_reason.casefold():
+                    self.browser_interrupted = True
+                    self.store.mark_error(
+                        self.current_row,
+                        self.current_stage,
+                        "Browser closed. Start a new batch to continue.",
+                    )
+                else:
+                    self.store.mark_stopped(
+                        self.current_row,
+                        self.current_stage,
+                        self.controls.stop_reason,
+                    )
                 await self._persist(ignore_stop=True)
                 self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
-            self.emit(
-                UiEvent(
-                    "run_stopped",
-                    f"{self.controls.stop_reason}. Current work remains retryable.",
-                )
+            self.current_row = None
+            message = (
+                "A browser was closed. The current row was skipped; start a new batch to continue."
+                if self.browser_interrupted
+                else f"{self.controls.stop_reason}. Current work remains retryable."
             )
+            self.emit(UiEvent("run_stopped", message))
 
     async def _handle_error(
         self,
@@ -160,6 +171,7 @@ class WorkflowEngine:
             )
         )
         if error.code == "browser_closed":
+            self.browser_interrupted = True
             return "next"
 
         try:

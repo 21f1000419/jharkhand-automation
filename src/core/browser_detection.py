@@ -13,7 +13,7 @@ SUPPORTED_BROWSERS = (
     ("Opera GX", "opera.exe", BrowserEngine.CHROMIUM, ("Programs", "Opera GX")),
     ("Vivaldi", "vivaldi.exe", BrowserEngine.CHROMIUM, ("Vivaldi", "Application")),
     ("Yandex Browser", "browser.exe", BrowserEngine.CHROMIUM, ("Yandex", "YandexBrowser", "Application")),
-    ("Mozilla Firefox", "firefox.exe", BrowserEngine.FIREFOX, ("Mozilla Firefox",)),
+    ("Firefox (managed automation)", "firefox.exe", BrowserEngine.FIREFOX, ("Mozilla Firefox",)),
 )
 
 

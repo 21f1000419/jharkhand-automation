@@ -214,12 +214,18 @@ class PortalBrowserSession:
                 if self.choice.engine == BrowserEngine.FIREFOX
                 else self.playwright.chromium
             )
+            if self.choice.engine == BrowserEngine.FIREFOX:
+                bundled_firefox = Path(browser_type.executable_path)
+                if not bundled_firefox.is_file():
+                    raise RuntimeError(
+                        "Firefox-based portal automation requires Playwright Firefox. "
+                        "Run '.venv\\Scripts\\playwright.exe install firefox' once, then try again."
+                    )
             launch_args = ["--start-maximized"] if self.choice.engine == BrowserEngine.CHROMIUM else []
-            self.browser = await browser_type.launch(
-                headless=False,
-                executable_path=str(self.choice.executable),
-                args=launch_args,
-            )
+            launch_options: dict[str, object] = {"headless": False, "args": launch_args}
+            if self.choice.engine == BrowserEngine.CHROMIUM:
+                launch_options["executable_path"] = str(self.choice.executable)
+            self.browser = await browser_type.launch(**launch_options)  # type: ignore[arg-type]
             self.browser.on("disconnected", self._disconnected)
             self.context = await self.browser.new_context(accept_downloads=True, no_viewport=True)
             return self.context
