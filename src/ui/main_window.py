@@ -326,9 +326,6 @@ class MainWindow:
         activity_menu.add_command(label="Open Daily Log Folder", command=self._open_log_folder)
         menu.add_cascade(label="Activity", menu=activity_menu)
 
-        browser_menu = tk.Menu(menu, tearoff=False)
-        browser_menu.add_command(label="Install Managed Firefox", command=self._install_managed_firefox)
-        menu.add_cascade(label="Browser", menu=browser_menu)
         self.root.configure(menu=menu)
 
     def _initial_gemini_check(self) -> None:
@@ -638,11 +635,6 @@ class MainWindow:
             wraplength=560,
         ).pack(anchor="w", pady=(12, 0))
 
-    def _install_managed_firefox(self) -> None:
-        self._record_ui_action("install_managed_firefox_clicked")
-        self.run_status_var.set("Downloading managed Firefox...")
-        self.controller.install_managed_firefox()
-
     def _open_gemini(self) -> None:
         self._record_ui_action("open_gemini_setup_clicked")
         if not self._save_browser_settings(reconfigure=False):
@@ -792,11 +784,6 @@ class MainWindow:
                 messagebox.showwarning("CSV is locked", event.message, parent=self.root)
         elif event.kind == "resumed":
             self.run_status_var.set("Running")
-        elif event.kind == "firefox_installing":
-            self.run_status_var.set("Downloading managed Firefox...")
-        elif event.kind == "firefox_installed":
-            self.run_status_var.set("Managed Firefox ready")
-            messagebox.showinfo("Firefox ready", event.message, parent=self.root)
         elif event.kind in {"run_completed", "run_stopped", "browser_closed"}:
             self.starting = False
             self.running = False

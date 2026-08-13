@@ -69,10 +69,10 @@ class BrowserSession:
         await page.goto(create_url, wait_until="domcontentloaded", timeout=60_000)
         return page
 
-    async def new_portal_page(self) -> Page:
+    async def new_portal_page(self, initial_url: str = "about:blank") -> Page:
         context = await self.start()
         page = await context.new_page()
-        await page.goto("about:blank")
+        await page.goto(initial_url, wait_until="domcontentloaded", timeout=120_000)
         return page
 
     async def close(self) -> None:
@@ -196,10 +196,10 @@ class PortalBrowserSession:
         self.context: BrowserContext | None = None
         self.closing = False
 
-    async def new_portal_page(self) -> Page:
+    async def new_portal_page(self, initial_url: str = "about:blank") -> Page:
         context = await self.start()
         page = await context.new_page()
-        await page.goto("about:blank")
+        await page.goto(initial_url, wait_until="domcontentloaded", timeout=120_000)
         return page
 
     async def start(self) -> BrowserContext:

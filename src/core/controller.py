@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import queue
-import sys
 import threading
 from collections.abc import Coroutine
 from concurrent.futures import Future
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from automation.browser import BrowserSession, PortalBrowserSession
+from automation.portal import CITIZEN_LOGIN_URL
 from core.activity_log import DailyActivityLog
 from core.config import AppConfig
 from core.controls import RunControls
@@ -58,9 +58,6 @@ class AutomationController:
 
     def verify_gemini(self) -> None:
         self._submit(self._verify_gemini())
-
-    def install_managed_firefox(self) -> None:
-        self._submit(self._install_managed_firefox())
 
     def start(self, options: RunOptions) -> None:
         if self.loop is None:
@@ -157,26 +154,6 @@ class AutomationController:
         except Exception as error:
             self.emit(UiEvent("fatal_error", f"Browser profile verification failed: {error}"))
 
-    async def _install_managed_firefox(self) -> None:
-        self.emit(
-            UiEvent("firefox_installing", "Downloading managed Firefox for Firefox-based automation...")
-        )
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "playwright",
-            "install",
-            "firefox",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, errors = await process.communicate()
-        if process.returncode == 0:
-            self.emit(UiEvent("firefox_installed", "Managed Firefox is ready for Firefox-based automation."))
-            return
-        detail = errors.decode("utf-8", errors="replace").strip()
-        self.emit(UiEvent("fatal_error", f"Could not install managed Firefox. {detail[-500:]}"))
-
     def _start_run(self, options: RunOptions) -> None:
         if self.run_task is not None and not self.run_task.done():
             self.emit(UiEvent("fatal_error", "A batch is already running."))
@@ -200,7 +177,7 @@ class AutomationController:
             self.portal_browser = PortalBrowserSession(
                 options.portal_browser, self._on_portal_browser_disconnected
             )
-            page = await self.portal_browser.new_portal_page()
+            page = await self.portal_browser.new_portal_page(CITIZEN_LOGIN_URL)
             engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
             await engine.run(options)
         except asyncio.CancelledError:

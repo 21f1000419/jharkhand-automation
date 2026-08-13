@@ -96,7 +96,8 @@ class PortalAutomation:
         await self._stage(Stage.CITIZEN_LOGIN)
         # Always begin at the documented Citizen login page.  This lets the
         # portal issue a fresh CAPTCHA and preserves the expected login flow.
-        await self._goto(CITIZEN_LOGIN_URL)
+        if not self.page.url.startswith(CITIZEN_LOGIN_URL):
+            await self._goto(CITIZEN_LOGIN_URL)
         if not credentials.citizen_username or not credentials.citizen_password:
             await self.controls.manual_checkpoint(
                 "citizen_login",
@@ -364,7 +365,8 @@ class PortalAutomation:
             if image is None or field is None:
                 raise AutomationError("The CAPTCHA image or input field was not found.", stage=self.stage)
             try:
-                code = await self.solver.solve(await image.screenshot(type="png"), expected_length)
+                image_bytes = await self._capture_loaded_captcha(image)
+                code = await self.solver.solve(image_bytes, expected_length)
                 await field.fill(code)
                 self.emit(UiEvent("log", f"CAPTCHA solved on attempt {attempt + 1}."))
                 return
@@ -376,6 +378,22 @@ class PortalAutomation:
                     await self.page.wait_for_timeout(500)
         raise AutomationError(last_error, stage=self.stage, code="captcha_failed")
 
+    async def _capture_loaded_captcha(self, image: Locator) -> bytes:
+        """Capture the exact CAPTCHA only after the browser has decoded the image response."""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            loaded = await image.evaluate(
+                "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0"
+            )
+            if loaded:
+                return await image.screenshot(type="png")
+            await self.page.wait_for_timeout(150)
+        raise AutomationError(
+            "The CAPTCHA image did not finish loading.",
+            stage=self.stage,
+            code="captcha_not_loaded",
+        )
+
     async def _stage(self, stage: Stage) -> None:
         self.stage = stage
         await self.controls.checkpoint()
@@ -383,7 +401,7 @@ class PortalAutomation:
 
     async def _goto(self, url: str) -> None:
         await self.controls.checkpoint()
-        await self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=120_000)
 
 
 async def first_visible(page: Page, selectors: list[str], timeout_ms: int = 15_000) -> Locator | None:
