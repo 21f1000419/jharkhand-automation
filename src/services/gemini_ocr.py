@@ -36,7 +36,7 @@ STOP_SELECTORS = [
 ]
 OCR_PROMPT = "OCR this."
 RESPONSE_TIMEOUT_SECONDS = 15
-MAX_RESPONSE_ATTEMPTS = 2
+MAX_OCR_SUBMISSIONS = 2
 CAPTCHA_IMAGE_ATTEMPTS = 1
 ATTACHMENT_SELECTORS = [
     'img[src^="blob:"]',
@@ -96,26 +96,28 @@ class GeminiCaptchaSolver:
             composer = await find_first_visible(page, COMPOSER_SELECTORS, 15_000)
             if composer is None:
                 raise RuntimeError("Gemini is not signed in or its prompt box could not be found.")
-            for attempt in range(MAX_RESPONSE_ATTEMPTS):
-                baseline = await read_responses(page)
-                await attach_image(page, composer, ImageFile("captcha.png", "image/png", image))
-                await composer.fill(OCR_PROMPT)
-                await send_prompt(page)
+            last_error = "Gemini did not return a usable CAPTCHA value."
+            for attempt in range(MAX_OCR_SUBMISSIONS):
                 try:
+                    baseline = await read_responses(page)
+                    await attach_image(page, composer, ImageFile("captcha.png", "image/png", image))
+                    await composer.fill(OCR_PROMPT)
+                    await send_prompt(page)
                     raw = await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
-                except GeminiResponseTimeout:
-                    await stop_response(page)
-                    if attempt + 1 < MAX_RESPONSE_ATTEMPTS:
-                        continue
-                    raise RuntimeError(
+                    code = normalize_captcha(raw, expected_length)
+                    if code:
+                        return code
+                    last_error = f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}"
+                except (GeminiResponseTimeout, PlaywrightError, RuntimeError) as error:
+                    last_error = (
                         "Gemini did not return a CAPTCHA OCR result within 15 seconds."
-                    ) from None
-                code = normalize_captcha(raw, expected_length)
-                if code:
-                    return code
-                if attempt + 1 < MAX_RESPONSE_ATTEMPTS:
+                        if isinstance(error, GeminiResponseTimeout)
+                        else str(error)
+                    )
+                    await stop_response(page)
+                if attempt + 1 < MAX_OCR_SUBMISSIONS:
                     continue
-                raise RuntimeError(f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}")
+                raise RuntimeError(last_error)
         raise RuntimeError("Gemini CAPTCHA OCR could not be completed.")
 
 
