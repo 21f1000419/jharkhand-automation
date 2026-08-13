@@ -4,6 +4,8 @@ Windows Tkinter application for processing resumable CSV batches through the Jha
 
 Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
 
+At the start of every unit, the portal opens the Citizen login page. When Citizen credentials are supplied, it captures the displayed `#captcha_image` directly for Gemini OCR, fills the CAPTCHA, and clicks **Get OTP**. It then optionally fills a paired-phone OTP, while the user confirms Login. The app allows up to two minutes for the portal's eStamp entry link to appear before treating the login as incomplete.
+
 ## Install and run from source
 
 Python 3.11 and Google Chrome are required.

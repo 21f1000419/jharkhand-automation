@@ -94,49 +94,86 @@ class PortalAutomation:
 
     async def ensure_citizen_session(self, credentials: Credentials) -> None:
         await self._stage(Stage.CITIZEN_LOGIN)
-        await self._goto(ESTAMP_URL)
-        if await visible(self.page, "#payment_purpose_id", 4_000):
-            return
-
+        # Always begin at the documented Citizen login page.  This lets the
+        # portal issue a fresh CAPTCHA and preserves the expected login flow.
         await self._goto(CITIZEN_LOGIN_URL)
         if not credentials.citizen_username or not credentials.citizen_password:
             await self.controls.manual_checkpoint(
                 "citizen_login",
-                "Complete the Citizen login in Chrome, including any CAPTCHA or OTP, then click Resume.",
+                "Enter the Citizen username, password, CAPTCHA, and OTP in Chrome. Click Get OTP, "
+                "then Login; click Resume only after the eStamp entry link appears.",
             )
         else:
-            await fill_first(self.page, ["#username", 'input[name="username"]'], credentials.citizen_username)
-            await fill_first(self.page, ["#password", 'input[name="password"]'], credentials.citizen_password)
+            await fill_first(self.page, ["#username"], credentials.citizen_username)
+            await fill_first(self.page, ["#password"], credentials.citizen_password)
             await self._solve_captcha(
-                ["#captcha_image", 'img[src*="captcha" i]'],
-                ["#captcha", 'input[name="captcha"]'],
-                ["#reload", 'button:has-text("Refresh")'],
+                ["#captcha_image"],
+                ["#captcha"],
+                ["#reload"],
                 expected_length=6,
             )
-            otp_button = await first_visible(
-                self.page,
-                ["#btnotp", 'button:has-text("Get OTP")', 'input[value*="Get OTP" i]'],
-                2_000,
-            )
+            otp_button = await first_visible(self.page, ["#btnotp"], 10_000)
             if otp_button is not None:
+                citizen_otp_sequence = self.otp_receiver.sequence
                 await otp_button.click()
+                if not await visible(self.page, "#otp", 120_000):
+                    raise AutomationError(
+                        "Citizen OTP input did not appear after requesting the OTP.",
+                        stage=self.stage,
+                        code="citizen_otp_unavailable",
+                    )
+                if self.otp_auto_fill and self.otp_receiver.is_paired:
+                    self.emit(UiEvent("otp_waiting", "Waiting for the paired phone's Citizen OTP..."))
+                    otp = await self.otp_receiver.wait_for_new(citizen_otp_sequence, timeout_seconds=60)
+                    if otp is not None:
+                        await self.page.locator("#otp").fill(otp)
+                        self.emit(
+                            UiEvent("otp_filled", "Citizen OTP received from the paired phone and filled.")
+                        )
+                elif self.otp_auto_fill:
+                    self.emit(
+                        UiEvent("otp_manual", "No paired phone is connected; enter the Citizen OTP manually.")
+                    )
                 await self.controls.manual_checkpoint(
                     "citizen_otp",
-                    "Complete the Citizen OTP in Chrome and submit the login, then click Resume.",
+                    "Confirm the Citizen OTP, complete Login, and click Resume after the eStamp entry "
+                    "link appears.",
                 )
             else:
-                await click_first(
-                    self.page,
-                    ["#btnSubmit", 'button:has-text("Login")', 'input[value="Login"]'],
-                )
+                await click_first(self.page, ["#btnSubmit"])
 
-        await self._goto(ESTAMP_URL)
-        if not await visible(self.page, "#payment_purpose_id", 12_000):
-            raise AutomationError(
-                "Citizen login did not reach the Purchase eStamp form.",
-                stage=self.stage,
-                code="citizen_login_incomplete",
+        await self._wait_for_estamp_entry()
+
+    async def _wait_for_estamp_entry(self) -> None:
+        """Wait for the post-login eStamp link; slow portal responses may take two minutes."""
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            await self.controls.checkpoint()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed during Citizen login.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            if await visible(self.page, "#payment_purpose_id", 500):
+                return
+            entry = await first_visible(
+                self.page,
+                ['a[href*="gras_payment_entry_estamp"]', 'a[href*="payment_entry_estamp"]'],
+                500,
             )
+            if entry is not None:
+                await entry.click()
+                await self.page.wait_for_load_state("domcontentloaded", timeout=120_000)
+                if await visible(self.page, "#payment_purpose_id", 30_000):
+                    return
+            await self.page.wait_for_timeout(500)
+        raise AutomationError(
+            "Citizen login did not show the eStamp entry link within two minutes.",
+            stage=self.stage,
+            code="citizen_login_incomplete",
+        )
 
     async def fill_estamp_form(self, row: dict[str, str], article: str) -> None:
         await self._stage(Stage.FILL_ESTAMP)
