@@ -1,38 +1,103 @@
-# Gemini OCR local API
+# Compitcom eStamp Batch Automation
 
-This Python/FastAPI service sends an image to Gemini with the prompt `OCR this` and returns Gemini's completed response. The source files are:
+Windows Tkinter application for processing resumable CSV batches through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. It uses a signed-in dedicated Chrome profile with Gemini to read CAPTCHA images, while the portal itself opens in the browser selected in the app. There is no OCR web server or FastAPI process.
 
-- `src/gemini_ocr_server.py` - the local OCR API
-- `src/setup_gemini_browser.py` - opens the persistent Chrome profile for interactive Google/Gemini login
+Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
 
-By default both scripts share `D:\Projects\agent-orchestrator\.playwright-chrome-profile`, the `Default` Chrome profile, and the local Chrome installation. Set `AGENT_ORCHESTRATOR_ROOT`, `CHROME_USER_DATA_DIR`, `CHROME_PROFILE_DIRECTORY`, or `CHROME_EXECUTABLE_PATH` to override those defaults.
+## Install and run from source
 
-## Setup and login
+Python 3.11 and Google Chrome are required.
 
 ```powershell
+python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe .\src\setup_gemini_browser.py
+.\.venv\Scripts\python.exe .\src\app.py
 ```
 
-Chrome opens visibly at Gemini. Sign in to the intended Google account, complete any verification, and press Enter in the terminal. The script leaves Chrome and its persistent login profile available for the OCR service.
+On first use, click **Browser profile status...** to open the compact setup dialog:
 
-## Run the API
+1. Confirm or browse to `chrome.exe`.
+2. Click **Open Profile at Gemini**.
+3. Sign in to the Google account that is permitted to use Gemini in that dedicated Chrome profile.
+4. Click **Check Profile**.
+
+The browser profile—not Gemini itself—is the one-time setup. Each **Start** still opens/checks Gemini inside that
+profile and requires a signed-in Google account plus an editable Gemini chat composer before it creates any portal
+automation. If the Google session has expired or Gemini cannot accept input, the batch does not start and the setup
+dialog opens automatically.
+
+The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Citizen/eGRAS credentials exist only in application memory and are cleared on exit.
+
+## Browser selection
+
+The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, Yandex Browser, and Mozilla Firefox. Choose one before starting; use **Refresh** after installing a browser. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** in the same picker and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. The custom choice is saved. Portal automation launches a separate, visible fresh session in that browser, without touching its existing tabs, saved profile, or browser downloads. Gemini continues to run only in its dedicated signed-in Chromium profile. Closing either browser during a batch stops the automation safely.
+
+## CSV batches
+
+Click **Download CSV Format**, fill and save the downloaded file, then use **Select CSV…** to load it. The
+template action never starts or selects a batch by itself. Input columns are:
+
+```text
+district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan,mobile,amount,quantity
+```
+
+- `quantity` defaults to `1`.
+- `second_party_name` defaults to `NIL` and `pan` is optional.
+- Select or type the one Article to use for the entire batch in the application; it is not a CSV column.
+- District must match the visible portal option text.
+- Do not keep the CSV open in Excel while automation is running. If it becomes locked, the application pauses rather than losing progress.
+
+The application adds and constantly updates:
+
+```text
+status,completed_quantity,attempt_count,error_count,last_stage,last_error,updated_at,transaction_refs,estamp_files
+```
+
+Every successful quantity unit is recorded. Failed units remain retryable until `completed_quantity` reaches `quantity`.
+The app uses the fixed CSV row number internally and does not add a user-facing row identifier. It updates the
+selected CSV in place; atomic replacement may create a short-lived temporary file while saving, but no duplicate
+CSV is retained.
+The destination displayed in the application defaults to the current user's Windows `Downloads` folder and can be
+changed with **Browse…**. The app saves validated PDFs with names such as
+`eStamp_row-001_unit-001_<reference>.pdf` and records their paths in the CSV; this is explicit rather than relying
+on an opaque Chrome-profile download preference.
+
+District and the batch Article are checked against the live portal's `<select>` options before form submission. An
+unavailable value is reported with the field name and sample available choices. Required fields, mobile number,
+amount, quantity, and browser-native form validation are also checked before **Proceed to Pay**.
+
+## Activity logs
+
+Every application action, workflow stage, error, and stop event is appended to one local file per day under
+`%LOCALAPPDATA%\Compitcom\eStampAutomation\logs`. Use **Activity > Current Session…** for the current session and
+**Activity > Open Daily Log Folder** to view the persistent diagnostic files.
+
+## Operating modes and controls
+
+- **Assisted errors** returns Chrome to the starting page and asks whether to retry or move to the next row. Next Row is the default.
+- **Continuous** records ordinary errors and moves to the next row without a prompt.
+- **Pause** keeps the current page and stops before the next browser action.
+- **Stop** cancels the active unit and preserves it as retryable.
+- Closing the selected portal browser or the signed-in Gemini profile stops the entire run. Closing the application closes both automation browsers.
+
+Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
+
+## Build the Windows executable
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn src.gemini_ocr_server:app --host 127.0.0.1 --port 4318
+.\build_exe.ps1
 ```
 
-The API listens only on `http://127.0.0.1:4318` by default. Change the port with `PORT`, or pass a different Uvicorn port.
+The output is `dist\Compitcom-eStamp-Automation.exe`. Chrome is required for the dedicated Gemini profile; the portal may use any supported detected browser. Playwright does not download its own Chromium build.
 
-## Request
+## Development checks
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:4318/gemini/ocr `
-  -F "image=@D:\Projects\compitcom\automation\screenshot.png"
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m mypy src tests
+$env:PYTHONPATH = 'src'
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The request must be `multipart/form-data` with one `image` file field (maximum 25 MB). A successful response is:
-
-```json
-{ "text": "Recognized text...", "url": "https://gemini.google.com/app/..." }
-```
+The Android OTP Reader under `otp-reader` is retained for a later OTP-provider integration. It is not used by version 1.

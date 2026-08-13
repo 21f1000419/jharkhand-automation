@@ -19,6 +19,8 @@ htmlcov/
 build/
 dist/
 node_modules/
+estamp_downloads/
+*.part
 
 # Android/Gradle local build state
 .gradle/
