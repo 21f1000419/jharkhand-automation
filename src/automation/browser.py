@@ -193,6 +193,10 @@ class PortalBrowserSession:
         self.context: BrowserContext | None = None
         self.closing = False
 
+    @property
+    def is_active(self) -> bool:
+        return self.browser is not None and self.browser.is_connected()
+
     async def new_portal_page(self, initial_url: str = "about:blank") -> Page:
         context = await self.start()
         page = await context.new_page()

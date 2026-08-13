@@ -37,6 +37,7 @@ STOP_SELECTORS = [
 OCR_PROMPT = "OCR this."
 RESPONSE_TIMEOUT_SECONDS = 15
 MAX_RESPONSE_ATTEMPTS = 2
+CAPTCHA_IMAGE_ATTEMPTS = 1
 ATTACHMENT_SELECTORS = [
     'img[src^="blob:"]',
     '[data-test-id*="attachment" i]',
@@ -56,6 +57,7 @@ class GeminiCaptchaSolver:
     def __init__(self, browser_session: BrowserSession) -> None:
         self.browser_session = browser_session
         self._lock = asyncio.Lock()
+        self._greeting_verified = False
 
     async def open_setup(self) -> Page:
         page = await self.browser_session.page_for_host(
@@ -70,9 +72,21 @@ class GeminiCaptchaSolver:
         if composer is None:
             return False
         try:
-            return await composer.is_editable()
+            if not await composer.is_editable():
+                return False
         except PlaywrightError:
             return False
+        if self._greeting_verified:
+            return True
+        try:
+            baseline = await read_responses(page)
+            await composer.fill("Hi")
+            await send_prompt(page)
+            await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
+        except (GeminiResponseTimeout, PlaywrightError, RuntimeError):
+            return False
+        self._greeting_verified = True
+        return True
 
     async def solve(self, image: bytes, expected_length: int | None = None) -> str:
         async with self._lock:

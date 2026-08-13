@@ -13,6 +13,7 @@ from core.controller import AutomationController
 from core.form_options import ARTICLE_OPTIONS
 from core.models import BrowserEngine, Credentials, PortalBrowser, RunMode, RunOptions, UiEvent
 from services.csv_store import CsvBatchStore
+from services.windows_notifications import show_windows_notification
 
 
 def walk_widgets(widget: tk.Misc) -> list[tk.Misc]:
@@ -773,6 +774,9 @@ class MainWindow:
                 self.starting = False
                 self.running = False
                 self.run_status_var.set("Stopped with an error")
+                show_windows_notification(
+                    "eStamp Automation error", "An error occurred. Please look into the application."
+                )
                 messagebox.showerror("Automation error", event.message, parent=self.root)
         elif event.kind == "run_started":
             self.starting = False
@@ -801,6 +805,8 @@ class MainWindow:
             self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
         elif event.kind == "error_prompt":
             self._show_error_dialog(event)
+        elif event.kind == "notification":
+            show_windows_notification(event.data.get("title", "eStamp Automation"), event.message)
         self._set_run_buttons()
 
     def _show_error_dialog(self, event: UiEvent) -> None:

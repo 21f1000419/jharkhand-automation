@@ -11,7 +11,7 @@ from playwright.async_api import Locator, Page
 from core.controls import RunControls
 from core.models import AutomationError, Credentials, Stage, UiEvent
 from services.downloads import EstampDownloader
-from services.gemini_ocr import GeminiCaptchaSolver
+from services.gemini_ocr import CAPTCHA_IMAGE_ATTEMPTS, GeminiCaptchaSolver
 from services.otp_wifi import WifiOtpReceiver
 
 PORTAL_HOME_URL = "https://jharnibandhan.gov.in/"
@@ -375,8 +375,7 @@ class PortalAutomation:
         refresh_selectors: list[str],
         expected_length: int,
     ) -> None:
-        last_error = "CAPTCHA could not be solved."
-        for attempt in range(3):
+        for attempt in range(CAPTCHA_IMAGE_ATTEMPTS):
             await self.controls.checkpoint()
             image = await first_visible(self.page, image_selectors, 10_000)
             field = await first_visible(self.page, input_selectors, 5_000)
@@ -389,12 +388,21 @@ class PortalAutomation:
                 self.emit(UiEvent("log", f"CAPTCHA solved on attempt {attempt + 1}."))
                 return
             except Exception as error:
-                last_error = str(error)
-                refresh = await first_visible(self.page, refresh_selectors, 1_000)
-                if refresh is not None:
-                    await refresh.click()
-                    await self.page.wait_for_timeout(500)
-        raise AutomationError(last_error, stage=self.stage, code="captcha_failed")
+                self.emit(
+                    UiEvent(
+                        "notification",
+                        "Gemini could not read the CAPTCHA twice. Please enter it manually, then click "
+                        "Resume in the application.",
+                        {"title": "CAPTCHA needs manual entry", "level": "warning", "error": str(error)},
+                    )
+                )
+                await self.controls.manual_checkpoint(
+                    "captcha_manual",
+                    "Gemini could not read the CAPTCHA twice. Enter the displayed CAPTCHA manually in "
+                    "the browser, then click Resume.",
+                )
+                return
+        raise AutomationError("The CAPTCHA could not be solved.", stage=self.stage, code="captcha_failed")
 
     async def _capture_loaded_captcha(self, image: Locator) -> bytes:
         """Capture the exact CAPTCHA only after the browser has decoded the image response."""

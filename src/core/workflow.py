@@ -174,6 +174,13 @@ class WorkflowEngine:
                 {"level": "error"},
             )
         )
+        self.emit(
+            UiEvent(
+                "notification",
+                "An automation error occurred. Please look in the application for details.",
+                {"title": "eStamp Automation error", "level": "error"},
+            )
+        )
         if error.code == "browser_closed":
             self.browser_interrupted = True
             return "next"

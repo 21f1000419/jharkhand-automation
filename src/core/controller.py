@@ -9,6 +9,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from playwright.async_api import Page
+
 from automation.browser import BrowserSession, PortalBrowserSession
 from automation.portal import PORTAL_HOME_URL
 from core.activity_log import DailyActivityLog
@@ -36,6 +38,7 @@ class AutomationController:
         self.solver: GeminiCaptchaSolver | None = None
         self.otp_receiver = WifiOtpReceiver()
         self.run_task: asyncio.Task[None] | None = None
+        self._portal_browser_closed = False
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._thread_main, name="automation-worker", daemon=True)
         self._thread.start()
@@ -163,6 +166,7 @@ class AutomationController:
         self.run_task = asyncio.create_task(self._run(options))
 
     async def _run(self, options: RunOptions) -> None:
+        portal_watchdog: asyncio.Task[None] | None = None
         try:
             _, solver = await self._ensure_gemini_services()
             if not await solver.verify_ready():
@@ -179,7 +183,9 @@ class AutomationController:
             self.portal_browser = PortalBrowserSession(
                 options.portal_browser, self._on_portal_browser_disconnected
             )
+            self._portal_browser_closed = False
             page = await self.portal_browser.new_portal_page(PORTAL_HOME_URL)
+            portal_watchdog = asyncio.create_task(self._monitor_portal_browser(page))
             engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
             await engine.run(options)
         except asyncio.CancelledError:
@@ -187,8 +193,20 @@ class AutomationController:
         except Exception as error:
             self.emit(UiEvent("fatal_error", f"Automation stopped: {error}"))
         finally:
+            if portal_watchdog is not None:
+                portal_watchdog.cancel()
+                await asyncio.gather(portal_watchdog, return_exceptions=True)
             await self._close_portal_browser()
             self.run_task = None
+
+    async def _monitor_portal_browser(self, page: Page) -> None:
+        """Keep checking browser health while the workflow is paused for user input."""
+        while True:
+            browser = self.portal_browser
+            if browser is None or page.is_closed() or not browser.is_active:
+                self._on_portal_browser_disconnected()
+                return
+            await asyncio.sleep(1)
 
     def _cancel_run(self) -> None:
         if self.run_task is not None and not self.run_task.done():
@@ -208,6 +226,9 @@ class AutomationController:
         self.solver = None
 
     def _on_portal_browser_disconnected(self) -> None:
+        if self._portal_browser_closed:
+            return
+        self._portal_browser_closed = True
         name = self.portal_browser.choice.name if self.portal_browser is not None else "Portal browser"
         self.emit(UiEvent("browser_closed", f"{name} was closed. The automation has stopped."))
         self.controls.stop(f"{name} was closed")
