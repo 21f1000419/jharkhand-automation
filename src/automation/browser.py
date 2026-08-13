@@ -167,16 +167,13 @@ async def wait_for_debugger(
 async def terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Close Chrome plus its child processes when this app launched it."""
     if os.name == "nt":
-        taskkill = await asyncio.create_subprocess_exec(
-            "taskkill",
-            "/PID",
-            str(process.pid),
-            "/T",
-            "/F",
+        await asyncio.to_thread(
+            subprocess.run,
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        await taskkill.wait()
         return
     process.terminate()
     try:

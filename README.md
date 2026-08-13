@@ -4,7 +4,7 @@ Windows Tkinter application for processing resumable CSV batches through the Jha
 
 Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
 
-At the start of every unit, the portal opens the Citizen login page. When Citizen credentials are supplied, it captures the displayed `#captcha_image` directly for Gemini OCR, fills the CAPTCHA, and clicks **Get OTP**. It then optionally fills a paired-phone OTP, while the user confirms Login. The app allows up to two minutes for the portal's eStamp entry link to appear before treating the login as incomplete.
+At the start of a portal session, the application opens the Jharkhand portal home page and clicks its Citizen **Login** link, rather than requesting the login URL directly. When Citizen credentials are supplied, it captures the displayed `#captcha_image` directly for Gemini OCR, fills the CAPTCHA, and clicks **Get OTP**. It then optionally fills a paired-phone OTP, while the user confirms Login. The app allows up to two minutes for the portal's eStamp entry link to appear before treating the login as incomplete.
 
 ## Install and run from source
 
@@ -45,6 +45,7 @@ district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan
 
 - `quantity` defaults to `1`.
 - `second_party_name` defaults to `NIL` and `pan` is optional.
+- `mobile` is optional because the portal pre-fills it.
 - Select or type the one Article to use for the current batch in the application; it is not a CSV column and is selected again each time the app opens.
 - District must match the visible portal option text.
 - Do not keep the CSV open in Excel while automation is running. If it becomes locked, the application pauses rather than losing progress.
@@ -64,9 +65,11 @@ changed with **Browse…**. The app saves validated PDFs with names such as
 `eStamp_row-001_unit-001_<reference>.pdf` and records their paths in the CSV; this is explicit rather than relying
 on an opaque Chrome-profile download preference.
 
-District and the batch Article are checked against the live portal's `<select>` options before form submission. An
-unavailable value is reported with the field name and sample available choices. Required fields, mobile number,
-amount, quantity, and browser-native form validation are also checked before **Proceed to Pay**.
+Each CSV row is validated immediately when the CSV is selected; the progress table and a warning identify rows that
+must be corrected, and Start remains disabled until the file is selected again without validation errors. District and
+the batch Article are checked against the live portal's `<select>` options before form submission. An unavailable
+value is reported with the field name and sample available choices. Required fields, amount, quantity, and
+browser-native form validation are also checked before **Proceed to Pay**.
 
 ## Activity logs
 

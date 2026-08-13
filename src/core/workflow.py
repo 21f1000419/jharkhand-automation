@@ -67,6 +67,10 @@ class WorkflowEngine:
             if not pending:
                 self.emit(UiEvent("run_completed", "All CSV rows are already complete."))
                 return
+            # Sign in before validating individual CSV rows. This makes the
+            # visible Citizen login/CAPTCHA flow available at batch start even
+            # when a later row needs CSV corrections.
+            await portal.ensure_citizen_session(options.credentials)
 
             for row_number, row in pending:
                 self.current_row = row

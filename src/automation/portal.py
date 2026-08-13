@@ -14,6 +14,7 @@ from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
 from services.otp_wifi import WifiOtpReceiver
 
+PORTAL_HOME_URL = "https://jharnibandhan.gov.in/"
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
 
@@ -94,10 +95,27 @@ class PortalAutomation:
 
     async def ensure_citizen_session(self, credentials: Credentials) -> None:
         await self._stage(Stage.CITIZEN_LOGIN)
-        # Always begin at the documented Citizen login page.  This lets the
-        # portal issue a fresh CAPTCHA and preserves the expected login flow.
-        if not self.page.url.startswith(CITIZEN_LOGIN_URL):
-            await self._goto(CITIZEN_LOGIN_URL)
+        if await visible(self.page, "#payment_purpose_id", 1_000):
+            return
+        # The portal redirects direct login URL requests back home.  Open the
+        # home page first and use its own Login link so the normal flow starts.
+        if self.page.url.rstrip("/") != PORTAL_HOME_URL.rstrip("/"):
+            await self._goto(PORTAL_HOME_URL)
+        login_link = await first_visible(self.page, ["a#l[href*='Citizenentry/citizenlogin']"], 30_000)
+        if login_link is None:
+            raise AutomationError(
+                "The Citizen Login link was not found on the portal home page.",
+                stage=self.stage,
+                code="citizen_login_link_missing",
+            )
+        await login_link.click()
+        await self.page.wait_for_load_state("domcontentloaded", timeout=120_000)
+        if not await visible(self.page, "#username", 30_000):
+            raise AutomationError(
+                "The Citizen login form did not open from the portal home page.",
+                stage=self.stage,
+                code="citizen_login_unavailable",
+            )
         if not credentials.citizen_username or not credentials.citizen_password:
             await self.controls.manual_checkpoint(
                 "citizen_login",

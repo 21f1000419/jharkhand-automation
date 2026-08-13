@@ -34,6 +34,9 @@ STOP_SELECTORS = [
     'button[aria-label*="Stop response" i]',
     'button[aria-label*="Stop generating" i]',
 ]
+OCR_PROMPT = "OCR this."
+RESPONSE_TIMEOUT_SECONDS = 15
+MAX_RESPONSE_ATTEMPTS = 2
 ATTACHMENT_SELECTORS = [
     'img[src^="blob:"]',
     '[data-test-id*="attachment" i]',
@@ -79,21 +82,31 @@ class GeminiCaptchaSolver:
             composer = await find_first_visible(page, COMPOSER_SELECTORS, 15_000)
             if composer is None:
                 raise RuntimeError("Gemini is not signed in or its prompt box could not be found.")
-            baseline = await read_responses(page)
-            await attach_image(page, composer, ImageFile("captcha.png", "image/png", image))
-            length_instruction = (
-                f" It contains exactly {expected_length} characters." if expected_length else ""
-            )
-            await composer.fill(
-                "Read the CAPTCHA image. Return only its letters and digits, with no spaces, "
-                f"punctuation, or explanation.{length_instruction}"
-            )
-            await send_prompt(page)
-            raw = await wait_for_response(page, baseline)
-            code = normalize_captcha(raw, expected_length)
-            if not code:
+            for attempt in range(MAX_RESPONSE_ATTEMPTS):
+                baseline = await read_responses(page)
+                await attach_image(page, composer, ImageFile("captcha.png", "image/png", image))
+                await composer.fill(OCR_PROMPT)
+                await send_prompt(page)
+                try:
+                    raw = await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
+                except GeminiResponseTimeout:
+                    await stop_response(page)
+                    if attempt + 1 < MAX_RESPONSE_ATTEMPTS:
+                        continue
+                    raise RuntimeError(
+                        "Gemini did not return a CAPTCHA OCR result within 15 seconds."
+                    ) from None
+                code = normalize_captcha(raw, expected_length)
+                if code:
+                    return code
+                if attempt + 1 < MAX_RESPONSE_ATTEMPTS:
+                    continue
                 raise RuntimeError(f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}")
-            return code
+        raise RuntimeError("Gemini CAPTCHA OCR could not be completed.")
+
+
+class GeminiResponseTimeout(RuntimeError):
+    """Raised when a Gemini reply does not settle within the CAPTCHA response deadline."""
 
 
 def normalize_captcha(value: str, expected_length: int | None = None) -> str:
@@ -174,8 +187,8 @@ async def send_prompt(page: Page) -> None:
     raise RuntimeError("Gemini's Send button did not become available.")
 
 
-async def wait_for_response(page: Page, baseline: list[str]) -> str:
-    deadline = time.monotonic() + 180
+async def wait_for_response(page: Page, baseline: list[str], timeout_seconds: int) -> str:
+    deadline = time.monotonic() + timeout_seconds
     latest = ""
     last_change = time.monotonic()
     while time.monotonic() < deadline:
@@ -192,7 +205,20 @@ async def wait_for_response(page: Page, baseline: list[str]) -> str:
         if latest and not await any_visible(page, STOP_SELECTORS) and time.monotonic() - last_change > 1.5:
             return latest
         await page.wait_for_timeout(250)
-    raise RuntimeError("Gemini did not finish solving the CAPTCHA before the timeout.")
+    raise GeminiResponseTimeout
+
+
+async def stop_response(page: Page) -> None:
+    stop = await find_first_visible(page, STOP_SELECTORS, 1_000)
+    if stop is None:
+        return
+    try:
+        await stop.click()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and await any_visible(page, STOP_SELECTORS):
+            await page.wait_for_timeout(100)
+    except PlaywrightError:
+        return
 
 
 async def read_responses(page: Page) -> list[str]:

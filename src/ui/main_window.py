@@ -41,6 +41,7 @@ class MainWindow:
         self.gemini_checking = True
         self.running = False
         self.starting = False
+        self.csv_valid = False
 
         self.chrome_var = tk.StringVar(value=config.chrome_executable)
         self.profile_var = tk.StringVar(value=str(config.profile_path))
@@ -504,6 +505,7 @@ class MainWindow:
         self._record_ui_action("select_csv_clicked")
         selected = filedialog.askopenfilename(title="Choose batch CSV", filetypes=[("CSV files", "*.csv")])
         if selected:
+            self.csv_valid = False
             self.csv_var.set(selected)
             self._load_preview(Path(selected))
             self._set_run_buttons()
@@ -843,8 +845,29 @@ class MainWindow:
         try:
             store = CsvBatchStore(path)
             store.load()
-            self._render_rows(store.summaries())
+            summaries = store.summaries()
+            issues: list[str] = []
+            for index, row in enumerate(store.rows):
+                errors = store.validate_row(row)
+                if errors:
+                    message = "; ".join(errors)
+                    summaries[index]["error"] = message
+                    issues.append(f"Row {index + 1}: {message}")
+            self.csv_valid = not issues
+            self._render_rows(summaries)
+            if issues:
+                preview = "\n".join(issues[:8])
+                remaining = len(issues) - 8
+                suffix = f"\n...and {remaining} more row(s)." if remaining else ""
+                messagebox.showwarning(
+                    "CSV needs correction",
+                    "Fix these row(s) and select the CSV again before starting:\n\n" + preview + suffix,
+                    parent=self.root,
+                )
         except Exception as error:
+            self._render_rows([])
+            messagebox.showerror("CSV error", str(error), parent=self.root)
+            self.csv_valid = False
             self._render_rows([])
             messagebox.showerror("CSV error", str(error), parent=self.root)
 
@@ -905,7 +928,7 @@ class MainWindow:
 
     def _set_run_buttons(self) -> None:
         self._set_gemini_gated_controls()
-        has_csv = bool(self.csv_var.get().strip()) and Path(self.csv_var.get().strip()).is_file()
+        has_csv = self.csv_valid and Path(self.csv_var.get().strip()).is_file()
         has_portal_browser = self.portal_browser_var.get() in self.portal_browsers
         self.start_button.configure(
             state=(

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from automation.browser import BrowserSession, PortalBrowserSession
-from automation.portal import CITIZEN_LOGIN_URL
+from automation.portal import PORTAL_HOME_URL
 from core.activity_log import DailyActivityLog
 from core.config import AppConfig
 from core.controls import RunControls
@@ -90,7 +90,7 @@ class AutomationController:
             return
         future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), self.loop)
         with suppress(Exception):
-            future.result(timeout=12)
+            future.result(timeout=20)
         if self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
         self._thread.join(timeout=2)
@@ -105,6 +105,8 @@ class AutomationController:
             task.cancel()
         if pending:
             self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+        self.loop.run_until_complete(self.loop.shutdown_default_executor())
         self.loop.close()
 
     async def _ensure_gemini_services(self) -> tuple[BrowserSession, GeminiCaptchaSolver]:
@@ -177,7 +179,7 @@ class AutomationController:
             self.portal_browser = PortalBrowserSession(
                 options.portal_browser, self._on_portal_browser_disconnected
             )
-            page = await self.portal_browser.new_portal_page(CITIZEN_LOGIN_URL)
+            page = await self.portal_browser.new_portal_page(PORTAL_HOME_URL)
             engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
             await engine.run(options)
         except asyncio.CancelledError:
@@ -224,7 +226,9 @@ class AutomationController:
     async def _shutdown_async(self) -> None:
         self.emit(UiEvent("browsers_closing", "Closing the portal browser and signed-in Chrome profile."))
         self._cancel_run()
-        await asyncio.sleep(0)
+        task = self.run_task
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
         await self._close_portal_browser()
         await self._close_gemini_browser()
         self.otp_receiver.close()

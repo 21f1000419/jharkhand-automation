@@ -79,7 +79,6 @@ class CsvBatchStore:
             "first_party_name": "First party name",
             "stamp_duty_paid_by": "Stamp duty paid by",
             "stamp_purpose": "Stamp purpose",
-            "mobile": "Mobile",
             "amount": "Amount",
         }
         for key, label in labels.items():
@@ -91,9 +90,6 @@ class CsvBatchStore:
                 raise ValueError
         except ValueError:
             errors.append("Quantity must be a positive whole number")
-        mobile = row.get("mobile", "").strip()
-        if mobile and (not mobile.isdigit() or len(mobile) != 10):
-            errors.append("Mobile must contain exactly 10 digits")
         try:
             if row.get("amount", "").strip() and float(row["amount"]) <= 0:
                 raise ValueError
