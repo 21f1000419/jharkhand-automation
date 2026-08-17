@@ -12,7 +12,7 @@ from typing import Any
 from playwright.async_api import Page
 
 from automation.browser import BrowserSession, PortalBrowserSession
-from automation.portal import PORTAL_HOME_URL
+from automation.portal import CITIZEN_LOGIN_URL
 from core.activity_log import DailyActivityLog
 from core.config import AppConfig
 from core.controls import RunControls
@@ -184,7 +184,7 @@ class AutomationController:
                 options.portal_browser, self._on_portal_browser_disconnected
             )
             self._portal_browser_closed = False
-            page = await self.portal_browser.new_portal_page(PORTAL_HOME_URL)
+            page = await self.portal_browser.new_portal_page(CITIZEN_LOGIN_URL, timeout_ms=0)
             portal_watchdog = asyncio.create_task(self._monitor_portal_browser(page))
             engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
             await engine.run(options)

@@ -12,6 +12,7 @@ from core.config import AppConfig, ConfigStore
 from core.controller import AutomationController
 from core.form_options import ARTICLE_OPTIONS
 from core.models import BrowserEngine, Credentials, PortalBrowser, RunMode, RunOptions, UiEvent
+from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
 from services.windows_notifications import show_windows_notification
 
@@ -43,6 +44,11 @@ class MainWindow:
         self.running = False
         self.starting = False
         self.csv_valid = False
+        self.credential_store = WindowsCredentialStore()
+        try:
+            saved_credentials = self.credential_store.load()
+        except (OSError, RuntimeError, ValueError):
+            saved_credentials = None
 
         self.chrome_var = tk.StringVar(value=config.chrome_executable)
         self.profile_var = tk.StringVar(value=str(config.profile_path))
@@ -63,10 +69,22 @@ class MainWindow:
         saved_mode = config.last_mode if config.last_mode in valid_modes else RunMode.ASSISTED
         self.mode_var = tk.StringVar(value=saved_mode)
         self.otp_auto_fill_var = tk.BooleanVar(value=config.otp_auto_fill)
-        self.citizen_user_var = tk.StringVar()
-        self.citizen_password_var = tk.StringVar()
-        self.egras_user_var = tk.StringVar()
-        self.egras_password_var = tk.StringVar()
+        self.citizen_user_var = tk.StringVar(
+            value=saved_credentials.citizen_username if saved_credentials else ""
+        )
+        self.citizen_password_var = tk.StringVar(
+            value=saved_credentials.citizen_password if saved_credentials else ""
+        )
+        self.egras_user_var = tk.StringVar(
+            value=saved_credentials.egras_username if saved_credentials else ""
+        )
+        self.egras_password_var = tk.StringVar(
+            value=saved_credentials.egras_password if saved_credentials else ""
+        )
+        self.credentials_saved = saved_credentials is not None
+        self.credentials_status_var = tk.StringVar(
+            value="Saved securely in Windows Credential Manager." if self.credentials_saved else ""
+        )
         self.gemini_status_var = tk.StringVar(
             value=(
                 "Browser profile: checking existing Google/Gemini login..."
@@ -148,7 +166,7 @@ class MainWindow:
         middle.columnconfigure(0, weight=1)
         middle.columnconfigure(1, weight=1)
 
-        credentials = ttk.LabelFrame(middle, text="1. Optional session-only credentials", padding=10)
+        credentials = ttk.LabelFrame(middle, text="1. Optional login credentials", padding=10)
         self.credentials_panel = credentials
         credentials.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         credentials.columnconfigure(1, weight=1)
@@ -163,11 +181,31 @@ class MainWindow:
             ttk.Entry(credentials, textvariable=variable, show="•" if secret else "").grid(
                 row=row, column=1, sticky="ew", pady=3
             )
+        credential_buttons = ttk.Frame(credentials)
+        credential_buttons.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(
+            credential_buttons, text="Save credentials", command=self._save_credentials
+        ).pack(side="left")
+        self.clear_credentials_button = ttk.Button(
+            credential_buttons, text="Clear saved credentials", command=self._clear_saved_credentials
+        )
+        if self.credentials_saved:
+            self.clear_credentials_button.pack(side="left", padx=(8, 0))
+        self.credentials_status_label = ttk.Label(
+            credential_buttons, textvariable=self.credentials_status_var
+        )
+        self.credentials_status_label.pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Label(
             credentials,
-            text="Blank credentials cause a manual login checkpoint. Secrets are never saved.",
+            text=(
+                "Blank credentials cause a manual login checkpoint. Values remain session-only unless "
+                "you explicitly save them."
+            ),
             foreground="#555555",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            wraplength=500,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         batch = ttk.LabelFrame(middle, text="2. Batch setup", padding=10)
         self.batch_panel = batch
@@ -669,6 +707,72 @@ class MainWindow:
             self.controller.reconfigure_browser()
         return True
 
+    def _entered_credentials(self) -> Credentials:
+        return Credentials(
+            citizen_username=self.citizen_user_var.get().strip(),
+            citizen_password=self.citizen_password_var.get(),
+            egras_username=self.egras_user_var.get().strip(),
+            egras_password=self.egras_password_var.get(),
+        )
+
+    def _save_credentials(self) -> None:
+        self._record_ui_action("save_credentials_clicked")
+        credentials = self._entered_credentials()
+        pairs = (
+            ("Citizen", credentials.citizen_username, credentials.citizen_password),
+            ("eGRAS", credentials.egras_username, credentials.egras_password),
+        )
+        incomplete = [name for name, username, password in pairs if bool(username) != bool(password)]
+        if incomplete:
+            messagebox.showwarning(
+                "Incomplete credentials",
+                f"Enter both username and password for: {', '.join(incomplete)}.",
+                parent=self.root,
+            )
+            return
+        if not any(username and password for _name, username, password in pairs):
+            messagebox.showwarning(
+                "No credentials",
+                "Enter at least one username and password pair before saving.",
+                parent=self.root,
+            )
+            return
+        try:
+            self.credential_store.save(credentials)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.credentials_status_var.set("Credentials could not be saved.")
+            messagebox.showerror("Save credentials", str(error), parent=self.root)
+            return
+        self.credentials_saved = True
+        self.credentials_status_var.set("Saved securely in Windows Credential Manager.")
+        if not self.clear_credentials_button.winfo_manager():
+            self.clear_credentials_button.pack(
+                side="left", padx=(8, 0), before=self.credentials_status_label
+            )
+        self.controller.record_activity("credentials_saved", "Portal credentials saved securely.")
+
+    def _clear_saved_credentials(self) -> None:
+        self._record_ui_action("clear_saved_credentials_clicked")
+        if not messagebox.askyesno(
+            "Clear saved credentials",
+            "Remove the saved Citizen and eGRAS credentials from Windows Credential Manager?",
+            parent=self.root,
+        ):
+            return
+        try:
+            self.credential_store.clear()
+        except (OSError, RuntimeError) as error:
+            messagebox.showerror("Clear saved credentials", str(error), parent=self.root)
+            return
+        self.credentials_saved = False
+        self.citizen_user_var.set("")
+        self.citizen_password_var.set("")
+        self.egras_user_var.set("")
+        self.egras_password_var.set("")
+        self.credentials_status_var.set("Saved credentials cleared.")
+        self.clear_credentials_button.pack_forget()
+        self.controller.record_activity("credentials_cleared", "Saved portal credentials removed.")
+
     def _start(self) -> None:
         if not self._require_gemini():
             return
@@ -701,12 +805,7 @@ class MainWindow:
             article=article,
             portal_browser=portal_browser,
             mode=RunMode(self.mode_var.get()),
-            credentials=Credentials(
-                citizen_username=self.citizen_user_var.get(),
-                citizen_password=self.citizen_password_var.get(),
-                egras_username=self.egras_user_var.get(),
-                egras_password=self.egras_password_var.get(),
-            ),
+            credentials=self._entered_credentials(),
             otp_auto_fill=self.otp_auto_fill_var.get(),
         )
         self.starting = True

@@ -10,11 +10,11 @@ from playwright.async_api import Locator, Page
 
 from core.controls import RunControls
 from core.models import AutomationError, Credentials, Stage, UiEvent
+from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.gemini_ocr import CAPTCHA_IMAGE_ATTEMPTS, GeminiCaptchaSolver
 from services.otp_wifi import WifiOtpReceiver
 
-PORTAL_HOME_URL = "https://jharnibandhan.gov.in/"
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
 
@@ -97,25 +97,9 @@ class PortalAutomation:
         await self._stage(Stage.CITIZEN_LOGIN)
         if await visible(self.page, "#payment_purpose_id", 1_000):
             return
-        # The portal redirects direct login URL requests back home.  Open the
-        # home page first and use its own Login link so the normal flow starts.
-        if self.page.url.rstrip("/") != PORTAL_HOME_URL.rstrip("/"):
-            await self._goto(PORTAL_HOME_URL)
-        login_link = await first_visible(self.page, ["a#l[href*='Citizenentry/citizenlogin']"], 30_000)
-        if login_link is None:
-            raise AutomationError(
-                "The Citizen Login link was not found on the portal home page.",
-                stage=self.stage,
-                code="citizen_login_link_missing",
-            )
-        await login_link.click()
-        await self.page.wait_for_load_state("domcontentloaded", timeout=120_000)
-        if not await visible(self.page, "#username", 30_000):
-            raise AutomationError(
-                "The Citizen login form did not open from the portal home page.",
-                stage=self.stage,
-                code="citizen_login_unavailable",
-            )
+        if not await visible(self.page, "#username", 1_000):
+            await self._goto(CITIZEN_LOGIN_URL, timeout_ms=0)
+        await self._wait_for_login_element("#username")
         if not credentials.citizen_username or not credentials.citizen_password:
             await self.controls.manual_checkpoint(
                 "citizen_login",
@@ -131,42 +115,33 @@ class PortalAutomation:
                 ["#reload"],
                 expected_length=6,
             )
-            otp_button = await first_visible(self.page, ["#btnotp"], 10_000)
-            if otp_button is not None:
-                citizen_otp_sequence = self.otp_receiver.sequence
-                await otp_button.click()
-                if not await visible(self.page, "#otp", 120_000):
-                    raise AutomationError(
-                        "Citizen OTP input did not appear after requesting the OTP.",
-                        stage=self.stage,
-                        code="citizen_otp_unavailable",
-                    )
-                if self.otp_auto_fill and self.otp_receiver.is_paired:
-                    self.emit(UiEvent("otp_waiting", "Waiting for the paired phone's Citizen OTP..."))
-                    otp = await self.otp_receiver.wait_for_new(citizen_otp_sequence, timeout_seconds=60)
-                    if otp is not None:
-                        await self.page.locator("#otp").fill(otp)
-                        self.emit(
-                            UiEvent("otp_filled", "Citizen OTP received from the paired phone and filled.")
-                        )
-                elif self.otp_auto_fill:
+            otp_button = await self._wait_for_login_element("#btnotp")
+            citizen_otp_sequence = self.otp_receiver.sequence
+            await otp_button.click()
+            await self._wait_for_login_element("#otp")
+            if self.otp_auto_fill and self.otp_receiver.is_paired:
+                self.emit(UiEvent("otp_waiting", "Waiting for the paired phone's Citizen OTP..."))
+                otp = await self.otp_receiver.wait_for_new(citizen_otp_sequence, timeout_seconds=60)
+                if otp is not None:
+                    await self.page.locator("#otp").fill(otp)
                     self.emit(
-                        UiEvent("otp_manual", "No paired phone is connected; enter the Citizen OTP manually.")
+                        UiEvent("otp_filled", "Citizen OTP received from the paired phone and filled.")
                     )
-                await self.controls.manual_checkpoint(
-                    "citizen_otp",
-                    "Confirm the Citizen OTP, complete Login, and click Resume after the eStamp entry "
-                    "link appears.",
+            elif self.otp_auto_fill:
+                self.emit(
+                    UiEvent("otp_manual", "No paired phone is connected; enter the Citizen OTP manually.")
                 )
-            else:
-                await click_first(self.page, ["#btnSubmit"])
+            await self.controls.manual_checkpoint(
+                "citizen_otp",
+                "Confirm the Citizen OTP, complete Login, and click Resume after the eStamp entry "
+                "link appears.",
+            )
 
         await self._wait_for_estamp_entry()
 
     async def _wait_for_estamp_entry(self) -> None:
-        """Wait for the post-login eStamp link; slow portal responses may take two minutes."""
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
+        """Wait for login completion until the user stops or closes the browser."""
+        while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
                 raise AutomationError(
@@ -184,15 +159,24 @@ class PortalAutomation:
             )
             if entry is not None:
                 await entry.click()
-                await self.page.wait_for_load_state("domcontentloaded", timeout=120_000)
-                if await visible(self.page, "#payment_purpose_id", 30_000):
-                    return
+                await self.page.wait_for_load_state("domcontentloaded", timeout=0)
+                await self._wait_for_login_element("#payment_purpose_id")
+                return
             await self.page.wait_for_timeout(500)
-        raise AutomationError(
-            "Citizen login did not show the eStamp entry link within two minutes.",
-            stage=self.stage,
-            code="citizen_login_incomplete",
-        )
+
+    async def _wait_for_login_element(self, selector: str) -> Locator:
+        while True:
+            await self.controls.checkpoint()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed during Citizen login.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            element = await first_visible(self.page, [selector], 500)
+            if element is not None:
+                return element
 
     async def fill_estamp_form(self, row: dict[str, str], article: str) -> None:
         await self._stage(Stage.FILL_ESTAMP)
@@ -382,8 +366,8 @@ class PortalAutomation:
             if image is None or field is None:
                 raise AutomationError("The CAPTCHA image or input field was not found.", stage=self.stage)
             try:
-                image_bytes = await self._capture_loaded_captcha(image)
-                code = await self.solver.solve(image_bytes, expected_length)
+                await self._copy_captcha_with_browser_menu(image)
+                code = await self.solver.solve(expected_length)
                 await field.fill(code)
                 self.emit(UiEvent("log", f"CAPTCHA solved on attempt {attempt + 1}."))
                 return
@@ -404,15 +388,37 @@ class PortalAutomation:
                 return
         raise AutomationError("The CAPTCHA could not be solved.", stage=self.stage, code="captcha_failed")
 
-    async def _capture_loaded_captcha(self, image: Locator) -> bytes:
-        """Capture the exact CAPTCHA only after the browser has decoded the image response."""
+    async def _copy_captcha_with_browser_menu(self, image: Locator) -> None:
+        """Calculate desktop coordinates and use Chrome's native Copy image action."""
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             loaded = await image.evaluate(
                 "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0"
             )
             if loaded:
-                return await image.screenshot(type="png")
+                await image.scroll_into_view_if_needed()
+                await self.page.bring_to_front()
+                await self.page.wait_for_timeout(400)
+                position = await image.evaluate(
+                    """element => {
+                        const rect = element.getBoundingClientRect();
+                        const borderX = Math.max(0, (window.outerWidth - window.innerWidth) / 2);
+                        const browserTop = Math.max(0, window.outerHeight - window.innerHeight - borderX);
+                        const scale = window.devicePixelRatio || 1;
+                        return {
+                            x: Math.round((window.screenX + borderX + rect.left + rect.width / 2) * scale),
+                            y: Math.round((window.screenY + browserTop + rect.top + rect.height / 2) * scale)
+                        };
+                    }"""
+                )
+                if not isinstance(position, dict) or "x" not in position or "y" not in position:
+                    raise RuntimeError("Could not calculate the CAPTCHA's desktop position.")
+                await asyncio.to_thread(
+                    copy_image_from_screen_position,
+                    int(position["x"]),
+                    int(position["y"]),
+                )
+                return
             await self.page.wait_for_timeout(150)
         raise AutomationError(
             "The CAPTCHA image did not finish loading.",
@@ -425,9 +431,9 @@ class PortalAutomation:
         await self.controls.checkpoint()
         await self.on_stage(stage)
 
-    async def _goto(self, url: str) -> None:
+    async def _goto(self, url: str, *, timeout_ms: int = 120_000) -> None:
         await self.controls.checkpoint()
-        await self.page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
 
 
 async def first_visible(page: Page, selectors: list[str], timeout_ms: int = 15_000) -> Locator | None:

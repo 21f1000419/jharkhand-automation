@@ -4,7 +4,8 @@ import asyncio
 import unittest
 
 from core.controls import RunControls
-from core.models import WorkflowStopped
+from core.models import Credentials, WorkflowStopped
+from services.credential_store import decode_credentials, encode_credentials
 from services.downloads import extract_reference
 from services.gemini_ocr import normalize_captcha
 
@@ -21,6 +22,10 @@ class ServiceTests(unittest.TestCase):
             "7489afcddfd00e8d892a",
         )
 
+    def test_saved_credentials_round_trip(self) -> None:
+        credentials = Credentials("citizen-user", "citizen-pass", "egras-user", "egras-pass")
+        self.assertEqual(decode_credentials(encode_credentials(credentials)), credentials)
+
     def test_run_controls_stop_interrupts_checkpoint(self) -> None:
         controls = RunControls(lambda _event: None)
         controls.stop()
@@ -35,4 +40,3 @@ class ServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

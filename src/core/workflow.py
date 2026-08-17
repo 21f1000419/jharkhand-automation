@@ -67,6 +67,11 @@ class WorkflowEngine:
             if not pending:
                 self.emit(UiEvent("run_completed", "All CSV rows are already complete."))
                 return
+            # Highlight the first work item immediately.  Citizen login may
+            # pause for user input before per-row processing starts.
+            first_row_number, first_row = pending[0]
+            self.current_row = first_row
+            self._publish_progress(first_row_number, first_row)
             # Sign in before validating individual CSV rows. This makes the
             # visible Citizen login/CAPTCHA flow available at batch start even
             # when a later row needs CSV corrections.

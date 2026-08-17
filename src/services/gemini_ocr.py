@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import re
 import time
-from dataclasses import dataclass
-from urllib.parse import urlparse
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
@@ -35,7 +32,7 @@ STOP_SELECTORS = [
     'button[aria-label*="Stop generating" i]',
 ]
 OCR_PROMPT = "OCR this."
-RESPONSE_TIMEOUT_SECONDS = 15
+RESPONSE_TIMEOUT_SECONDS = 40
 MAX_OCR_SUBMISSIONS = 2
 CAPTCHA_IMAGE_ATTEMPTS = 1
 ATTACHMENT_SELECTORS = [
@@ -44,13 +41,6 @@ ATTACHMENT_SELECTORS = [
     '[aria-label*="Remove image" i]',
     '[aria-label*="Remove attachment" i]',
 ]
-
-
-@dataclass(frozen=True)
-class ImageFile:
-    name: str
-    mime_type: str
-    data: bytes
 
 
 class GeminiCaptchaSolver:
@@ -88,7 +78,7 @@ class GeminiCaptchaSolver:
         self._greeting_verified = True
         return True
 
-    async def solve(self, image: bytes, expected_length: int | None = None) -> str:
+    async def solve(self, expected_length: int | None = None) -> str:
         async with self._lock:
             page = await self.browser_session.page_for_host(
                 "gemini.google.com", create_url="https://gemini.google.com/app"
@@ -100,7 +90,7 @@ class GeminiCaptchaSolver:
             for attempt in range(MAX_OCR_SUBMISSIONS):
                 try:
                     baseline = await read_responses(page)
-                    await attach_image(page, composer, ImageFile("captcha.png", "image/png", image))
+                    await attach_image(page, composer)
                     await composer.fill(OCR_PROMPT)
                     await send_prompt(page)
                     raw = await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
@@ -110,7 +100,8 @@ class GeminiCaptchaSolver:
                     last_error = f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}"
                 except (GeminiResponseTimeout, PlaywrightError, RuntimeError) as error:
                     last_error = (
-                        "Gemini did not return a CAPTCHA OCR result within 15 seconds."
+                        "Gemini did not return a CAPTCHA OCR result within "
+                        f"{RESPONSE_TIMEOUT_SECONDS} seconds."
                         if isinstance(error, GeminiResponseTimeout)
                         else str(error)
                     )
@@ -150,43 +141,18 @@ def normalize_captcha(value: str, expected_length: int | None = None) -> str:
     return useful[-1] if useful else ""
 
 
-async def attach_image(page: Page, composer: Locator, image: ImageFile) -> None:
+async def attach_image(page: Page, composer: Locator) -> None:
+    """Paste the image placed on the clipboard by Chrome's Copy image command."""
     baseline = await attachment_counts(page)
     try:
-        await page.context.grant_permissions(
-            ["clipboard-read", "clipboard-write"], origin=origin_for(page.url)
-        )
-        await page.evaluate(
-            """async ({ base64Value, mimeType }) => {
-                const binary = atob(base64Value);
-                const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
-                await navigator.clipboard.write([
-                  new ClipboardItem({[mimeType]: new Blob([bytes], {type: mimeType})})
-                ]);
-            }""",
-            {
-                "base64Value": base64.b64encode(image.data).decode("ascii"),
-                "mimeType": image.mime_type,
-            },
-        )
+        await page.bring_to_front()
         await composer.click()
         await page.keyboard.press("Control+V")
         if await wait_for_attachment(page, baseline, 12_000):
             return
-    except Exception:
-        pass
-
-    inputs = page.locator('input[type="file"]')
-    for index in range(await safe_count(inputs)):
-        try:
-            await inputs.nth(index).set_input_files(
-                {"name": image.name, "mimeType": image.mime_type, "buffer": image.data}
-            )
-            if await wait_for_attachment(page, baseline, 12_000):
-                return
-        except PlaywrightError:
-            continue
-    raise RuntimeError("Could not attach the CAPTCHA image to Gemini.")
+    except Exception as error:
+        raise RuntimeError(f"Could not paste the CAPTCHA image into Gemini: {error}") from error
+    raise RuntimeError("Gemini did not show the pasted CAPTCHA image.")
 
 
 async def send_prompt(page: Page) -> None:
@@ -304,8 +270,3 @@ async def is_enabled(locator: Locator) -> bool:
         return bool(await locator.is_enabled())
     except PlaywrightError:
         return False
-
-
-def origin_for(value: str) -> str:
-    parsed = urlparse(value)
-    return f"{parsed.scheme}://{parsed.netloc}"
