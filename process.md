@@ -1,4 +1,24 @@
-Initiial :
+0. Citizen login:
+
+a. Open `https://jharnibandhan.gov.in/Citizenentry/citizenlogin` directly.
+b. On the Citizen login form, enter the optional saved Citizen credentials in:
+
+```html
+<input id="username" name="data[User][username]" type="text" />
+<input id="password" name="data[User][password]" type="password" />
+```
+
+c. Copy the image from `<img id="captcha_image" src="/users/get_captcha">`, OCR it, and fill:
+
+```html
+<input id="captcha" name="data[User][captcha]" type="text" />
+```
+
+d. Click `<button id="btnotp" name="btnotp">Get OTP</button>`. When it appears, fill
+`<input id="otp" name="data[User][otp]">` manually or through the paired OTP phone, then click
+`<button id="btnSubmit" name="btnSubmit">Login</button>`.
+e. Wait for the eStamp entry link/form (`#payment_purpose_id`) before continuing. There is no
+login timeout; the flow waits until it succeeds, the user stops it, or the browser is closed.
 
 1. <a href="//">
                         <i class="fa fa-th-large text-aqua"></i> <span>Payment Services</span>
