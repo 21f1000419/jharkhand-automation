@@ -67,6 +67,7 @@ class RunOptions:
     portal_browser: PortalBrowser
     mode: RunMode
     credentials: Credentials
+    ocr_enabled: bool = False
     sms_user_id: str = ""
     sms_server_url: str = ""
 

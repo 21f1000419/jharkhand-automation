@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import shutil
 import subprocess
 import tkinter as tk
 from datetime import datetime
@@ -8,21 +9,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from core.browser_detection import detect_supported_browsers
-from core.config import DEFAULT_SMS_SERVER_URL, AppConfig, ConfigStore
+from core.config import DEFAULT_SMS_SERVER_URL, AppConfig, ConfigStore, app_data_directory
 from core.controller import AutomationController
 from core.form_options import ARTICLE_OPTIONS
 from core.models import BrowserEngine, Credentials, PortalBrowser, RunMode, RunOptions, UiEvent
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
 from services.windows_notifications import show_windows_notification
-
-
-def walk_widgets(widget: tk.Misc) -> list[tk.Misc]:
-    result: list[tk.Misc] = []
-    for child in widget.winfo_children():
-        result.append(child)
-        result.extend(walk_widgets(child))
-    return result
 
 
 class MainWindow:
@@ -96,11 +89,11 @@ class MainWindow:
                 else "Browser profile: checking Google/Gemini login..."
             )
         )
-        self.gemini_dialog_status_var = tk.StringVar(value=self.gemini_status_var.get())
-        self.setup_status_var = self.gemini_dialog_status_var
+        self.captcha_warning_var = tk.StringVar(
+            value="CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+        )
         self.run_status_var = tk.StringVar(value="Idle")
         self.session_log_lines: list[str] = []
-        self.gemini_dialog: tk.Toplevel | None = None
         self.portal_browsers: dict[str, PortalBrowser] = {}
         self._detect_portal_browsers()
 
@@ -115,8 +108,14 @@ class MainWindow:
 
     def _build(self) -> None:
         self.root.title("Compitcom eStamp Batch Automation")
-        self.root.geometry("1180x820")
         self.root.minsize(980, 700)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = max(980, int(screen_width * 0.84))
+        window_height = max(700, int(screen_height * 0.88))
+        window_left = max(0, (screen_width - window_width) // 2)
+        window_top = int(screen_height * 0.02)
+        self.root.geometry(f"{window_width}x{window_height}+{window_left}+{window_top}")
 
         style = ttk.Style(self.root)
         if "vista" in style.theme_names():
@@ -126,64 +125,48 @@ class MainWindow:
 
         container = ttk.Frame(self.root, padding=12)
         container.pack(fill="both", expand=True)
-        ttk.Label(container, text="eStamp Batch Automation", style="Heading.TLabel").pack(anchor="w")
+        header = ttk.Frame(container)
+        header.pack(fill="x", pady=(0, 8))
+        header.columnconfigure(0, weight=1)
+        heading = ttk.Frame(header)
+        heading.grid(row=0, column=0, sticky="w")
+        ttk.Label(heading, text="eStamp Batch Automation", style="Heading.TLabel").pack(anchor="w")
         ttk.Label(
-            container,
-            text=(
-                "Visible browser automation for Jharkhand NGDRS/eGRAS. Payment remains manual."
-            ),
-        ).pack(anchor="w", pady=(0, 10))
+            heading,
+            text="Visible browser automation for Jharkhand NGDRS/eGRAS. Payment remains manual.",
+        ).pack(anchor="w")
+
+        sms_settings = ttk.Frame(header)
+        sms_settings.grid(row=0, column=1, sticky="e", padx=(16, 0))
+        ttk.Label(sms_settings, text="SMS User ID").grid(row=0, column=0, sticky="w")
+        sms_user_id_entry = ttk.Entry(sms_settings, textvariable=self.sms_user_id_var, width=16)
+        sms_user_id_entry.grid(row=0, column=1, padx=(5, 10))
+        sms_user_id_entry.bind("<FocusOut>", self._save_non_secret_settings)
+        ttk.Label(sms_settings, text="Server").grid(row=0, column=2, sticky="w")
+        sms_server_url_entry = ttk.Entry(sms_settings, textvariable=self.sms_server_url_var, width=33)
+        sms_server_url_entry.grid(row=0, column=3, padx=(5, 0))
+        sms_server_url_entry.bind("<FocusOut>", self._save_non_secret_settings)
+        ttk.Label(
+            sms_settings,
+            text="Warning: Empty or incorrect User ID prevents automatic OTP fetch.",
+            foreground="#b7791f",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
 
         gemini_status = ttk.Frame(container)
         gemini_status.pack(fill="x", pady=(0, 8))
         ttk.Label(gemini_status, textvariable=self.gemini_status_var).pack(side="left")
-        ttk.Button(gemini_status, text="Open profile", command=self._open_gemini).pack(
+        self.ocr_browser_button = ttk.Button(
+            gemini_status, text="Start OCR browser", command=self._verify_gemini
+        )
+        self.ocr_browser_button.pack(
             side="left", padx=(8, 0)
         )
-        ttk.Button(gemini_status, text="Browser profile status...", command=self._show_gemini_setup).pack(
-            side="left", padx=(8, 0)
-        )
-
-        sms_settings = ttk.LabelFrame(container, text="SMS OTP settings", padding=10)
-        sms_settings.pack(fill="x", pady=(0, 8))
-        sms_settings.columnconfigure(1, weight=1)
-        ttk.Label(sms_settings, text="User ID").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        sms_user_id_entry = ttk.Entry(sms_settings, textvariable=self.sms_user_id_var)
-        sms_user_id_entry.grid(row=0, column=1, sticky="ew")
-        sms_user_id_entry.bind("<FocusOut>", self._save_non_secret_settings)
         ttk.Label(
-            sms_settings,
-            text="Warning: If the User ID is empty or incorrect, automatic OTPs cannot be fetched.",
+            gemini_status,
+            textvariable=self.captcha_warning_var,
             foreground="#b7791f",
-        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
-        ttk.Label(sms_settings, text="SMS server URL").grid(
-            row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0)
-        )
-        sms_server_url_entry = ttk.Entry(sms_settings, textvariable=self.sms_server_url_var)
-        sms_server_url_entry.grid(row=2, column=1, sticky="ew", pady=(8, 0))
-        sms_server_url_entry.bind("<FocusOut>", self._save_non_secret_settings)
-        ttk.Label(
-            sms_settings,
-            text="Default: https://sms-server.compitcom.in. Change only if the SMS server address changes.",
-            foreground="#555555",
-        ).grid(row=3, column=1, sticky="w", pady=(4, 0))
-
-        setup = ttk.LabelFrame(container, text="1. Chrome and Gemini setup", padding=10)
-        setup.pack(fill="x", pady=(0, 8))
-        setup.columnconfigure(1, weight=1)
-        ttk.Label(setup, text="Chrome executable").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(setup, textvariable=self.chrome_var).grid(row=0, column=1, sticky="ew")
-        ttk.Button(setup, text="Browse…", command=self._browse_chrome).grid(row=0, column=2, padx=(8, 0))
-        ttk.Label(setup, text="Dedicated profile").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(6, 0))
-        ttk.Entry(setup, textvariable=self.profile_var, state="readonly").grid(
-            row=1, column=1, sticky="ew", pady=(6, 0)
-        )
-        setup_buttons = ttk.Frame(setup)
-        setup_buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Button(setup_buttons, text="Open Gemini Setup", command=self._open_gemini).pack(side="left")
-        ttk.Button(setup_buttons, text="Verify Gemini", command=self._verify_gemini).pack(side="left", padx=8)
-        ttk.Label(setup_buttons, textvariable=self.setup_status_var).pack(side="left", padx=8)
-        setup.pack_forget()
+            wraplength=720,
+        ).pack(side="left", padx=(12, 0))
 
         middle = ttk.Frame(container)
         middle.pack(fill="x", pady=(0, 8))
@@ -279,30 +262,18 @@ class MainWindow:
         ttk.Button(batch, text="Select CSV…", command=self._browse_csv).grid(
             row=5, column=2, padx=(8, 0), pady=(8, 0)
         )
-        ttk.Button(batch, text="Download CSV Format", command=self._download_template).grid(
-            row=6, column=1, sticky="w", pady=(8, 0)
-        )
         ttk.Label(
             batch,
             text="eStamp download folder",
-        ).grid(row=7, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ).grid(row=6, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
         self.download_entry = ttk.Entry(batch, textvariable=self.download_var)
-        self.download_entry.grid(row=7, column=1, sticky="ew", pady=(8, 0))
+        self.download_entry.grid(row=6, column=1, sticky="ew", pady=(8, 0))
         self.download_entry.bind("<FocusOut>", self._save_non_secret_settings)
         ttk.Button(batch, text="Browse…", command=self._browse_download).grid(
-            row=7, column=2, padx=(8, 0), pady=(8, 0)
+            row=6, column=2, padx=(8, 0), pady=(8, 0)
         )
-        ttk.Label(
-            batch,
-            text=(
-                "Defaults to Windows Downloads. The app verifies and saves each PDF here, "
-                "then records it in the CSV."
-            ),
-            foreground="#555555",
-            wraplength=500,
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(5, 0))
         modes = ttk.Frame(batch)
-        modes.grid(row=9, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        modes.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Radiobutton(
             modes,
             text="Assisted errors",
@@ -403,11 +374,11 @@ class MainWindow:
 
     def _build_menu(self) -> None:
         menu = tk.Menu(self.root)
-        file_menu = tk.Menu(menu, tearoff=False)
-        file_menu.add_command(label="Download CSV Format…", command=self._download_template)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self._on_close)
-        menu.add_cascade(label="File", menu=file_menu)
+        menu.add_command(label="Download CSV Format…", command=self._download_template)
+        profile_menu = tk.Menu(menu, tearoff=False)
+        profile_menu.add_command(label="Edit profile path…", command=self._show_ocr_profile_settings)
+        profile_menu.add_command(label="Delete selected profile…", command=self._delete_ocr_profile)
+        menu.add_cascade(label="OCR Profile", menu=profile_menu)
 
         activity_menu = tk.Menu(menu, tearoff=False)
         activity_menu.add_command(label="Current Session…", command=self._show_session_log)
@@ -418,10 +389,7 @@ class MainWindow:
 
     def _initial_gemini_check(self) -> None:
         self.gemini_checking = True
-        self.gemini_status_var.set("Browser profile: checking Google/Gemini login...")
-        self.gemini_dialog_status_var.set(
-            "Checking the existing Chrome profile for a signed-in Google account and usable Gemini chat..."
-        )
+        self.gemini_status_var.set("Gemini OCR: starting headless check...")
         self._set_run_buttons()
         self.controller.record_activity("gemini_startup_check_started")
         self.controller.verify_gemini()
@@ -477,8 +445,6 @@ class MainWindow:
         )
 
     def _refresh_portal_browsers(self) -> None:
-        if not self._require_gemini():
-            return
         self._record_ui_action("refresh_portal_browsers_clicked")
         previous = self.portal_browser_var.get()
         self._detect_portal_browsers()
@@ -565,18 +531,6 @@ class MainWindow:
             self.config.last_portal_browser_path = str(browser.executable)
         self.config_store.save(self.config)
 
-    def _require_gemini(self) -> bool:
-        if self.gemini_ready:
-            return True
-        if self.gemini_checking:
-            self.gemini_dialog_status_var.set("Gemini is still being checked. Please wait a moment.")
-        else:
-            self.gemini_dialog_status_var.set(
-                "A signed-in browser profile is required before batch operations can be used."
-            )
-        self._show_gemini_setup()
-        return False
-
     def _browse_chrome(self) -> None:
         self._record_ui_action("browse_chrome_clicked")
         selected = filedialog.askopenfilename(
@@ -592,8 +546,6 @@ class MainWindow:
             self._set_run_buttons()
 
     def _browse_csv(self) -> None:
-        if not self._require_gemini():
-            return
         if self.running or self.starting:
             messagebox.showinfo(
                 "Automation active",
@@ -610,8 +562,6 @@ class MainWindow:
             self._set_run_buttons()
 
     def _browse_download(self) -> None:
-        if not self._require_gemini():
-            return
         self._record_ui_action("choose_download_folder_clicked")
         selected = filedialog.askdirectory(title="Choose eStamp download folder")
         if selected:
@@ -629,8 +579,6 @@ class MainWindow:
         return str(candidate if candidate.is_dir() else Path.home())
 
     def _download_template(self) -> None:
-        if not self._require_gemini():
-            return
         self._record_ui_action("download_csv_format_clicked")
         selected = filedialog.asksaveasfilename(
             title="Save CSV format",
@@ -655,72 +603,24 @@ class MainWindow:
         except Exception as error:
             messagebox.showerror("Template error", str(error), parent=self.root)
 
-    def _show_gemini_setup(self) -> None:
-        self._record_ui_action("gemini_status_clicked")
-        if self.gemini_dialog is not None and self.gemini_dialog.winfo_exists():
-            self.gemini_dialog.deiconify()
-            self.gemini_dialog.lift()
-            self.gemini_dialog.focus_set()
-            return
-
-        dialog = tk.Toplevel(self.root)
-        self.gemini_dialog = dialog
-        dialog.title("Browser Profile Setup")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        frame = ttk.Frame(dialog, padding=16)
-        frame.pack(fill="both", expand=True)
-        frame.columnconfigure(1, weight=1)
-        ttk.Label(frame, text="Browser Profile Setup", style="Heading.TLabel").grid(
-            row=0, column=0, columnspan=3, sticky="w"
-        )
-        ttk.Label(
-            frame,
-            text=(
-                "A Google account must be signed in to this dedicated Chrome profile so Gemini can solve "
-                "CAPTCHAs. This is normally a one-time setup. Every Start checks the profile and Gemini chat."
-            ),
-            wraplength=560,
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 12))
-        ttk.Label(frame, text="Chrome executable").grid(row=2, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(frame, textvariable=self.chrome_var, width=58).grid(row=2, column=1, sticky="ew")
-        ttk.Button(frame, text="Browse...", command=self._browse_chrome).grid(row=2, column=2, padx=(8, 0))
-        ttk.Label(frame, text="Chrome profile").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(frame, textvariable=self.profile_var, state="readonly", width=58).grid(
-            row=3, column=1, columnspan=2, sticky="ew", pady=(8, 0)
-        )
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=4, column=0, columnspan=3, sticky="w", pady=(14, 0))
-        ttk.Button(buttons, text="Open Profile at Gemini", command=self._open_gemini).pack(side="left")
-        ttk.Button(buttons, text="Check Profile", command=self._verify_gemini).pack(side="left", padx=8)
-        ttk.Button(buttons, text="Close", command=lambda: close_dialog()).pack(side="left")
-        ttk.Label(frame, textvariable=self.gemini_dialog_status_var, wraplength=560).grid(
-            row=5, column=0, columnspan=3, sticky="w", pady=(12, 0)
-        )
-
-        def close_dialog() -> None:
-            self.gemini_dialog = None
-            dialog.destroy()
-
-        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
-
-    def _open_gemini(self) -> None:
-        self._record_ui_action("open_gemini_setup_clicked")
-        if not self._save_browser_settings(reconfigure=False):
-            return
-        self.setup_status_var.set("Opening Chrome…")
-        self.gemini_status_var.set("Browser profile: opening...")
-        self.gemini_dialog_status_var.set("Opening the configured Chrome profile at Gemini...")
-        self.controller.open_gemini_setup()
-
     def _verify_gemini(self) -> None:
-        self._record_ui_action("verify_gemini_clicked")
+        self._record_ui_action("start_ocr_browser_clicked")
         if not self._save_browser_settings(reconfigure=False):
             return
-        self.setup_status_var.set("Checking Gemini…")
-        self.gemini_status_var.set("Browser profile: checking...")
-        self.gemini_dialog_status_var.set("Checking Google sign-in and whether Gemini chat accepts input...")
+        self.gemini_status_var.set("Gemini OCR: checking headlessly...")
         self.controller.verify_gemini()
+
+    def _close_ocr_browser(self) -> None:
+        self._record_ui_action("close_ocr_browser_clicked")
+        self.gemini_ready = False
+        self.config.gemini_verified = False
+        self.config_store.save(self.config)
+        self.captcha_warning_var.set(
+            "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+        )
+        self.gemini_status_var.set("Gemini OCR: stopping...")
+        self._set_run_buttons()
+        self.controller.close_gemini_ocr()
 
     def _save_browser_settings(self, reconfigure: bool) -> bool:
         chrome = Path(self.chrome_var.get().strip())
@@ -728,12 +628,130 @@ class MainWindow:
             messagebox.showerror("Chrome required", "Choose a valid chrome.exe file.", parent=self.root)
             return False
         changed = str(chrome) != self.config.chrome_executable
+        profile_changed = self.profile_var.get().strip() != self.config.chrome_profile_path
         self.config.chrome_executable = str(chrome)
         self.config.chrome_profile_path = self.profile_var.get().strip()
         self.config_store.save(self.config)
-        if reconfigure or changed:
+        if reconfigure or changed or profile_changed:
             self.controller.reconfigure_browser()
         return True
+
+    def _show_ocr_profile_settings(self) -> None:
+        self._record_ui_action("ocr_profile_settings_clicked")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("OCR Browser Profile Settings")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+        ttk.Label(frame, text="OCR Browser Profile Settings", style="Heading.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w"
+        )
+        ttk.Label(
+            frame,
+            text=(
+                "This dedicated Chrome profile stores the Google sign-in used by headless Gemini OCR. "
+                "It is separate from your normal Chrome profile."
+            ),
+            wraplength=620,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 12))
+        ttk.Label(frame, text="Current profile").grid(row=2, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(frame, textvariable=self.profile_var, state="readonly", width=64).grid(
+            row=2, column=1, columnspan=2, sticky="ew"
+        )
+
+        def choose_profile() -> None:
+            selected = filedialog.askdirectory(
+                title="Choose dedicated Chrome profile folder",
+                initialdir=self._dialog_directory(self.profile_var.get()),
+                parent=dialog,
+            )
+            if not selected:
+                return
+            self.profile_var.set(selected)
+            if self._save_browser_settings(reconfigure=True):
+                self._append_session_log("OCR browser profile changed.")
+
+        def use_default_profile() -> None:
+            self.profile_var.set(str(app_data_directory() / "chrome-profile"))
+            if self._save_browser_settings(reconfigure=True):
+                self._append_session_log("OCR browser profile reset to the default location.")
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=3, column=0, columnspan=3, sticky="w", pady=(14, 0))
+        ttk.Button(buttons, text="Change...", command=choose_profile).pack(side="left")
+        ttk.Button(buttons, text="Use default", command=use_default_profile).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left")
+
+    def _delete_ocr_profile(self) -> None:
+        self._record_ui_action("delete_ocr_profile_clicked")
+        configured_path = self.profile_var.get().strip()
+        if not configured_path:
+            messagebox.showinfo("Delete OCR profile", "No OCR browser profile is selected.", parent=self.root)
+            return
+
+        try:
+            profile_path = Path(configured_path).expanduser().resolve()
+        except OSError as error:
+            messagebox.showerror("Delete OCR profile", str(error), parent=self.root)
+            return
+        if not profile_path.is_dir():
+            messagebox.showinfo(
+                "Delete OCR profile",
+                "The selected OCR browser profile folder does not exist.",
+                parent=self.root,
+            )
+            return
+
+        protected_paths = (
+            Path(profile_path.anchor),
+            Path.home().resolve(),
+            Path.cwd().resolve(),
+            app_data_directory().resolve(),
+        )
+        if any(
+            protected == profile_path or protected.is_relative_to(profile_path)
+            for protected in protected_paths
+        ):
+            messagebox.showerror(
+                "Delete OCR profile",
+                "This selected path is too broad to delete as an OCR profile.",
+                parent=self.root,
+            )
+            return
+        if not messagebox.askyesno(
+            "Delete OCR profile",
+            "This permanently removes the selected OCR Chrome profile, including its Google sign-in and "
+            f"browser data:\n\n{profile_path}\n\nContinue?",
+            parent=self.root,
+            default=messagebox.NO,
+        ):
+            return
+
+        self.controller.close_gemini_ocr()
+        self.root.after(800, lambda: self._delete_ocr_profile_directory(profile_path))
+
+    def _delete_ocr_profile_directory(self, profile_path: Path) -> None:
+        try:
+            shutil.rmtree(profile_path)
+        except OSError as error:
+            messagebox.showerror(
+                "Delete OCR profile",
+                "Could not remove the profile. Ensure any Chrome window using it is closed, then try again."
+                f"\n\n{error}",
+                parent=self.root,
+            )
+            return
+        self.gemini_ready = False
+        self.config.gemini_verified = False
+        self.config_store.save(self.config)
+        self.gemini_status_var.set("Gemini OCR: profile deleted")
+        self.captcha_warning_var.set(
+            "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+        )
+        self._append_session_log("OCR browser profile deleted.")
+        self._set_run_buttons()
 
     def _entered_credentials(self) -> Credentials:
         return Credentials(
@@ -802,8 +820,6 @@ class MainWindow:
         self.controller.record_activity("credentials_cleared", "Saved portal credentials removed.")
 
     def _start(self) -> None:
-        if not self._require_gemini():
-            return
         self._record_ui_action("start_clicked")
         csv_path = Path(self.csv_var.get().strip())
         if not csv_path.is_file():
@@ -834,11 +850,12 @@ class MainWindow:
             portal_browser=portal_browser,
             mode=RunMode(self.mode_var.get()),
             credentials=self._entered_credentials(),
+            ocr_enabled=self.gemini_ready,
             sms_user_id=self.sms_user_id_var.get().strip(),
             sms_server_url=self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL,
         )
         self.starting = True
-        self.run_status_var.set(f"Checking profile; opening {portal_browser.name}...")
+        self.run_status_var.set(f"Opening {portal_browser.name}...")
         self._set_run_buttons()
         self.controller.start(options)
 
@@ -873,36 +890,39 @@ class MainWindow:
     def _handle_event(self, event: UiEvent) -> None:
         if event.message:
             self._append_session_log(event.message)
-        if event.kind == "gemini_setup_opened":
+        if event.kind == "gemini_login_required":
             self.gemini_checking = False
-            self.gemini_dialog_status_var.set(event.message)
-            self.gemini_status_var.set("Browser profile: setup in progress")
+            self.gemini_ready = False
+            self.config.gemini_verified = False
+            self.config_store.save(self.config)
+            self.gemini_status_var.set("Gemini OCR: Google sign-in required")
+            self.captcha_warning_var.set(
+                "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+            )
         elif event.kind == "gemini_verified":
             self.gemini_checking = False
             self.gemini_ready = True
             self.config.gemini_verified = True
             self.config_store.save(self.config)
-            self.gemini_status_var.set("Browser profile: ready")
-            self.gemini_dialog_status_var.set(event.message)
-        elif event.kind in {"gemini_not_ready", "gemini_setup_required", "fatal_error"}:
+            self.gemini_status_var.set("Gemini OCR: active (headless)")
+            self.captcha_warning_var.set("")
+        elif event.kind == "gemini_stopped":
+            self.gemini_checking = False
+            self.gemini_ready = False
+            self.gemini_status_var.set("Gemini OCR: stopped")
+            self.captcha_warning_var.set(
+                "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+            )
+        elif event.kind in {"gemini_not_ready", "fatal_error"}:
             if event.kind == "gemini_not_ready":
                 self.gemini_checking = False
                 self.gemini_ready = False
                 self.config.gemini_verified = False
                 self.config_store.save(self.config)
-                self.gemini_status_var.set("Browser profile: setup required")
-                self.gemini_dialog_status_var.set(event.message)
-                self._show_gemini_setup()
-            elif event.kind == "gemini_setup_required":
-                self.gemini_checking = False
-                self.starting = False
-                self.gemini_ready = False
-                self.config.gemini_verified = False
-                self.config_store.save(self.config)
-                self.gemini_status_var.set("Browser profile: setup required")
-                self.gemini_dialog_status_var.set(event.message)
-                self.run_status_var.set("Browser profile setup required")
-                self._show_gemini_setup()
+                self.gemini_status_var.set("Gemini OCR: unavailable")
+                self.captcha_warning_var.set(
+                    "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+                )
             else:
                 self.gemini_checking = False
                 self.starting = False
@@ -952,7 +972,10 @@ class MainWindow:
                     self.gemini_ready = False
                     self.config.gemini_verified = False
                     self.config_store.save(self.config)
-                    self.gemini_status_var.set("Browser profile: setup required")
+                    self.gemini_status_var.set("Gemini OCR: Google sign-in required")
+                    self.captcha_warning_var.set(
+                        "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+                    )
                 messagebox.showwarning("Browser closed", event.message, parent=self.root)
         elif event.kind == "batch_update":
             self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
@@ -1086,14 +1109,16 @@ class MainWindow:
         subprocess.Popen(["explorer.exe", str(directory)])
 
     def _set_run_buttons(self) -> None:
-        self._set_gemini_gated_controls()
+        if self.gemini_ready:
+            self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
+        else:
+            self.ocr_browser_button.configure(text="Start OCR browser", command=self._verify_gemini)
         has_csv = self.csv_valid and Path(self.csv_var.get().strip()).is_file()
         has_portal_browser = self.portal_browser_var.get() in self.portal_browsers
         self.start_button.configure(
             state=(
                 "normal"
-                if self.gemini_ready
-                and has_csv
+                if has_csv
                 and has_portal_browser
                 and not self.running
                 and not self.starting
@@ -1109,17 +1134,6 @@ class MainWindow:
         self.stop_button.configure(
             state="normal" if self.running or self.portal_session_open else "disabled"
         )
-
-    def _set_gemini_gated_controls(self) -> None:
-        state = "normal" if self.gemini_ready else "disabled"
-        for panel in (self.credentials_panel, self.batch_panel):
-            for widget in walk_widgets(panel):
-                try:
-                    widget.configure(state=state)  # type: ignore[call-arg]
-                except tk.TclError:
-                    continue
-        self.portal_browser_box.configure(state="readonly" if self.gemini_ready else "disabled")
-        self.custom_portal_engine_box.configure(state="readonly" if self.gemini_ready else "disabled")
 
     def _on_close(self) -> None:
         if (self.running or self.starting) and not messagebox.askyesno(

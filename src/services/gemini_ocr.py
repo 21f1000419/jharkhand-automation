@@ -32,6 +32,13 @@ STOP_SELECTORS = [
     'button[aria-label*="Stop response" i]',
     'button[aria-label*="Stop generating" i]',
 ]
+SIGN_IN_SELECTORS = [
+    'a:has-text("Sign in")',
+    'button:has-text("Sign in")',
+    '[aria-label*="Sign in" i]',
+    'input[type="submit"][value*="Sign in" i]',
+    "#identifierId",
+]
 OCR_PROMPT = "OCR this."
 RESPONSE_TIMEOUT_SECONDS = 60
 ATTACHMENT_SELECTORS = [
@@ -56,8 +63,15 @@ class GeminiCaptchaSolver:
         page = await self.browser_session.page_for_host(
             "gemini.google.com", create_url="https://gemini.google.com/app"
         )
-        await page.bring_to_front()
+        if not self.browser_session.headless:
+            await page.bring_to_front()
         return page
+
+    async def sign_in_required(self) -> bool:
+        page = await self.open_setup()
+        if "accounts.google.com" in page.url:
+            return True
+        return await find_first_visible(page, SIGN_IN_SELECTORS, 2_000) is not None
 
     async def verify_ready(self) -> bool:
         page = await self.open_setup()

@@ -27,7 +27,7 @@ class WorkflowEngine:
     def __init__(
         self,
         page: Page,
-        solver: GeminiCaptchaSolver,
+        solver: GeminiCaptchaSolver | None,
         controls: RunControls,
         emit: Callable[[UiEvent], None],
     ) -> None:

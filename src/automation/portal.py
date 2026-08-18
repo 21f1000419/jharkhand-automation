@@ -33,7 +33,7 @@ class PortalAutomation:
     def __init__(
         self,
         page: Page,
-        solver: GeminiCaptchaSolver,
+        solver: GeminiCaptchaSolver | None,
         controls: RunControls,
         on_stage: StageCallback,
         emit: EventCallback,
@@ -565,16 +565,22 @@ class PortalAutomation:
             await self._manual_captcha_entered()
             return True
 
+        solver = self.solver
+        if solver is None:
+            self._status("Gemini OCR is inactive; enter the CAPTCHA manually…")
+            await self._wait_for_manual_captcha_input(field)
+            return True
+
         ocr_task: asyncio.Task[str] | None = None
         try:
             await self._copy_captcha_with_browser_menu(image)
-            ocr_task = asyncio.create_task(self.solver.solve(expected_length))
+            ocr_task = asyncio.create_task(solver.solve(expected_length))
             while not ocr_task.done():
                 await self.controls.checkpoint()
                 if (await field.input_value()).strip():
                     ocr_task.cancel()
                     await asyncio.gather(ocr_task, return_exceptions=True)
-                    await self.solver.cancel_active_response()
+                    await solver.cancel_active_response()
                     await self._manual_captcha_entered()
                     return True
                 await self.page.wait_for_timeout(100)
@@ -611,7 +617,7 @@ class PortalAutomation:
             if ocr_task is not None and not ocr_task.done():
                 ocr_task.cancel()
                 await asyncio.gather(ocr_task, return_exceptions=True)
-                await self.solver.cancel_active_response()
+                await solver.cancel_active_response()
 
     async def _manual_captcha_entered(self) -> None:
         self._status("Manual CAPTCHA entered; waiting for the portal action…")
