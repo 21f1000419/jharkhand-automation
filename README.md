@@ -45,7 +45,7 @@ district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan
 - `quantity` defaults to `1`.
 - `second_party_name` defaults to `NIL` and `pan` is optional.
 - `mobile` is optional because the portal pre-fills it.
-- Select or type the one Article to use for the current batch in the application; it is not a CSV column and is selected again each time the app opens.
+- Select or type the one Article to use for the current batch in the application; it is not a CSV column and is remembered across sessions.
 - District must match the visible portal option text.
 - Do not keep the CSV open in Excel while automation is running. If it becomes locked, the application pauses rather than losing progress.
 

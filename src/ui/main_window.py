@@ -50,9 +50,9 @@ class MainWindow:
 
         self.chrome_var = tk.StringVar(value=config.chrome_executable)
         self.profile_var = tk.StringVar(value=str(config.profile_path))
-        self.csv_var = tk.StringVar()
+        self.csv_var = tk.StringVar(value=config.last_csv_path)
         self.download_var = tk.StringVar(value=config.last_download_path)
-        self.article_var = tk.StringVar()
+        self.article_var = tk.StringVar(value=config.last_article)
         self.portal_browser_var = tk.StringVar()
         valid_engines = {engine.value for engine in BrowserEngine}
         saved_custom_engine = (
@@ -102,6 +102,10 @@ class MainWindow:
         self._build_menu()
         self._build()
         self._update_custom_engine_control()
+        if self.config.last_csv_path:
+            csv_path = Path(self.config.last_csv_path)
+            if csv_path.is_file():
+                self._load_preview(csv_path, quiet=True)
         self._set_run_buttons()
         self.controller.record_activity("application_started", "Desktop application opened.")
         self.root.after(100, self._drain_events)
@@ -253,6 +257,8 @@ class MainWindow:
         )
         self.article_box = ttk.Combobox(batch, textvariable=self.article_var, values=ARTICLE_OPTIONS)
         self.article_box.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+        self.article_box.bind("<<ComboboxSelected>>", self._save_non_secret_settings)
+        self.article_box.bind("<FocusOut>", self._save_non_secret_settings)
         ttk.Label(
             batch,
             text="Choose a listed article or type one. The portal validates it before every submission.",
@@ -260,7 +266,10 @@ class MainWindow:
             wraplength=500,
         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 0))
         ttk.Label(batch, text="Filled batch CSV").grid(row=5, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(batch, textvariable=self.csv_var).grid(row=5, column=1, sticky="ew", pady=(8, 0))
+        self.csv_entry = ttk.Entry(batch, textvariable=self.csv_var)
+        self.csv_entry.grid(row=5, column=1, sticky="ew", pady=(8, 0))
+        self.csv_entry.bind("<FocusOut>", self._on_csv_entry_changed)
+        self.csv_entry.bind("<Return>", self._on_csv_entry_changed)
         ttk.Button(batch, text="Select CSV…", command=self._browse_csv).grid(
             row=5, column=2, padx=(8, 0), pady=(8, 0)
         )
@@ -528,6 +537,8 @@ class MainWindow:
         self.config.last_mode = self.mode_var.get()
         self.config.sms_user_id = self.sms_user_id_var.get().strip()
         self.config.sms_server_url = self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL
+        self.config.last_article = self.article_var.get().strip()
+        self.config.last_csv_path = self.csv_var.get().strip()
         browser = self.portal_browsers.get(self.portal_browser_var.get())
         if browser is not None:
             self.config.last_portal_browser_path = str(browser.executable)
@@ -547,6 +558,23 @@ class MainWindow:
             self._save_browser_settings(reconfigure=True)
             self._set_run_buttons()
 
+    def _on_csv_entry_changed(self, _event: object | None = None) -> None:
+        if self.running or self.starting:
+            return
+        path_str = self.csv_var.get().strip()
+        self._save_non_secret_settings()
+        if path_str:
+            path = Path(path_str)
+            if path.is_file():
+                self._load_preview(path, quiet=True)
+            else:
+                self.csv_valid = False
+                self._render_rows([])
+        else:
+            self.csv_valid = False
+            self._render_rows([])
+        self._set_run_buttons()
+
     def _browse_csv(self) -> None:
         if self.running or self.starting:
             messagebox.showinfo(
@@ -565,6 +593,7 @@ class MainWindow:
         if selected:
             self.csv_valid = False
             self.csv_var.set(selected)
+            self._save_non_secret_settings()
             self._load_preview(Path(selected))
             self._set_run_buttons()
 
@@ -1065,7 +1094,7 @@ class MainWindow:
         next_button.focus_set()
         dialog.bind("<Return>", lambda _event: choose("next"))
 
-    def _load_preview(self, path: Path) -> None:
+    def _load_preview(self, path: Path, quiet: bool = False) -> None:
         try:
             store = CsvBatchStore(path)
             store.load()
@@ -1079,7 +1108,7 @@ class MainWindow:
                     issues.append(f"Row {index + 1}: {message}")
             self.csv_valid = not issues
             self._render_rows(summaries)
-            if issues:
+            if issues and not quiet:
                 preview = "\n".join(issues[:8])
                 remaining = len(issues) - 8
                 suffix = f"\n...and {remaining} more row(s)." if remaining else ""
@@ -1089,11 +1118,10 @@ class MainWindow:
                     parent=self.root,
                 )
         except Exception as error:
-            self._render_rows([])
-            messagebox.showerror("CSV error", str(error), parent=self.root)
             self.csv_valid = False
             self._render_rows([])
-            messagebox.showerror("CSV error", str(error), parent=self.root)
+            if not quiet:
+                messagebox.showerror("CSV error", str(error), parent=self.root)
 
     def _render_rows(self, rows: list[dict[str, str]], current_row: int | None = None) -> None:
         for item in self.tree.get_children():

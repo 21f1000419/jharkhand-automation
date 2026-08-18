@@ -38,5 +38,45 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(asyncio.run(controls.wait_for_decision()), "next")
 
 
+    def test_config_store_persists_article_and_csv(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from core.config import AppConfig, ConfigStore
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "settings.json"
+            store = ConfigStore(settings_path)
+            config = AppConfig(
+                last_article="AFFIDAVIT (Art. 4)",
+                last_csv_path=r"C:\batches\sample.csv",
+                last_mode="continuous",
+            )
+            store.save(config)
+
+            reloaded = store.load()
+            self.assertEqual(reloaded.last_article, "AFFIDAVIT (Art. 4)")
+            self.assertEqual(reloaded.last_csv_path, r"C:\batches\sample.csv")
+            self.assertEqual(reloaded.last_mode, "continuous")
+
+    def test_config_store_handles_missing_keys(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+        from core.config import ConfigStore
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "settings.json"
+            settings_path.write_text(
+                json.dumps({"last_mode": "assisted", "chrome_executable": "chrome.exe"}),
+                encoding="utf-8",
+            )
+            store = ConfigStore(settings_path)
+            loaded = store.load()
+            self.assertEqual(loaded.last_article, "")
+            self.assertEqual(loaded.last_csv_path, "")
+            self.assertEqual(loaded.last_mode, "assisted")
+
+
 if __name__ == "__main__":
     unittest.main()
+

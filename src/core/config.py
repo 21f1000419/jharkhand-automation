@@ -23,6 +23,8 @@ class AppConfig:
     sms_server_url: str = DEFAULT_SMS_SERVER_URL
     gemini_verified: bool = False
     debug_port: int = 9347
+    last_article: str = ""
+    last_csv_path: str = ""
 
     @property
     def profile_path(self) -> Path:
