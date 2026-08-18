@@ -31,8 +31,9 @@ class AutomationController:
         self.events: queue.Queue[UiEvent] = queue.Queue()
         self.controls = RunControls(self.emit)
         self.loop: asyncio.AbstractEventLoop | None = None
-        # Gemini always stays in the dedicated signed-in Chrome profile.  The
-        # portal is deliberately launched separately with a fresh session.
+        # The dedicated profile is visible for sign-in/setup, then reopened
+        # headlessly while Gemini performs OCR. The portal uses a separate,
+        # fresh session throughout.
         self.gemini_browser: BrowserSession | None = None
         self.portal_browser: PortalBrowserSession | None = None
         self.portal_page: Page | None = None
@@ -113,13 +114,18 @@ class AutomationController:
         self.loop.run_until_complete(self.loop.shutdown_default_executor())
         self.loop.close()
 
-    async def _ensure_gemini_services(self) -> tuple[BrowserSession, GeminiCaptchaSolver]:
+    async def _ensure_gemini_services(
+        self, *, headless: bool = False
+    ) -> tuple[BrowserSession, GeminiCaptchaSolver]:
+        if self.gemini_browser is not None and self.gemini_browser.headless != headless:
+            await self._close_gemini_browser()
         if self.gemini_browser is None:
             self.gemini_browser = BrowserSession(
                 Path(self.config.chrome_executable),
                 self.config.profile_path,
                 self.config.debug_port,
                 self._on_gemini_browser_disconnected,
+                headless=headless,
             )
             self.solver = GeminiCaptchaSolver(self.gemini_browser)
         await self.gemini_browser.start()
@@ -129,7 +135,7 @@ class AutomationController:
 
     async def _open_gemini_setup(self) -> None:
         try:
-            _, solver = await self._ensure_gemini_services()
+            _, solver = await self._ensure_gemini_services(headless=False)
             await solver.open_setup()
             if await solver.verify_ready():
                 self.emit(UiEvent("gemini_verified", "The browser profile is signed in and Gemini is ready."))
@@ -146,7 +152,7 @@ class AutomationController:
 
     async def _verify_gemini(self) -> None:
         try:
-            _, solver = await self._ensure_gemini_services()
+            _, solver = await self._ensure_gemini_services(headless=False)
             if await solver.verify_ready():
                 self.emit(UiEvent("gemini_verified", "The browser profile is signed in and Gemini is ready."))
             else:
@@ -170,7 +176,7 @@ class AutomationController:
         portal_watchdog: asyncio.Task[None] | None = None
         completed = False
         try:
-            _, solver = await self._ensure_gemini_services()
+            _, solver = await self._ensure_gemini_services(headless=True)
             if not await solver.verify_ready():
                 self.emit(
                     UiEvent(
@@ -180,7 +186,7 @@ class AutomationController:
                     )
                 )
                 return
-            self.emit(UiEvent("gemini_verified", "The browser profile and Gemini chat are ready."))
+            self.emit(UiEvent("gemini_verified", "The browser profile and headless Gemini OCR are ready."))
             self.emit(UiEvent("run_started", "Automation started."))
             if not self._can_reuse_portal(options.portal_browser):
                 await self._close_portal_browser()
@@ -240,11 +246,11 @@ class AutomationController:
         self.emit(
             UiEvent(
                 "browser_closed",
-                "The signed-in Chrome profile was closed. The automation has stopped.",
+                "The Gemini OCR browser session stopped. The automation has stopped.",
                 {"profile_browser": True},
             )
         )
-        self.controls.stop("Signed-in Chrome profile was closed")
+        self.controls.stop("Gemini OCR browser session stopped")
         self._cancel_run()
         self.gemini_browser = None
         self.solver = None

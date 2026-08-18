@@ -8,6 +8,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
 from automation.browser import BrowserSession
+from services.clipboard_image import read_clipboard_image_png
 
 COMPOSER_SELECTORS = [
     'div[contenteditable="true"][aria-label="Enter a prompt for Gemini"]',
@@ -32,12 +33,16 @@ STOP_SELECTORS = [
     'button[aria-label*="Stop generating" i]',
 ]
 OCR_PROMPT = "OCR this."
-RESPONSE_TIMEOUT_SECONDS = 40
+RESPONSE_TIMEOUT_SECONDS = 60
 ATTACHMENT_SELECTORS = [
     'img[src^="blob:"]',
     '[data-test-id*="attachment" i]',
     '[aria-label*="Remove image" i]',
     '[aria-label*="Remove attachment" i]',
+]
+UPLOAD_BUTTON_SELECTORS = [
+    'button[aria-label="Upload and tools"]',
+    'button[aria-label*="Upload and tools" i]',
 ]
 
 
@@ -77,6 +82,7 @@ class GeminiCaptchaSolver:
         return True
 
     async def solve(self, expected_length: int | None = None) -> str:
+        """Read the CAPTCHA image that the portal has copied to the clipboard."""
         async with self._lock:
             page = await self.browser_session.page_for_host(
                 "gemini.google.com", create_url="https://gemini.google.com/app"
@@ -85,8 +91,10 @@ class GeminiCaptchaSolver:
             if composer is None:
                 raise RuntimeError("Gemini is not signed in or its prompt box could not be found.")
             try:
+                # Let the dynamically-created upload control finish binding before opening it.
+                await page.wait_for_timeout(1_000)
                 baseline = await read_responses(page)
-                await attach_image(page, composer)
+                await attach_image(page, read_clipboard_image_png())
                 await composer.fill(OCR_PROMPT)
                 await send_prompt(page)
                 raw = await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
@@ -141,18 +149,28 @@ def normalize_captcha(value: str, expected_length: int | None = None) -> str:
     return useful[-1] if useful else ""
 
 
-async def attach_image(page: Page, composer: Locator) -> None:
-    """Paste the image placed on the clipboard by Chrome's Copy image command."""
+async def attach_image(page: Page, image_bytes: bytes) -> None:
+    """Upload an in-memory CAPTCHA image without using the desktop clipboard."""
     baseline = await attachment_counts(page)
     try:
-        await page.bring_to_front()
-        await composer.click()
-        await page.keyboard.press("Control+V")
+        upload_button = await find_first_visible(page, UPLOAD_BUTTON_SELECTORS, 10_000)
+        if upload_button is None:
+            raise RuntimeError("Gemini's Upload and tools button was not found.")
+        await upload_button.click()
+        upload = page.locator('input[type="file"]').first
+        await upload.wait_for(state="attached", timeout=10_000)
+        await upload.set_input_files(
+            {
+                "name": "captcha.png",
+                "mimeType": "image/png",
+                "buffer": image_bytes,
+            }
+        )
         if await wait_for_attachment(page, baseline, 12_000):
             return
     except Exception as error:
-        raise RuntimeError(f"Could not paste the CAPTCHA image into Gemini: {error}") from error
-    raise RuntimeError("Gemini did not show the pasted CAPTCHA image.")
+        raise RuntimeError(f"Could not upload the CAPTCHA image to Gemini: {error}") from error
+    raise RuntimeError("Gemini did not show the uploaded CAPTCHA image.")
 
 
 async def send_prompt(page: Page) -> None:

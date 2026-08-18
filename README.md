@@ -1,6 +1,6 @@
 # Compitcom eStamp Batch Automation
 
-Windows Tkinter application for processing resumable CSV batches through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. It uses a signed-in dedicated Chrome profile with Gemini to read CAPTCHA images, while the portal itself opens in the browser selected in the app. There is no OCR web server or FastAPI process.
+Windows Tkinter application for processing resumable CSV batches through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. It uses a signed-in dedicated Chrome profile to set up Gemini, then reopens that profile headlessly to read CAPTCHA images. The portal itself opens in the browser selected in the app. There is no OCR web server or FastAPI process.
 
 Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
 
@@ -23,16 +23,15 @@ On first use, click **Browser profile status...** to open the compact setup dial
 3. Sign in to the Google account that is permitted to use Gemini in that dedicated Chrome profile.
 4. Click **Check Profile**.
 
-The browser profile—not Gemini itself—is the one-time setup. Each **Start** still opens/checks Gemini inside that
-profile and requires a signed-in Google account plus an editable Gemini chat composer before it creates any portal
-automation. If the Google session has expired or Gemini cannot accept input, the batch does not start and the setup
-dialog opens automatically.
+The browser profile—not Gemini itself—is the one-time setup. When a batch starts, the visible setup browser is
+closed and the same profile is reopened in headless mode for Gemini OCR. If the Google session has expired or Gemini
+cannot accept input, the batch does not start and the setup dialog opens automatically.
 
 The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Citizen/eGRAS credentials exist only in application memory and are cleared on exit.
 
 ## Browser selection
 
-The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, Yandex Browser, and Firefox. Choose one before starting; use **Refresh** after installing a browser. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** in the same picker and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Chromium choices run the selected installed browser. Because Playwright only reliably controls its managed Firefox build, Firefox-based choices run that fresh managed build rather than your normal Firefox/Zen installation. Release packaging will bundle that managed browser; it is not installed from the app. The custom choice is saved. Portal automation launches a separate, visible fresh session without touching saved browser profiles or downloads. Gemini continues to run only in its dedicated signed-in Chromium profile. Closing either browser during a batch stops the automation safely.
+The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, Yandex Browser, and Firefox. Choose one before starting; use **Refresh** after installing a browser. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** in the same picker and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Chromium choices run the selected installed browser. Because Playwright only reliably controls its managed Firefox build, Firefox-based choices run that fresh managed build rather than your normal Firefox/Zen installation. Release packaging will bundle that managed browser; it is not installed from the app. The custom choice is saved. Portal automation launches a separate, visible fresh session without touching saved browser profiles or downloads. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing the portal browser stops the automation safely.
 
 ## CSV batches
 
@@ -87,7 +86,7 @@ Install the companion `otp-reader` APK on a phone you control. With both devices
 - **Continuous** records ordinary errors and moves to the next row without a prompt.
 - **Pause** keeps the current page and stops before the next browser action.
 - **Stop** cancels the active unit and preserves it as retryable.
-- Closing the selected portal browser or the signed-in Gemini profile stops the entire run. Closing the application closes both automation browsers.
+- Closing the selected portal browser stops the entire run. Gemini OCR runs headlessly while a batch is active; closing the application closes both automation browsers.
 
 Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
 

@@ -15,7 +15,7 @@ from core.models import BrowserEngine, PortalBrowser
 
 
 class BrowserSession:
-    """Owns one visible, app-specific Chrome profile and its CDP connection."""
+    """Owns the dedicated Chrome profile and its CDP connection."""
 
     def __init__(
         self,
@@ -23,11 +23,14 @@ class BrowserSession:
         profile_path: Path,
         debug_port: int,
         on_disconnect: Callable[[], None] | None = None,
+        *,
+        headless: bool = False,
     ) -> None:
         self.chrome_executable = chrome_executable
         self.profile_path = profile_path
         self.debug_port = debug_port
         self.on_disconnect = on_disconnect
+        self.headless = headless
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
@@ -113,9 +116,13 @@ class BrowserSession:
             "--no-first-run",
             "--hide-crash-restore-bubble",
             "--disable-session-crashed-bubble",
-            "--start-maximized",
+            "--window-size=1280,1000",
             "about:blank",
         ]
+        if self.headless:
+            arguments.append("--headless=new")
+        else:
+            arguments.append("--start-maximized")
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.process = subprocess.Popen(
             arguments,
