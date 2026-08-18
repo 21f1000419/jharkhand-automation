@@ -197,7 +197,21 @@ const server = http.createServer((request, response) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`SMS OTP server listening on http://0.0.0.0:${PORT}`);
+  console.log(`--------------------------------------------------------------------------------`);
   console.log(`MacroDroid endpoint: POST /api/users/:userId/sms`);
+  console.log(`  Headers: Content-Type: application/json`);
+  console.log(`  Path parameter:`);
+  console.log(`    - :userId   (string, required): Matching the SMS User ID in the desktop app`);
+  console.log(`  Body fields (JSON):`);
+  console.log(`    - "sender":   (string, required) Sender address/name (e.g. [sms_sender] variable)`);
+  console.log(`    - "content":  (string, required) SMS message body (e.g. [sms_body] variable)`);
+  console.log(`    - "metadata": (object, optional) Optional info e.g. { "receivedOnPhone": "timestamp" }`);
+  console.log(`  Example JSON body:`);
+  console.log(`    {`);
+  console.log(`      "sender": "VM-NGDRS",`);
+  console.log(`      "content": "Your OTP to NGDRS Login :- 36367408"`);
+  console.log(`    }`);
+  console.log(`--------------------------------------------------------------------------------`);
   console.log("OTP types: main = Jharnibandhan / NGDRS numeric login OTP; egrass = KUBER JH / JEGRAS six-character OTP.");
   console.log(`Python endpoints: GET and DELETE /api/users/:userId/otps/:type (use main or egrass)`);
   console.log("SECURITY: Authentication is not enabled yet. Use only on a trusted private network; add API-key authentication before wider use.");
