@@ -33,10 +33,13 @@ function getJsonBody(request) {
       body += chunk;
     });
     request.on("end", () => {
+      const timestamp = new Date().toISOString();
+      console.log(`[${timestamp}] Incoming request body (${request.method} ${request.url}): ${body || "<empty>"}`);
       if (!body) return resolve({});
       try {
         resolve(JSON.parse(body));
-      } catch {
+      } catch (err) {
+        console.error(`[${timestamp}] JSON parse error for body:`, body);
         reject(new Error("Request body must be valid JSON."));
       }
     });
@@ -101,7 +104,7 @@ async function handleRequest(request, response) {
     const receivedAt = new Date().toISOString();
 
     if (!content || !sender) {
-      console.log(`[${receivedAt}] Incoming SMS rejected - User ID: ${userId}, missing sender or content.`);
+      console.log(`[${receivedAt}] Incoming SMS rejected - User ID: ${userId}, missing sender or content. Body: ${JSON.stringify(body)}`);
       return sendJson(response, 400, { error: "content and sender are required." });
     }
 
