@@ -98,12 +98,18 @@ async function handleRequest(request, response) {
     const body = await getJsonBody(request);
     const content = cleanText(body.content);
     const sender = cleanText(body.sender);
+    const receivedAt = new Date().toISOString();
+
     if (!content || !sender) {
+      console.log(`[${receivedAt}] Incoming SMS rejected - User ID: ${userId}, missing sender or content.`);
       return sendJson(response, 400, { error: "content and sender are required." });
     }
 
+    console.log(`[${receivedAt}] Incoming SMS - User ID: ${userId}, Sender: "${sender}", Content: "${content}"`);
+
     const recognisedOtp = findOtp(content);
     if (!recognisedOtp) {
+      console.log(`[${receivedAt}] Unrecognised SMS - User ID: ${userId}, Sender: "${sender}" (no matching OTP pattern)`);
       return sendJson(response, 202, {
         stored: false,
         reason: "SMS content is not a recognised OTP pattern.",
@@ -111,7 +117,6 @@ async function handleRequest(request, response) {
     }
 
     removeExpiredOtps();
-    const receivedAt = new Date().toISOString();
     const entry = {
       userId,
       type: recognisedOtp.type,
@@ -124,7 +129,7 @@ async function handleRequest(request, response) {
     };
     pendingOtps.set(keyFor(userId, entry.type), entry);
 
-    console.log(`[${receivedAt}] Received OTP - User ID: ${userId}, Sender: ${sender}, Decoded Type: ${entry.type}`);
+    console.log(`[${receivedAt}] Stored OTP - User ID: ${userId}, Sender: "${sender}", Decoded Type: ${entry.type}`);
 
     return sendJson(response, 201, {
       stored: true,
