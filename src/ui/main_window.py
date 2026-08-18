@@ -34,6 +34,8 @@ class MainWindow:
         self.controller = controller
         self.gemini_ready = False
         self.gemini_checking = True
+        self.gemini_login_required = False
+        self.gemini_login_browser_open = False
         self.running = False
         self.starting = False
         self.portal_session_open = False
@@ -607,12 +609,24 @@ class MainWindow:
         self._record_ui_action("start_ocr_browser_clicked")
         if not self._save_browser_settings(reconfigure=False):
             return
+        self.gemini_login_required = False
         self.gemini_status_var.set("Gemini OCR: checking headlessly...")
+        self._set_run_buttons()
         self.controller.verify_gemini()
+
+    def _open_ocr_login_browser(self) -> None:
+        self._record_ui_action("open_ocr_login_browser_clicked")
+        if not self._save_browser_settings(reconfigure=False):
+            return
+        self.gemini_login_browser_open = True
+        self.gemini_status_var.set("Gemini OCR: opening Chrome profile for sign-in...")
+        self._set_run_buttons()
+        self.controller.open_gemini_login_browser()
 
     def _close_ocr_browser(self) -> None:
         self._record_ui_action("close_ocr_browser_clicked")
         self.gemini_ready = False
+        self.gemini_login_browser_open = False
         self.config.gemini_verified = False
         self.config_store.save(self.config)
         self.captcha_warning_var.set(
@@ -656,20 +670,17 @@ class MainWindow:
             ),
             wraplength=620,
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 12))
-        ttk.Label(frame, text="Current profile").grid(row=2, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(frame, textvariable=self.profile_var, state="readonly", width=64).grid(
+        ttk.Label(frame, text="Profile path").grid(row=2, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(frame, textvariable=self.profile_var, width=64).grid(
             row=2, column=1, columnspan=2, sticky="ew"
         )
 
-        def choose_profile() -> None:
-            selected = filedialog.askdirectory(
-                title="Choose dedicated Chrome profile folder",
-                initialdir=self._dialog_directory(self.profile_var.get()),
-                parent=dialog,
-            )
-            if not selected:
+        def save_profile_path() -> None:
+            if not self.profile_var.get().strip():
+                messagebox.showwarning(
+                    "OCR Browser Profile Settings", "Enter a profile folder path.", parent=dialog
+                )
                 return
-            self.profile_var.set(selected)
             if self._save_browser_settings(reconfigure=True):
                 self._append_session_log("OCR browser profile changed.")
 
@@ -680,7 +691,7 @@ class MainWindow:
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=3, column=0, columnspan=3, sticky="w", pady=(14, 0))
-        ttk.Button(buttons, text="Change...", command=choose_profile).pack(side="left")
+        ttk.Button(buttons, text="Save path", command=save_profile_path).pack(side="left")
         ttk.Button(buttons, text="Use default", command=use_default_profile).pack(side="left", padx=8)
         ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left")
 
@@ -893,6 +904,8 @@ class MainWindow:
         if event.kind == "gemini_login_required":
             self.gemini_checking = False
             self.gemini_ready = False
+            self.gemini_login_required = True
+            self.gemini_login_browser_open = False
             self.config.gemini_verified = False
             self.config_store.save(self.config)
             self.gemini_status_var.set("Gemini OCR: Google sign-in required")
@@ -902,6 +915,8 @@ class MainWindow:
         elif event.kind == "gemini_verified":
             self.gemini_checking = False
             self.gemini_ready = True
+            self.gemini_login_required = False
+            self.gemini_login_browser_open = False
             self.config.gemini_verified = True
             self.config_store.save(self.config)
             self.gemini_status_var.set("Gemini OCR: active (headless)")
@@ -909,6 +924,8 @@ class MainWindow:
         elif event.kind == "gemini_stopped":
             self.gemini_checking = False
             self.gemini_ready = False
+            self.gemini_login_required = False
+            self.gemini_login_browser_open = False
             self.gemini_status_var.set("Gemini OCR: stopped")
             self.captcha_warning_var.set(
                 "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
@@ -917,6 +934,8 @@ class MainWindow:
             if event.kind == "gemini_not_ready":
                 self.gemini_checking = False
                 self.gemini_ready = False
+                self.gemini_login_required = False
+                self.gemini_login_browser_open = False
                 self.config.gemini_verified = False
                 self.config_store.save(self.config)
                 self.gemini_status_var.set("Gemini OCR: unavailable")
@@ -925,6 +944,8 @@ class MainWindow:
                 )
             else:
                 self.gemini_checking = False
+                self.gemini_ready = False
+                self.gemini_login_browser_open = False
                 self.starting = False
                 self.running = False
                 self.run_status_var.set("Stopped with an error")
@@ -970,13 +991,24 @@ class MainWindow:
             if event.kind == "browser_closed":
                 if event.data.get("profile_browser"):
                     self.gemini_ready = False
+                    self.gemini_login_required = False
+                    self.gemini_login_browser_open = False
                     self.config.gemini_verified = False
                     self.config_store.save(self.config)
-                    self.gemini_status_var.set("Gemini OCR: Google sign-in required")
+                    self.gemini_status_var.set(
+                        "Gemini OCR: browser closed. Click Start OCR browser to check headlessly."
+                    )
                     self.captcha_warning_var.set(
                         "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
                     )
-                messagebox.showwarning("Browser closed", event.message, parent=self.root)
+                if not event.data.get("profile_browser"):
+                    messagebox.showwarning("Browser closed", event.message, parent=self.root)
+        elif event.kind == "gemini_login_browser_opened":
+            self.gemini_checking = False
+            self.gemini_ready = False
+            self.gemini_login_required = True
+            self.gemini_login_browser_open = True
+            self.gemini_status_var.set("Gemini OCR: Chrome profile open for sign-in")
         elif event.kind == "batch_update":
             self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
         elif event.kind == "error_prompt":
@@ -1109,8 +1141,12 @@ class MainWindow:
         subprocess.Popen(["explorer.exe", str(directory)])
 
     def _set_run_buttons(self) -> None:
-        if self.gemini_ready:
+        if self.gemini_ready or self.gemini_login_browser_open:
             self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
+        elif self.gemini_login_required:
+            self.ocr_browser_button.configure(
+                text="Start OCR browser", command=self._open_ocr_login_browser
+            )
         else:
             self.ocr_browser_button.configure(text="Start OCR browser", command=self._verify_gemini)
         has_csv = self.csv_valid and Path(self.csv_var.get().strip()).is_file()

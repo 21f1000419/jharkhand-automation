@@ -59,6 +59,9 @@ class AutomationController:
     def verify_gemini(self) -> None:
         self._submit(self._verify_gemini())
 
+    def open_gemini_login_browser(self) -> None:
+        self._submit(self._open_gemini_login_browser())
+
     def start(self, options: RunOptions) -> None:
         if self.loop is None:
             raise RuntimeError("Automation worker is unavailable.")
@@ -151,6 +154,26 @@ class AutomationController:
         _, solver = await self._ensure_gemini_services(headless=True)
         if await solver.sign_in_required():
             await self._close_gemini_browser()
+            self.emit(
+                UiEvent(
+                    "gemini_login_required",
+                    "Gemini needs sign-in. Click Start OCR browser to open the dedicated Chrome profile.",
+                )
+            )
+            return None
+        if not await solver.verify_ready():
+            self.emit(
+                UiEvent(
+                    "gemini_not_ready",
+                    "Headless Gemini could not find a usable chat. Check your connection, then try "
+                    "Start OCR browser again.",
+                )
+            )
+            return None
+        return solver
+
+    async def _open_gemini_login_browser(self) -> None:
+        try:
             visible_browser, _ = await self._ensure_gemini_services(headless=False)
             login_page = await visible_browser.new_portal_page("about:blank")
             await login_page.set_content(
@@ -173,23 +196,12 @@ class AutomationController:
             )
             self.emit(
                 UiEvent(
-                    "gemini_login_required",
-                    "Gemini needs sign-in. A Chrome profile window is open; "
-                    "complete sign-in in that profile, "
-                    "close it, then click Start OCR browser.",
+                    "gemini_login_browser_opened",
+                    "Chrome profile opened for sign-in. Close it after sign-in, then start OCR again.",
                 )
             )
-            return None
-        if not await solver.verify_ready():
-            self.emit(
-                UiEvent(
-                    "gemini_not_ready",
-                    "Headless Gemini could not find a usable chat. Check your connection, then try "
-                    "Start OCR browser again.",
-                )
-            )
-            return None
-        return solver
+        except Exception as error:
+            self.emit(UiEvent("fatal_error", f"Could not open the Chrome profile: {error}"))
 
     def _start_run(self, options: RunOptions) -> None:
         if self.run_task is not None and not self.run_task.done():
