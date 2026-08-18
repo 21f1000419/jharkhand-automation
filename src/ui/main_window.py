@@ -43,6 +43,9 @@ class MainWindow:
         self.gemini_checking = True
         self.running = False
         self.starting = False
+        self.portal_session_open = False
+        self.paused = False
+        self.auto_waiting = False
         self.csv_valid = False
         self.credential_store = WindowsCredentialStore()
         try:
@@ -303,12 +306,42 @@ class MainWindow:
         controls = ttk.Frame(container)
         controls.pack(fill="x", pady=(0, 8))
         self.start_button = ttk.Button(controls, text="Start", command=self._start)
-        self.pause_button = ttk.Button(controls, text="Pause", command=self._pause)
-        self.resume_button = ttk.Button(controls, text="Resume", command=self._resume)
-        self.stop_button = ttk.Button(controls, text="Stop", command=self._stop)
+        self.pause_resume_controls = ttk.Frame(controls)
+        self.pause_button = tk.Button(
+            self.pause_resume_controls,
+            text="Pause",
+            command=self._pause,
+            background="#b45309",
+            activebackground="#92400e",
+            foreground="white",
+            activeforeground="white",
+            relief="flat",
+            padx=10,
+        )
+        self.resume_button = tk.Button(
+            self.pause_resume_controls,
+            text="Resume",
+            command=self._resume,
+            background="#15803d",
+            activebackground="#166534",
+            foreground="white",
+            activeforeground="white",
+            relief="flat",
+            padx=10,
+        )
+        self.stop_button = tk.Button(
+            controls,
+            text="Stop",
+            command=self._stop,
+            background="#b91c1c",
+            activebackground="#991b1b",
+            foreground="white",
+            activeforeground="white",
+            relief="flat",
+            padx=10,
+        )
         self.start_button.pack(side="left")
-        self.pause_button.pack(side="left", padx=(8, 0))
-        self.resume_button.pack(side="left", padx=(8, 0))
+        self.pause_resume_controls.pack(side="left", padx=(8, 0))
         self.stop_button.pack(side="left", padx=(8, 0))
         ttk.Separator(controls, orient="vertical").pack(side="left", fill="y", padx=12)
         ttk.Label(controls, textvariable=self.run_status_var, style="Status.TLabel").pack(side="left")
@@ -453,6 +486,8 @@ class MainWindow:
         selected = filedialog.askopenfilename(
             title="Choose portal browser executable",
             filetypes=[("Browser executable", "*.exe"), ("All files", "*.*")],
+            parent=self.root,
+            initialdir=self._dialog_directory(self.config.custom_portal_browser_path),
         )
         if not selected:
             self._detect_portal_browsers()
@@ -531,6 +566,8 @@ class MainWindow:
         selected = filedialog.askopenfilename(
             title="Choose Google Chrome",
             filetypes=[("Chrome executable", "chrome.exe"), ("Executables", "*.exe")],
+            parent=self.root,
+            initialdir=str(Path(self.chrome_var.get()).parent),
         )
         if selected:
             self.chrome_var.set(selected)
@@ -541,8 +578,20 @@ class MainWindow:
     def _browse_csv(self) -> None:
         if not self._require_gemini():
             return
+        if self.running or self.starting:
+            messagebox.showinfo(
+                "Automation active",
+                "Stop the current batch before selecting a different CSV.",
+                parent=self.root,
+            )
+            return
         self._record_ui_action("select_csv_clicked")
-        selected = filedialog.askopenfilename(title="Choose batch CSV", filetypes=[("CSV files", "*.csv")])
+        selected = filedialog.askopenfilename(
+            title="Choose batch CSV",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self.root,
+            initialdir=self._dialog_directory(self.csv_var.get()),
+        )
         if selected:
             self.csv_valid = False
             self.csv_var.set(selected)
@@ -553,10 +602,25 @@ class MainWindow:
         if not self._require_gemini():
             return
         self._record_ui_action("choose_download_folder_clicked")
-        selected = filedialog.askdirectory(title="Choose eStamp download folder")
+        selected = filedialog.askdirectory(
+            title="Choose eStamp download folder",
+            parent=self.root,
+            initialdir=self._dialog_directory(self.download_var.get()),
+            mustexist=True,
+        )
         if selected:
             self.download_var.set(selected)
             self._save_non_secret_settings()
+
+    @staticmethod
+    def _dialog_directory(value: str) -> str:
+        """Return an existing directory for a native Windows file dialog."""
+        candidate = Path(value).expanduser() if value.strip() else Path.home()
+        if candidate.is_file():
+            candidate = candidate.parent
+        while not candidate.is_dir() and candidate != candidate.parent:
+            candidate = candidate.parent
+        return str(candidate if candidate.is_dir() else Path.home())
 
     def _download_template(self) -> None:
         if not self._require_gemini():
@@ -567,6 +631,8 @@ class MainWindow:
             defaultextension=".csv",
             initialfile="estamp_batch_template.csv",
             filetypes=[("CSV files", "*.csv")],
+            parent=self.root,
+            initialdir=self._dialog_directory(self.csv_var.get()),
         )
         if not selected:
             return
@@ -815,10 +881,16 @@ class MainWindow:
 
     def _pause(self) -> None:
         self._record_ui_action("pause_clicked")
+        self.paused = True
+        self.auto_waiting = False
+        self._set_run_buttons()
         self.controller.pause()
 
     def _resume(self) -> None:
         self._record_ui_action("resume_clicked")
+        self.paused = False
+        self.auto_waiting = False
+        self._set_run_buttons()
         self.controller.resume()
 
     def _stop(self) -> None:
@@ -880,19 +952,33 @@ class MainWindow:
         elif event.kind == "run_started":
             self.starting = False
             self.running = True
+            self.portal_session_open = True
+            self.paused = False
+            self.auto_waiting = False
             self.run_status_var.set("Running")
         elif event.kind == "stage":
             self.run_status_var.set(f"Running: {event.message.replace('_', ' ').title()}")
         elif event.kind in {"manual_checkpoint", "paused", "persistence_blocked"}:
+            self.paused = True
+            self.auto_waiting = bool(event.data.get("auto_continue"))
             self.run_status_var.set("Waiting for user")
             if event.kind == "persistence_blocked":
                 messagebox.showwarning("CSV is locked", event.message, parent=self.root)
         elif event.kind == "resumed":
+            self.paused = False
+            self.auto_waiting = False
             self.run_status_var.set("Running")
-        elif event.kind in {"run_completed", "run_stopped", "browser_closed"}:
+        elif event.kind in {"run_completed", "run_stopped", "browser_closed", "portal_closed"}:
             self.starting = False
             self.running = False
-            self.run_status_var.set("Completed" if event.kind == "run_completed" else "Stopped")
+            self.paused = False
+            self.auto_waiting = False
+            if event.kind == "run_completed":
+                self.portal_session_open = True
+                self.run_status_var.set("Completed — portal ready for another CSV")
+            else:
+                self.portal_session_open = False
+                self.run_status_var.set("Stopped")
             if event.kind == "browser_closed":
                 if event.data.get("profile_browser"):
                     self.gemini_ready = False
@@ -1046,9 +1132,15 @@ class MainWindow:
                 else "disabled"
             )
         )
-        self.pause_button.configure(state="normal" if self.running else "disabled")
-        self.resume_button.configure(state="normal" if self.running else "disabled")
-        self.stop_button.configure(state="normal" if self.running else "disabled")
+        self.pause_button.pack_forget()
+        self.resume_button.pack_forget()
+        if self.running and not self.auto_waiting:
+            active_button = self.resume_button if self.paused else self.pause_button
+            active_button.configure(state="normal")
+            active_button.pack(side="left")
+        self.stop_button.configure(
+            state="normal" if self.running or self.portal_session_open else "disabled"
+        )
 
     def _set_gemini_gated_controls(self) -> None:
         state = "normal" if self.gemini_ready else "disabled"

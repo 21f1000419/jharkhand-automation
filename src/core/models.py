@@ -35,6 +35,7 @@ class Stage(StrEnum):
     EGRAS_OTP = "egras_otp"
     GATEWAY_SELECT = "gateway_select"
     GATEWAY_TERMS = "gateway_terms"
+    UPI_SELECT = "upi_select"
     PAYMENT = "payment"
     RESULT = "result"
     DOWNLOAD = "download"

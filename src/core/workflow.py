@@ -42,7 +42,7 @@ class WorkflowEngine:
         self.current_stage = Stage.IDLE
         self.browser_interrupted = False
 
-    async def run(self, options: RunOptions) -> None:
+    async def run(self, options: RunOptions) -> bool:
         self.store = CsvBatchStore(options.csv_path)
         self.store.load()
         await self._persist()
@@ -50,7 +50,7 @@ class WorkflowEngine:
 
         if not options.article.strip():
             self.emit(UiEvent("fatal_error", "Choose or type an Article before starting the batch."))
-            return
+            return False
 
         download_root = options.download_root or Path.home() / "Downloads"
         portal = PortalAutomation(
@@ -65,8 +65,9 @@ class WorkflowEngine:
         try:
             pending = list(self.store.pending_rows())
             if not pending:
+                await portal.reset_to_start()
                 self.emit(UiEvent("run_completed", "All CSV rows are already complete."))
-                return
+                return True
             # Highlight the first work item immediately.  Citizen login may
             # pause for user input before per-row processing starts.
             first_row_number, first_row = pending[0]
@@ -133,8 +134,12 @@ class WorkflowEngine:
 
             self.current_row = None
             self.current_stage = Stage.IDLE
+            # Keep the visible session ready for the next CSV rather than
+            # leaving it on a payment/result page after the final row.
+            await portal.reset_to_start()
             self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
             self.emit(UiEvent("run_completed", "Batch pass finished. Failed rows remain retryable."))
+            return True
         except (WorkflowStopped, asyncio.CancelledError):
             if self.current_row is not None and not self.browser_interrupted:
                 if "closed" in self.controls.stop_reason.casefold():
@@ -159,6 +164,7 @@ class WorkflowEngine:
                 else f"{self.controls.stop_reason}. Current work remains retryable."
             )
             self.emit(UiEvent("run_stopped", message))
+            return False
 
     async def _handle_error(
         self,

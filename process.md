@@ -17,17 +17,19 @@ c. Copy the image from `<img id="captcha_image" src="/users/get_captcha">`, OCR 
 d. Click `<button id="btnotp" name="btnotp">Get OTP</button>`. When it appears, fill
 `<input id="otp" name="data[User][otp]">` manually or through the paired OTP phone, then click
 `<button id="btnSubmit" name="btnSubmit">Login</button>`.
-e. Wait for the eStamp entry link/form (`#payment_purpose_id`) before continuing. There is no
-login timeout; the flow waits until it succeeds, the user stops it, or the browser is closed.
+e. After Login is clicked, poll until the URL becomes
+`https://jharnibandhan.gov.in/Citizenentry/welcome`.
+f. After the welcome page opens, open `https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp`
+directly and wait for the eStamp form (`#payment_purpose_id`). There is no login timeout; the
+flow waits until it succeeds, the user stops it, or the browser is closed.
 
-1. <a href="//">
-                        <i class="fa fa-th-large text-aqua"></i> <span>Payment Services</span>
-            <!--            <span class="pull-right-container">
-                            <i class="fa fa-angle-left pull-right"></i>
-                          </span>-->
-                    </a>
+<!-- Legacy step 1: open Payment Services. Bypassed by direct eStamp navigation. -->
+<!-- Legacy step 2: select Purchase eStamp Paper. Bypassed by direct eStamp navigation. -->
 
-2. <a href="/JHWebService/gras_payment_entry_estamp"><i class="fa fa-link text-red"></i> Purchase eStamp Paper</a>
+CAPTCHA stages: Citizen login, eGRAS login, and eGRAS OTP validation. The eGRAS OTP page
+contains a second visible `img.imgcaptcha` / `#txtcaptcha` pair before Validate OTP. After
+eGRAS Proceed is clicked, poll for that OTP page instead of requiring a Resume click. After
+Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
 
 3. <form action="" method="post" name="payuForm" autocomplete="off">
 
@@ -402,7 +404,19 @@ login timeout; the flow waits until it succeeds, the user stops it, or the brows
 
         <a onclick="javascript:return confirm('Are you sure want to confirm');" id="ContentPlaceHolder1_btncontinue" class="btn btn-success" href="javascript:__doPostBack('ctl00$ContentPlaceHolder1$btncontinue','')" style="font-weight:bold;">Proceed For Payment</a>
 
-10. <div class="row">
+10. Current payment mode: when the SBI hosted URL
+`https://epay.sbi.bank.in/secure/AggregatorHostedListener#no-back-button` opens, select:
+
+```html
+<li id="activeUPI" class="activeUPI"><a href="#" class="collapseup">UPI</a></li>
+```
+
+Then select `<input id="upiQR1" type="radio">` (UPI QR), click `<button id="upiButton">Pay Now</button>`,
+and poll for the final eStamp download link while the user completes the QR payment on their phone.
+
+The following card-form HTML is retained only as a legacy portal snapshot; payment automation uses UPI.
+
+<div class="row">
     		<div class="col-md-12 txt">
     			<!--<h4 class="txt">Please enter your card details</h4>-->
     			<h4 class="txt" style="color: #FF0000;font-size: 14px;">Please ensure that your card is enabled for online (E-Commerce) transactions</h4>

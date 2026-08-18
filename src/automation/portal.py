@@ -9,14 +9,16 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
 from core.controls import RunControls
-from core.models import AutomationError, Credentials, Stage, UiEvent
+from core.models import AutomationError, Credentials, Stage, UiEvent, WorkflowStopped
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
-from services.gemini_ocr import CAPTCHA_IMAGE_ATTEMPTS, GeminiCaptchaSolver
+from services.gemini_ocr import GeminiCaptchaSolver
 from services.otp_wifi import WifiOtpReceiver
 
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
+CITIZEN_WELCOME_URL = "https://jharnibandhan.gov.in/Citizenentry/welcome"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
+SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -64,7 +66,8 @@ class PortalAutomation:
             await self.complete_egras_login(credentials)
             await self.choose_gateway()
             await self.accept_gateway_terms()
-            await self.manual_payment()
+            await self.select_upi()
+            await self.select_upi_qr_and_pay()
             link = await self.find_result_link()
             await self._stage(Stage.DOWNLOAD)
             downloader = EstampDownloader(self.page.context)
@@ -101,18 +104,16 @@ class PortalAutomation:
             await self._goto(CITIZEN_LOGIN_URL, timeout_ms=0)
         await self._wait_for_login_element("#username")
         if not credentials.citizen_username or not credentials.citizen_password:
-            await self.controls.manual_checkpoint(
-                "citizen_login",
-                "Enter the Citizen username, password, CAPTCHA, and OTP in Chrome. Click Get OTP, "
-                "then Login; click Resume only after the eStamp entry link appears.",
+            await self._wait_for_manual_citizen_login(
+                "Enter the Citizen username, password, CAPTCHA, and OTP in Chrome. Click Get OTP "
+                "then Login. The app will continue when the Citizen welcome page opens."
             )
         else:
             await fill_first(self.page, ["#username"], credentials.citizen_username)
             await fill_first(self.page, ["#password"], credentials.citizen_password)
             await self._solve_captcha(
-                ["#captcha_image"],
-                ["#captcha"],
-                ["#reload"],
+                "#captcha_image",
+                "#captcha",
                 expected_length=6,
             )
             otp_button = await self._wait_for_login_element("#btnotp")
@@ -131,18 +132,21 @@ class PortalAutomation:
                 self.emit(
                     UiEvent("otp_manual", "No paired phone is connected; enter the Citizen OTP manually.")
                 )
-            await self.controls.manual_checkpoint(
-                "citizen_otp",
-                "Confirm the Citizen OTP, complete Login, and click Resume after the eStamp entry "
-                "link appears.",
+            await self._wait_for_manual_citizen_login(
+                "Confirm the Citizen OTP and click Login in Chrome. The app will continue when the "
+                "Citizen welcome page opens."
             )
 
-        await self._wait_for_estamp_entry()
+        await self._open_estamp_entry()
 
-    async def _wait_for_estamp_entry(self) -> None:
-        """Wait for login completion until the user stops or closes the browser."""
+    async def _wait_for_manual_citizen_login(self, message: str) -> None:
+        self.controls.pause()
+        self.emit(
+            UiEvent("manual_checkpoint", message, {"checkpoint": "citizen_login", "auto_continue": True})
+        )
+        self.emit(UiEvent("log", "Waiting for the Citizen welcome page after Login is submitted."))
         while True:
-            await self.controls.checkpoint()
+            await self.controls.ensure_not_stopped()
             if self.page.is_closed():
                 raise AutomationError(
                     "The portal browser was closed during Citizen login.",
@@ -150,19 +154,16 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
-            if await visible(self.page, "#payment_purpose_id", 500):
-                return
-            entry = await first_visible(
-                self.page,
-                ['a[href*="gras_payment_entry_estamp"]', 'a[href*="payment_entry_estamp"]'],
-                500,
-            )
-            if entry is not None:
-                await entry.click()
-                await self.page.wait_for_load_state("domcontentloaded", timeout=0)
-                await self._wait_for_login_element("#payment_purpose_id")
+            if self.page.url.rstrip("/").startswith(CITIZEN_WELCOME_URL):
+                self.controls.resume()
+                self.emit(UiEvent("resumed", "Citizen login detected; opening the eStamp form."))
                 return
             await self.page.wait_for_timeout(500)
+
+    async def _open_estamp_entry(self) -> None:
+        """Open eStamp directly after login; do not use the portal menu."""
+        await self._goto(ESTAMP_URL, timeout_ms=0)
+        await self._wait_for_login_element("#payment_purpose_id")
 
     async def _wait_for_login_element(self, selector: str) -> Locator:
         while True:
@@ -242,41 +243,94 @@ class PortalAutomation:
         if username is None:
             return
         if not credentials.egras_username or not credentials.egras_password:
-            await self.controls.manual_checkpoint(
-                "egras_login",
-                "Complete the eGRAS login in Chrome, then click Resume.",
+            await self._wait_for_manual_egras_login(
+                "Complete the eGRAS username, password, and CAPTCHA in Chrome, then click Proceed. "
+                "The app will continue when the OTP page appears."
             )
         else:
             await username.fill(credentials.egras_username)
             await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
             await self._solve_captcha(
-                ["img.imgcaptcha"],
-                ["#txtcaptcha"],
-                ["#ImageButton1", "input.rigcp"],
+                "img.imgcaptcha",
+                "#txtcaptcha",
                 expected_length=6,
             )
             self.otp_sequence_before_egras = self.otp_receiver.sequence
             await click_first(self.page, ["#btnproceed", 'input[value="Proceed"]'])
-            await self.page.wait_for_timeout(750)
+            await self._wait_for_egras_otp_step()
 
-        if await visible(self.page, "#txtOTP", 12_000):
-            await self._stage(Stage.EGRAS_OTP)
-            if self.otp_auto_fill and self.otp_receiver.is_paired:
-                self.emit(UiEvent("otp_waiting", "Waiting up to 45 seconds for a paired phone OTP..."))
-                otp = await self.otp_receiver.wait_for_new(self.otp_sequence_before_egras, timeout_seconds=45)
-                if otp is not None:
-                    await self.page.locator("#txtOTP").fill(otp)
-                    self.emit(
-                        UiEvent("otp_filled", "OTP received from the paired phone and filled in eGRAS.")
-                    )
-            elif self.otp_auto_fill:
-                self.emit(
-                    UiEvent("otp_manual", "No paired phone is connected; use the manual eGRAS OTP step.")
-                )
-            await self.controls.manual_checkpoint(
-                "egras_otp",
-                "Complete the eGRAS CAPTCHA and submit the OTP in Chrome, then click Resume.",
+        await self._stage(Stage.EGRAS_OTP)
+        # eGRAS presents a new CAPTCHA beside the OTP field after the login
+        # CAPTCHA was accepted. The server reuses the same IDs, so the active
+        # tab's visible controls are targeted.
+        await self._solve_captcha(
+            "div.tab-pane.active img.imgcaptcha",
+            "div.tab-pane.active #txtcaptcha",
+            expected_length=6,
+        )
+        if self.otp_auto_fill and self.otp_receiver.is_paired:
+            self.emit(UiEvent("otp_waiting", "Waiting up to 45 seconds for a paired phone OTP..."))
+            otp = await self.otp_receiver.wait_for_new(self.otp_sequence_before_egras, timeout_seconds=45)
+            if otp is not None:
+                await self.page.locator("#txtOTP").fill(otp)
+                self.emit(UiEvent("otp_filled", "OTP received from the paired phone and filled in eGRAS."))
+        elif self.otp_auto_fill:
+            self.emit(
+                UiEvent("otp_manual", "No paired phone is connected; use the manual eGRAS OTP step.")
             )
+        await self._wait_for_manual_egras_otp(
+            "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
+            "continue when the payment option appears."
+        )
+
+    async def _wait_for_manual_egras_login(self, message: str) -> None:
+        self.controls.pause()
+        self.emit(UiEvent("manual_checkpoint", message, {"checkpoint": "egras_login", "auto_continue": True}))
+        self.emit(UiEvent("log", "Waiting for the eGRAS OTP page and second CAPTCHA."))
+        await self._wait_for_egras_otp_step()
+        self.controls.resume()
+        self.emit(UiEvent("resumed", "eGRAS OTP page detected; solving the second CAPTCHA."))
+
+    async def _wait_for_egras_otp_step(self) -> None:
+        while True:
+            await self.controls.ensure_not_stopped()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed while waiting for the eGRAS OTP page.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            otp = await first_visible(self.page, ["#txtOTP"], 500)
+            captcha = await first_visible(self.page, ["div.tab-pane.active img.imgcaptcha"], 500)
+            captcha_input = await first_visible(self.page, ["div.tab-pane.active #txtcaptcha"], 500)
+            if otp is not None and captcha is not None and captcha_input is not None:
+                return
+            await self.page.wait_for_timeout(500)
+
+    async def _wait_for_manual_egras_otp(self, message: str) -> None:
+        self.controls.pause()
+        self.emit(UiEvent("manual_checkpoint", message, {"checkpoint": "egras_otp", "auto_continue": True}))
+        self.emit(UiEvent("log", "Waiting for the SBIePay option and payment button after eGRAS OTP."))
+        await self._wait_for_gateway_options()
+        self.controls.resume()
+        self.emit(UiEvent("resumed", "Payment options detected; continuing to gateway selection."))
+
+    async def _wait_for_gateway_options(self) -> None:
+        while True:
+            await self.controls.ensure_not_stopped()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed while waiting for payment options.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            gateway = await first_visible(self.page, ["#rbsbiepay"], 500)
+            pay_button = await first_visible(self.page, ["#btnSubmit"], 500)
+            if gateway is not None and pay_button is not None:
+                return
+            await self.page.wait_for_timeout(500)
 
     async def choose_gateway(self) -> None:
         await self._stage(Stage.GATEWAY_SELECT)
@@ -302,20 +356,54 @@ class PortalAutomation:
             self.page,
             ["#ContentPlaceHolder1_btncontinue", 'a:has-text("Proceed For Payment")'],
         )
-        await self.page.wait_for_load_state("domcontentloaded", timeout=60_000)
+        await self.page.wait_for_timeout(500)
 
-    async def manual_payment(self) -> None:
+    async def select_upi(self) -> None:
+        """Choose UPI on the SBI hosted payment page before manual payment."""
+        await self._stage(Stage.UPI_SELECT)
+        while True:
+            await self.controls.checkpoint()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed while waiting for the SBI payment page.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            if self.page.url.startswith(SBI_HOSTED_PAYMENT_URL):
+                upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
+                if upi is not None:
+                    await upi.click()
+                    self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
+                    return
+            await self.page.wait_for_timeout(500)
+
+    async def select_upi_qr_and_pay(self) -> None:
+        """Select UPI QR and begin the user-facing UPI payment."""
         await self._stage(Stage.PAYMENT)
-        await self.controls.manual_checkpoint(
-            "payment",
-            "Complete payment in Chrome. Do not click Resume until the portal shows success, "
-            "failure, or returns to the eStamp page.",
-        )
+        while True:
+            await self.controls.checkpoint()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed while preparing the UPI payment.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            qr_option = await first_visible(self.page, ["#upiQR1"], 500)
+            if qr_option is not None:
+                if not await qr_option.is_checked():
+                    await qr_option.check(force=True)
+                pay_now = await first_visible(self.page, ["#upiButton"], 10_000)
+                if pay_now is not None:
+                    await pay_now.click()
+                    self.emit(UiEvent("log", "UPI QR selected and Pay Now clicked."))
+                    return
+            await self.page.wait_for_timeout(500)
 
     async def find_result_link(self) -> Locator:
         await self._stage(Stage.RESULT)
-        deadline = time.monotonic() + 180
-        while time.monotonic() < deadline:
+        while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
                 raise AutomationError(
@@ -334,14 +422,7 @@ class PortalAutomation:
                     stage=self.stage,
                     code="transaction_failed",
                 )
-            if any(marker in self.page.url.lower() for marker in ("payment", "payproc", "sbiepay")):
-                await self.controls.manual_checkpoint(
-                    "payment_incomplete",
-                    "The payment result is not available yet. Finish or verify it in Chrome, "
-                    "then click Resume.",
-                )
             await self.page.wait_for_timeout(500)
-        raise AutomationError("Timed out waiting for the eStamp result.", stage=self.stage)
 
     async def reset_to_start(self, *, record_stage: bool = True) -> None:
         if record_stage:
@@ -354,39 +435,73 @@ class PortalAutomation:
 
     async def _solve_captcha(
         self,
-        image_selectors: list[str],
-        input_selectors: list[str],
-        refresh_selectors: list[str],
+        image_selector: str,
+        input_selector: str,
         expected_length: int,
     ) -> None:
-        for attempt in range(CAPTCHA_IMAGE_ATTEMPTS):
-            await self.controls.checkpoint()
-            image = await first_visible(self.page, image_selectors, 10_000)
-            field = await first_visible(self.page, input_selectors, 5_000)
-            if image is None or field is None:
-                raise AutomationError("The CAPTCHA image or input field was not found.", stage=self.stage)
-            try:
-                await self._copy_captcha_with_browser_menu(image)
-                code = await self.solver.solve(expected_length)
-                await field.fill(code)
-                self.emit(UiEvent("log", f"CAPTCHA solved on attempt {attempt + 1}."))
+        await self.controls.checkpoint()
+        image = await first_visible(self.page, [image_selector], 10_000)
+        field = await first_visible(self.page, [input_selector], 5_000)
+        if image is None or field is None:
+            raise AutomationError("The CAPTCHA image or input field was not found.", stage=self.stage)
+        if (await field.input_value()).strip():
+            await self._manual_captcha_entered()
+            return
+
+        ocr_task: asyncio.Task[str] | None = None
+        try:
+            await self._copy_captcha_with_browser_menu(image)
+            ocr_task = asyncio.create_task(self.solver.solve(expected_length))
+            while not ocr_task.done():
+                await self.controls.ensure_not_stopped()
+                if (await field.input_value()).strip():
+                    ocr_task.cancel()
+                    await asyncio.gather(ocr_task, return_exceptions=True)
+                    await self.solver.cancel_active_response()
+                    await self._manual_captcha_entered()
+                    return
+                await self.page.wait_for_timeout(100)
+            code = await ocr_task
+            if (await field.input_value()).strip():
+                await self._manual_captcha_entered()
                 return
-            except Exception as error:
-                self.emit(
-                    UiEvent(
-                        "notification",
-                        "Gemini could not read the CAPTCHA twice. Please enter it manually, then click "
-                        "Resume in the application.",
-                        {"title": "CAPTCHA needs manual entry", "level": "warning", "error": str(error)},
-                    )
+            await field.fill(code)
+            self.emit(UiEvent("log", "CAPTCHA solved by Gemini."))
+        except WorkflowStopped:
+            raise
+        except PlaywrightError as error:
+            if self.page.is_closed():
+                raise AutomationError(
+                    "Chrome or the portal page was closed.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                ) from error
+            raise
+        except Exception as error:
+            self.emit(
+                UiEvent(
+                    "notification",
+                    "Gemini could not read the CAPTCHA. Please enter it manually.",
+                    {"title": "CAPTCHA needs manual entry", "level": "warning", "error": str(error)},
                 )
-                await self.controls.manual_checkpoint(
-                    "captcha_manual",
-                    "Gemini could not read the CAPTCHA twice. Enter the displayed CAPTCHA manually in "
-                    "the browser, then click Resume.",
-                )
-                return
-        raise AutomationError("The CAPTCHA could not be solved.", stage=self.stage, code="captcha_failed")
+            )
+            await self.controls.manual_checkpoint(
+                "captcha_manual",
+                "Enter the displayed CAPTCHA manually in the browser, then click Resume.",
+            )
+        finally:
+            if ocr_task is not None and not ocr_task.done():
+                ocr_task.cancel()
+                await asyncio.gather(ocr_task, return_exceptions=True)
+                await self.solver.cancel_active_response()
+
+    async def _manual_captcha_entered(self) -> None:
+        self.emit(UiEvent("log", "Manual CAPTCHA input detected; Gemini OCR was stopped."))
+        await self.controls.manual_checkpoint(
+            "captcha_manual_input",
+            "Manual CAPTCHA input detected. Complete it in the browser, then click Resume.",
+        )
 
     async def _copy_captcha_with_browser_menu(self, image: Locator) -> None:
         """Calculate desktop coordinates and use Chrome's native Copy image action."""

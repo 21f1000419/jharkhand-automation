@@ -72,6 +72,17 @@ class CsvBatchStoreTests(unittest.TestCase):
         self.assertEqual(json.loads(row["transaction_refs"]), ["ref-one", "ref-two"])
         self.assertEqual(json.loads(row["estamp_files"]), ["downloads/one.pdf", "downloads/two.pdf"])
 
+    def test_single_quantity_stores_result_values_directly(self) -> None:
+        CsvBatchStore.write_template(self.path)
+        store = CsvBatchStore(self.path)
+        store.load()
+        row = store.rows[0]
+
+        store.mark_success(row, "ref-one", "downloads/one.pdf")
+
+        self.assertEqual(row["transaction_refs"], "ref-one")
+        self.assertEqual(row["estamp_files"], "downloads/one.pdf")
+
     def test_interrupted_running_row_becomes_retryable_error(self) -> None:
         CsvBatchStore.write_template(self.path)
         store = CsvBatchStore(self.path)

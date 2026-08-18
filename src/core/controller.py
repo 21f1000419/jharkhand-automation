@@ -16,7 +16,7 @@ from automation.portal import CITIZEN_LOGIN_URL
 from core.activity_log import DailyActivityLog
 from core.config import AppConfig
 from core.controls import RunControls
-from core.models import RunOptions, UiEvent
+from core.models import PortalBrowser, RunOptions, UiEvent
 from core.workflow import WorkflowEngine
 from services.gemini_ocr import GeminiCaptchaSolver
 from services.otp_wifi import WifiOtpReceiver
@@ -35,6 +35,7 @@ class AutomationController:
         # portal is deliberately launched separately with a fresh session.
         self.gemini_browser: BrowserSession | None = None
         self.portal_browser: PortalBrowserSession | None = None
+        self.portal_page: Page | None = None
         self.solver: GeminiCaptchaSolver | None = None
         self.otp_receiver = WifiOtpReceiver()
         self.run_task: asyncio.Task[None] | None = None
@@ -79,7 +80,7 @@ class AutomationController:
     def stop(self) -> None:
         self.controls.stop("Stopped by user")
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(self._cancel_run)
+            self._submit(self._stop_and_close_portal())
 
     def decide_error(self, action: str) -> None:
         self.controls.decide(action)
@@ -167,6 +168,7 @@ class AutomationController:
 
     async def _run(self, options: RunOptions) -> None:
         portal_watchdog: asyncio.Task[None] | None = None
+        completed = False
         try:
             _, solver = await self._ensure_gemini_services()
             if not await solver.verify_ready():
@@ -180,14 +182,21 @@ class AutomationController:
                 return
             self.emit(UiEvent("gemini_verified", "The browser profile and Gemini chat are ready."))
             self.emit(UiEvent("run_started", "Automation started."))
-            self.portal_browser = PortalBrowserSession(
-                options.portal_browser, self._on_portal_browser_disconnected
-            )
-            self._portal_browser_closed = False
-            page = await self.portal_browser.new_portal_page(CITIZEN_LOGIN_URL, timeout_ms=0)
+            if not self._can_reuse_portal(options.portal_browser):
+                await self._close_portal_browser()
+                self.portal_browser = PortalBrowserSession(
+                    options.portal_browser, self._on_portal_browser_disconnected
+                )
+                self._portal_browser_closed = False
+                self.portal_page = await self.portal_browser.new_portal_page(
+                    CITIZEN_LOGIN_URL, timeout_ms=0
+                )
+            page = self.portal_page
+            if page is None:
+                raise RuntimeError("The portal browser did not provide a page.")
             portal_watchdog = asyncio.create_task(self._monitor_portal_browser(page))
             engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
-            await engine.run(options)
+            completed = await engine.run(options)
         except asyncio.CancelledError:
             self.emit(UiEvent("run_stopped", "Automation stopped."))
         except Exception as error:
@@ -196,8 +205,18 @@ class AutomationController:
             if portal_watchdog is not None:
                 portal_watchdog.cancel()
                 await asyncio.gather(portal_watchdog, return_exceptions=True)
-            await self._close_portal_browser()
+            if not completed:
+                await self._close_portal_browser()
             self.run_task = None
+
+    def _can_reuse_portal(self, choice: PortalBrowser) -> bool:
+        return (
+            self.portal_browser is not None
+            and self.portal_page is not None
+            and not self.portal_page.is_closed()
+            and self.portal_browser.is_active
+            and self.portal_browser.choice == choice
+        )
 
     async def _monitor_portal_browser(self, page: Page) -> None:
         """Keep checking browser health while the workflow is paused for user input."""
@@ -211,6 +230,11 @@ class AutomationController:
     def _cancel_run(self) -> None:
         if self.run_task is not None and not self.run_task.done():
             self.run_task.cancel()
+
+    async def _stop_and_close_portal(self) -> None:
+        self._cancel_run()
+        await self._close_portal_browser()
+        self.emit(UiEvent("portal_closed", "Portal browser closed."))
 
     def _on_gemini_browser_disconnected(self) -> None:
         self.emit(
@@ -226,7 +250,7 @@ class AutomationController:
         self.solver = None
 
     def _on_portal_browser_disconnected(self) -> None:
-        if self._portal_browser_closed:
+        if self._portal_browser_closed or self.controls.stop_event.is_set():
             return
         self._portal_browser_closed = True
         name = self.portal_browser.choice.name if self.portal_browser is not None else "Portal browser"
@@ -241,6 +265,7 @@ class AutomationController:
 
     async def _close_portal_browser(self) -> None:
         browser, self.portal_browser = self.portal_browser, None
+        self.portal_page = None
         if browser is not None:
             await browser.close()
 

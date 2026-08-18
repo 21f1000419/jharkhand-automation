@@ -49,6 +49,11 @@ class RunControls:
                 raise WorkflowStopped
             await asyncio.sleep(0.1)
 
+    async def ensure_not_stopped(self) -> None:
+        """Check cancellation without requiring a paused manual checkpoint to resume."""
+        if self.stop_event.is_set():
+            raise WorkflowStopped
+
     async def manual_checkpoint(self, kind: str, message: str) -> None:
         self.run_gate.clear()
         self.emit(UiEvent("manual_checkpoint", message, {"checkpoint": kind}))

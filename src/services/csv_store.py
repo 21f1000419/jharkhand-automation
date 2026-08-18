@@ -114,8 +114,11 @@ class CsvBatchStore:
     def mark_success(self, row: dict[str, str], transaction_ref: str, relative_file: str) -> None:
         completed = int(row["completed_quantity"]) + 1
         row["completed_quantity"] = str(completed)
-        row["transaction_refs"] = append_json_value(row["transaction_refs"], transaction_ref)
-        row["estamp_files"] = append_json_value(row["estamp_files"], relative_file)
+        quantity = safe_positive_int(row["quantity"])
+        row["transaction_refs"] = append_history_value(
+            row["transaction_refs"], transaction_ref, quantity
+        )
+        row["estamp_files"] = append_history_value(row["estamp_files"], relative_file, quantity)
         row["last_error"] = ""
         row["last_stage"] = Stage.DOWNLOAD
         row["status"] = (
@@ -210,8 +213,9 @@ class CsvBatchStore:
                 row[key] = str(max(0, int(row[key] or "0")))
             except ValueError:
                 row[key] = "0"
+        quantity = safe_positive_int(row["quantity"])
         for key in ("transaction_refs", "estamp_files"):
-            row[key] = normalize_json_list(row[key])
+            row[key] = normalize_history_value(row[key], quantity)
         if row["status"] == RowStatus.RUNNING:
             row["status"] = RowStatus.ERROR
             row["last_error"] = "The previous application run ended before this unit finished."
@@ -221,20 +225,33 @@ class CsvBatchStore:
             row["status"] = RowStatus.PENDING
 
 
-def normalize_json_list(value: str) -> str:
+def normalize_json_list(value: str) -> list[str]:
     try:
         parsed = json.loads(value or "[]")
         if not isinstance(parsed, list):
             raise ValueError
-        return json.dumps([str(item) for item in parsed])
+        return [str(item) for item in parsed]
     except (ValueError, TypeError, json.JSONDecodeError):
-        return "[]"
+        return []
 
 
-def append_json_value(value: str, item: str) -> str:
-    parsed = json.loads(normalize_json_list(value))
-    parsed.append(item)
-    return json.dumps(parsed)
+def normalize_history_value(value: str, quantity: int) -> str:
+    values = normalize_json_list(value)
+    if not values and value.strip() and not value.lstrip().startswith("["):
+        values = [value.strip()]
+    if quantity == 1:
+        return values[0] if values else ""
+    return json.dumps(values)
+
+
+def append_history_value(value: str, item: str, quantity: int) -> str:
+    if quantity == 1:
+        return item
+    values = normalize_json_list(value)
+    if not values and value.strip() and not value.lstrip().startswith("["):
+        values = [value.strip()]
+    values.append(item)
+    return json.dumps(values)
 
 
 def safe_positive_int(value: str) -> int:
