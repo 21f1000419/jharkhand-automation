@@ -11,7 +11,7 @@ from typing import Any
 
 from playwright.async_api import Page
 
-from automation.browser import BrowserSession, PortalBrowserSession
+from automation.browser import BrowserSession, PortalBrowserSession, cleanup_all_spawned_processes
 from automation.portal import CITIZEN_LOGIN_URL
 from core.activity_log import DailyActivityLog
 from core.config import AppConfig
@@ -39,6 +39,7 @@ class AutomationController:
         self.solver: GeminiCaptchaSolver | None = None
         self.run_task: asyncio.Task[None] | None = None
         self._portal_browser_closed = False
+        self._is_shut_down = False
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._thread_main, name="automation-worker", daemon=True)
         self._thread.start()
@@ -91,15 +92,24 @@ class AutomationController:
         self._submit(self._close_gemini_ocr())
 
     def shutdown(self) -> None:
-        self.controls.stop("Application closed")
-        if self.loop is None:
+        if self._is_shut_down:
             return
-        future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), self.loop)
-        with suppress(Exception):
-            future.result(timeout=20)
-        if self.loop.is_running():
-            self.loop.call_soon_threadsafe(self.loop.stop)
-        self._thread.join(timeout=2)
+        self._is_shut_down = True
+        self.controls.stop("Application closed")
+        if self.loop is not None and self.loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), self.loop)
+                with suppress(Exception):
+                    future.result(timeout=15)
+            except Exception:
+                pass
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except Exception:
+                pass
+        if self._thread.is_alive():
+            self._thread.join(timeout=2)
+        cleanup_all_spawned_processes()
 
     def _thread_main(self) -> None:
         self.loop = asyncio.new_event_loop()
@@ -306,16 +316,22 @@ class AutomationController:
         self.controls.stop(f"{name} was closed")
 
     async def _close_gemini_browser(self) -> None:
-        if self.gemini_browser is not None:
-            await self.gemini_browser.close()
-        self.gemini_browser = None
+        browser, self.gemini_browser = self.gemini_browser, None
         self.solver = None
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
     async def _close_portal_browser(self) -> None:
         browser, self.portal_browser = self.portal_browser, None
         self.portal_page = None
         if browser is not None:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
     async def _shutdown_async(self) -> None:
         self.emit(UiEvent("browsers_closing", "Closing the portal browser and signed-in Chrome profile."))
@@ -323,8 +339,11 @@ class AutomationController:
         task = self.run_task
         if task is not None and task is not asyncio.current_task():
             await asyncio.gather(task, return_exceptions=True)
-        await self._close_portal_browser()
-        await self._close_gemini_browser()
+        await asyncio.gather(
+            self._close_portal_browser(),
+            self._close_gemini_browser(),
+            return_exceptions=True,
+        )
 
     def _submit(self, coroutine: Coroutine[Any, Any, Any]) -> None:
         if self.loop is None:

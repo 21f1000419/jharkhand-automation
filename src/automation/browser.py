@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
+import signal
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +15,62 @@ from urllib.request import urlopen
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from core.models import BrowserEngine, PortalBrowser
+
+_PROCESS_LOCK = threading.Lock()
+_TRACKED_PROCESSES: set[subprocess.Popen[bytes]] = set()
+
+
+def register_process(process: subprocess.Popen[bytes]) -> None:
+    with _PROCESS_LOCK:
+        _TRACKED_PROCESSES.add(process)
+
+
+def unregister_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is not None:
+        with _PROCESS_LOCK:
+            _TRACKED_PROCESSES.discard(process)
+
+
+def terminate_process_tree_sync(process: subprocess.Popen[bytes] | int | None) -> None:
+    """Close a process and all its child processes synchronously."""
+    if process is None:
+        return
+    pid = process.pid if isinstance(process, subprocess.Popen) else process
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        if isinstance(process, subprocess.Popen):
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def cleanup_all_spawned_processes() -> None:
+    """Synchronous emergency cleanup for all tracked browser processes."""
+    with _PROCESS_LOCK:
+        processes = list(_TRACKED_PROCESSES)
+        _TRACKED_PROCESSES.clear()
+    for proc in processes:
+        try:
+            if proc.poll() is None:
+                terminate_process_tree_sync(proc)
+        except Exception:
+            pass
+
+
+atexit.register(cleanup_all_spawned_processes)
 
 
 class BrowserSession:
@@ -49,7 +108,16 @@ class BrowserSession:
         endpoint = f"http://127.0.0.1:{self.debug_port}"
         if not await debugger_ready(endpoint):
             self._launch_chrome()
-            await wait_for_debugger(endpoint, self.process)
+            try:
+                await wait_for_debugger(endpoint, self.process)
+            except Exception:
+                if self.process is not None:
+                    if self.process.poll() is None:
+                        await terminate_process_tree(self.process)
+                    unregister_process(self.process)
+                    self.process = None
+                    self.owns_chrome = False
+                raise
 
         self.playwright = await async_playwright().start()
         try:
@@ -61,6 +129,12 @@ class BrowserSession:
             return self.context
         except Exception:
             await self._stop_playwright()
+            if self.owns_chrome and self.process is not None:
+                if self.process.poll() is None:
+                    await terminate_process_tree(self.process)
+                unregister_process(self.process)
+                self.process = None
+                self.owns_chrome = False
             raise
 
     async def page_for_host(self, hostname: str, *, create_url: str) -> Page:
@@ -87,14 +161,23 @@ class BrowserSession:
         self.browser = None
         self.context = None
         self.process = None
-        try:
-            if browser is not None and browser.is_connected():
+        self.owns_chrome = False
+
+        if browser is not None and browser.is_connected():
+            try:
+                cdp = await browser.new_browser_cdp_session()
+                await cdp.send("Browser.close")
+            except Exception:
+                pass
+            try:
                 await browser.close()
-        except Exception:
-            pass
+            except Exception:
+                pass
+
         if owns_chrome and process is not None and process.poll() is None:
             await terminate_process_tree(process)
-        self.owns_chrome = False
+        unregister_process(process)
+
         await self._stop_playwright()
         self.closing = False
 
@@ -131,12 +214,22 @@ class BrowserSession:
             creationflags=creation_flags,
         )
         self.owns_chrome = True
+        register_process(self.process)
 
     def _disconnected(self, _browser: Browser) -> None:
+        process = self.process
+        owns_chrome = self.owns_chrome
+        is_headless = self.headless
         self.browser = None
         self.context = None
         self.process = None
         self.owns_chrome = False
+
+        if is_headless and owns_chrome and process is not None:
+            if process.poll() is None:
+                terminate_process_tree_sync(process)
+            unregister_process(process)
+
         if not self.closing and self.on_disconnect is not None:
             self.on_disconnect()
 
@@ -169,26 +262,14 @@ async def wait_for_debugger(
         if await debugger_ready(endpoint):
             return
         await asyncio.sleep(0.25)
-    process.kill()
+    terminate_process_tree_sync(process)
+    unregister_process(process)
     raise RuntimeError("Chrome's automation connection did not become ready.")
 
 
 async def terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Close Chrome plus its child processes when this app launched it."""
-    if os.name == "nt":
-        await asyncio.to_thread(
-            subprocess.run,
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return
-    process.terminate()
-    try:
-        await asyncio.to_thread(process.wait, 3)
-    except subprocess.TimeoutExpired:
-        process.kill()
+    await asyncio.to_thread(terminate_process_tree_sync, process)
 
 
 class PortalBrowserSession:
@@ -242,6 +323,12 @@ class PortalBrowserSession:
             self.context = await self.browser.new_context(accept_downloads=True, no_viewport=True)
             return self.context
         except Exception:
+            if self.browser is not None:
+                try:
+                    await self.browser.close()
+                except Exception:
+                    pass
+                self.browser = None
             await self._stop_playwright()
             raise
 
