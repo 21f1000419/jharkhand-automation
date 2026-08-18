@@ -103,16 +103,16 @@ async function handleRequest(request, response) {
     const sender = cleanText(body.sender);
     const receivedAt = new Date().toISOString();
 
-    if (!content || !sender) {
-      console.log(`[${receivedAt}] Incoming SMS rejected - User ID: ${userId}, missing sender or content. Body: ${JSON.stringify(body)}`);
-      return sendJson(response, 400, { error: "content and sender are required." });
+    if (!content) {
+      console.log(`[${receivedAt}] Incoming SMS rejected - User ID: ${userId}, missing content. Body: ${JSON.stringify(body)}`);
+      return sendJson(response, 400, { error: "content is required." });
     }
 
-    console.log(`[${receivedAt}] Incoming SMS - User ID: ${userId}, Sender: "${sender}", Content: "${content}"`);
+    console.log(`[${receivedAt}] Incoming SMS - User ID: ${userId}, Sender: "${sender || "N/A"}", Content: "${content}"`);
 
     const recognisedOtp = findOtp(content);
     if (!recognisedOtp) {
-      console.log(`[${receivedAt}] Unrecognised SMS - User ID: ${userId}, Sender: "${sender}" (no matching OTP pattern)`);
+      console.log(`[${receivedAt}] Unrecognised SMS - User ID: ${userId}, Sender: "${sender || "N/A"}" (no matching OTP pattern)`);
       return sendJson(response, 202, {
         stored: false,
         reason: "SMS content is not a recognised OTP pattern.",
@@ -124,7 +124,7 @@ async function handleRequest(request, response) {
       userId,
       type: recognisedOtp.type,
       otp: recognisedOtp.otp,
-      sender,
+      sender: sender || "",
       content,
       metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : {},
       receivedAt,
@@ -132,7 +132,7 @@ async function handleRequest(request, response) {
     };
     pendingOtps.set(keyFor(userId, entry.type), entry);
 
-    console.log(`[${receivedAt}] Stored OTP - User ID: ${userId}, Sender: "${sender}", Decoded Type: ${entry.type}`);
+    console.log(`[${receivedAt}] Stored OTP - User ID: ${userId}, Sender: "${sender || "N/A"}", Decoded Type: ${entry.type}`);
 
     return sendJson(response, 201, {
       stored: true,
@@ -211,8 +211,8 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`  Path parameter:`);
   console.log(`    - :userId   (string, required): Matching the SMS User ID in the desktop app`);
   console.log(`  Body fields (JSON):`);
-  console.log(`    - "sender":   (string, required) Sender address/name (e.g. [sms_sender] variable)`);
   console.log(`    - "content":  (string, required) SMS message body (e.g. [sms_body] variable)`);
+  console.log(`    - "sender":   (string, optional) Sender address/name (e.g. [sms_sender] variable)`);
   console.log(`    - "metadata": (object, optional) Optional info e.g. { "receivedOnPhone": "timestamp" }`);
   console.log(`  Example JSON body:`);
   console.log(`    {`);
