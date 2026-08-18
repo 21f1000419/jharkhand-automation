@@ -586,12 +586,7 @@ class MainWindow:
             )
             return
         self._record_ui_action("select_csv_clicked")
-        selected = filedialog.askopenfilename(
-            title="Choose batch CSV",
-            filetypes=[("CSV files", "*.csv")],
-            parent=self.root,
-            initialdir=self._dialog_directory(self.csv_var.get()),
-        )
+        selected = filedialog.askopenfilename(title="Choose batch CSV", filetypes=[("CSV files", "*.csv")])
         if selected:
             self.csv_valid = False
             self.csv_var.set(selected)
@@ -602,12 +597,7 @@ class MainWindow:
         if not self._require_gemini():
             return
         self._record_ui_action("choose_download_folder_clicked")
-        selected = filedialog.askdirectory(
-            title="Choose eStamp download folder",
-            parent=self.root,
-            initialdir=self._dialog_directory(self.download_var.get()),
-            mustexist=True,
-        )
+        selected = filedialog.askdirectory(title="Choose eStamp download folder")
         if selected:
             self.download_var.set(selected)
             self._save_non_secret_settings()
@@ -958,12 +948,17 @@ class MainWindow:
             self.run_status_var.set("Running")
         elif event.kind == "stage":
             self.run_status_var.set(f"Running: {event.message.replace('_', ' ').title()}")
-        elif event.kind in {"manual_checkpoint", "paused", "persistence_blocked"}:
+        elif event.kind == "status":
+            self.run_status_var.set(event.message)
+        elif event.kind in {"manual_checkpoint", "paused"}:
             self.paused = True
             self.auto_waiting = bool(event.data.get("auto_continue"))
             self.run_status_var.set("Waiting for user")
-            if event.kind == "persistence_blocked":
-                messagebox.showwarning("CSV is locked", event.message, parent=self.root)
+        elif event.kind == "persistence_blocked":
+            self.paused = False
+            self.auto_waiting = False
+            self.run_status_var.set("Waiting for CSV file access")
+            messagebox.showwarning("CSV is locked", event.message, parent=self.root)
         elif event.kind == "resumed":
             self.paused = False
             self.auto_waiting = False

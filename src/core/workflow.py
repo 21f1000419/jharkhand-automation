@@ -224,6 +224,7 @@ class WorkflowEngine:
         self.emit(UiEvent("stage", stage.value))
 
     async def _persist(self, ignore_stop: bool = False) -> None:
+        reported_block = False
         while True:
             try:
                 self.store_or_raise().persist()
@@ -232,9 +233,11 @@ class WorkflowEngine:
                 if ignore_stop:
                     self.emit(UiEvent("log", f"Final CSV save failed: {error}", {"level": "error"}))
                     return
-                self.controls.pause()
-                self.emit(UiEvent("persistence_blocked", str(error)))
+                if not reported_block:
+                    self.emit(UiEvent("persistence_blocked", str(error)))
+                    reported_block = True
                 await self.controls.checkpoint()
+                await asyncio.sleep(1)
 
     def _publish_progress(self, row_number: int, row: dict[str, str]) -> None:
         store = self.store_or_raise()
