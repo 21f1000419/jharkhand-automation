@@ -20,8 +20,10 @@ The phone must be on a network that can reach the computer. If Windows Firewall 
 ### Health check
 
 ```http
-GET /health
+GET /
 ```
+
+`GET /health` returns the same payload.
 
 Example response:
 
@@ -53,14 +55,14 @@ Content-Type: application/json
 ### Poll an OTP from the Python application
 
 ```http
-GET /api/users/:userId/otps/:type
+GET /api/users/:userId/otps/:type?notBefore=:serverUtcTimestamp
 ```
 
 Allowed OTP types are `main` and `egrass`.
 
 ```http
-GET /api/users/my-user/otps/main
-GET /api/users/my-user/otps/egrass
+GET /api/users/my-user/otps/main?notBefore=2026-08-18T10:00:00.000Z
+GET /api/users/my-user/otps/egrass?notBefore=2026-08-18T10:00:00.000Z
 ```
 
 If no OTP is waiting, the response is `404`:
@@ -82,11 +84,11 @@ If an OTP is waiting, the response is `200`:
 }
 ```
 
-Poll every 1-2 seconds while the target website is waiting for the OTP. Stop polling once received or when the automation timeout is reached.
+Immediately before requesting an OTP, the desktop app records a UTC (`Z`) timestamp as `notBefore`. It polls for 90 seconds for `main` and 100 seconds for `egrass`—well beyond 30-40 seconds. Checks happen every second for the first 10 seconds, every 2 seconds until 40 seconds, then every 3 seconds. UTC means the desktop and SMS server can use completely different local timezones without affecting the comparison. OTPs received before `notBefore` return `404` and are not used.
 
 ### Mark the OTP used and remove it
 
-Only delete the OTP after the target website has accepted it.
+Only delete the OTP after the target website has accepted it. Send the OTP that was used so a delayed cleanup cannot remove a newer replacement OTP. This is a single DELETE request; there is no separate pre-delete lookup.
 
 ```http
 DELETE /api/users/:userId/otps/:type
@@ -98,11 +100,17 @@ Example:
 DELETE /api/users/my-user/otps/egrass
 ```
 
+```json
+{ "otp": "A09AFD" }
+```
+
 Response:
 
 ```json
 { "deleted": true }
 ```
+
+If a newer OTP has already replaced this one, the server returns `409` and leaves the newer OTP untouched.
 
 ## OTP recognition and replacement rules
 

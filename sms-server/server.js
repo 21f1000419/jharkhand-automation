@@ -82,8 +82,12 @@ async function handleRequest(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const pathParts = url.pathname.split("/").filter(Boolean);
 
-  if (request.method === "GET" && url.pathname === "/health") {
-    return sendJson(response, 200, { ok: true, pendingOtpCount: pendingOtps.size });
+  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
+    return sendJson(response, 200, {
+      ok: true,
+      service: "sms-otp-server",
+      pendingOtpCount: pendingOtps.size,
+    });
   }
 
   // POST /api/users/:userId/sms
@@ -137,8 +141,15 @@ async function handleRequest(request, response) {
     }
 
     removeExpiredOtps();
+    const notBeforeValue = url.searchParams.get("notBefore");
+    const notBeforeMs = notBeforeValue ? Date.parse(notBeforeValue) : null;
+    if (notBeforeValue && Number.isNaN(notBeforeMs)) {
+      return sendJson(response, 400, { error: "notBefore must be a valid ISO-8601 timestamp." });
+    }
     const entry = pendingOtps.get(keyFor(userId, type));
-    if (!entry) return sendJson(response, 404, { found: false });
+    if (!entry || (notBeforeMs !== null && entry.receivedAtMs < notBeforeMs)) {
+      return sendJson(response, 404, { found: false });
+    }
 
     return sendJson(response, 200, {
       found: true,
@@ -154,7 +165,21 @@ async function handleRequest(request, response) {
   if (request.method === "DELETE" && pathParts.length === 5 && pathParts[0] === "api" && pathParts[1] === "users" && pathParts[3] === "otps") {
     const userId = decodeURIComponent(pathParts[2]).trim();
     const type = decodeURIComponent(pathParts[4]).trim().toLowerCase();
-    const deleted = pendingOtps.delete(keyFor(userId, type));
+    const body = await getJsonBody(request);
+    const otp = cleanText(body.otp);
+    if (!otp) {
+      return sendJson(response, 400, { error: "OTP value is required to delete an OTP." });
+    }
+    const key = keyFor(userId, type);
+    const currentOtp = pendingOtps.get(key);
+
+    // The client submits the OTP it used. If it no longer matches, a newer
+    // OTP is pending and is left untouched. This happens in one DELETE call.
+    if (currentOtp && otp !== currentOtp.otp) {
+      return sendJson(response, 409, { deleted: false, reason: "A newer OTP is pending." });
+    }
+
+    const deleted = pendingOtps.delete(key);
     return sendJson(response, 200, { deleted });
   }
 

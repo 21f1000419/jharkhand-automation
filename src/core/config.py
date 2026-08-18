@@ -7,6 +7,7 @@ from pathlib import Path
 
 APP_DIRECTORY_NAME = "eStampAutomation"
 LEGACY_GEMINI_PROFILE = Path(r"D:\Projects\agent-orchestrator\.playwright-chrome-profile")
+DEFAULT_SMS_SERVER_URL = "https://sms-server.compitcom.in"
 
 
 @dataclass
@@ -18,7 +19,8 @@ class AppConfig:
     last_portal_browser_path: str = ""
     custom_portal_browser_path: str = ""
     custom_portal_browser_engine: str = ""
-    otp_auto_fill: bool = False
+    sms_user_id: str = ""
+    sms_server_url: str = DEFAULT_SMS_SERVER_URL
     gemini_verified: bool = False
     debug_port: int = 9347
 

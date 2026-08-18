@@ -13,12 +13,14 @@ from core.models import AutomationError, Credentials, Stage, UiEvent, WorkflowSt
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
-from services.otp_wifi import WifiOtpReceiver
+from services.sms_otp_client import SmsOtpClient, SmsOtpServerError
 
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
 CITIZEN_WELCOME_URL = "https://jharnibandhan.gov.in/Citizenentry/welcome"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
 SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
+MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
+EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -35,17 +37,20 @@ class PortalAutomation:
         controls: RunControls,
         on_stage: StageCallback,
         emit: EventCallback,
-        otp_receiver: WifiOtpReceiver,
-        otp_auto_fill: bool,
+        sms_otp_client: SmsOtpClient,
+        sms_user_id: str,
     ) -> None:
         self.page = page
         self.solver = solver
         self.controls = controls
         self.on_stage = on_stage
         self.emit = emit
-        self.otp_receiver = otp_receiver
-        self.otp_auto_fill = otp_auto_fill
-        self.otp_sequence_before_egras = otp_receiver.sequence
+        self.sms_otp_client = sms_otp_client
+        self.sms_user_id = sms_user_id.strip()
+        self.citizen_otp_for_cleanup: str | None = None
+        self.egrass_otp_for_cleanup: str | None = None
+        self.citizen_otp_not_before: str | None = None
+        self.egrass_otp_not_before: str | None = None
         self.stage = Stage.IDLE
         self.page.set_default_timeout(15_000)
 
@@ -118,26 +123,39 @@ class PortalAutomation:
             )
             if not captcha_entered_manually:
                 otp_button = await self._wait_for_login_element("#btnotp")
-                citizen_otp_sequence = self.otp_receiver.sequence
+                self.citizen_otp_not_before = self._capture_otp_request_time()
                 await otp_button.click()
                 await self._wait_for_login_element("#otp")
-                if self.otp_auto_fill and self.otp_receiver.is_paired:
-                    self.emit(UiEvent("otp_waiting", "Waiting for the paired phone's Citizen OTP..."))
-                    otp = await self.otp_receiver.wait_for_new(citizen_otp_sequence, timeout_seconds=60)
+                if self.sms_user_id and self.citizen_otp_not_before:
+                    self.emit(UiEvent("otp_waiting", "Waiting for Citizen OTP from the SMS server..."))
+                    otp = await self._wait_for_sms_otp(
+                        "main",
+                        "#otp",
+                        self.citizen_otp_not_before,
+                        timeout_seconds=MAIN_OTP_POLL_TIMEOUT_SECONDS,
+                    )
                     if otp is not None:
                         await self.page.locator("#otp").fill(otp)
+                        self.citizen_otp_for_cleanup = otp
                         self.emit(
-                            UiEvent("otp_filled", "Citizen OTP received from the paired phone and filled.")
+                            UiEvent("otp_filled", "Citizen OTP received from the SMS server and filled.")
                         )
-                elif self.otp_auto_fill:
+                    else:
+                        self.emit(
+                            UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
+                        )
+                else:
                     self.emit(
-                        UiEvent("otp_manual", "No paired phone is connected; enter the Citizen OTP manually.")
+                        UiEvent("otp_manual", "SMS User ID is empty; enter the Citizen OTP manually.")
                     )
             await self._wait_for_manual_citizen_login(
                 "Waiting for the Citizen welcome page after the user completes the login steps."
             )
 
         await self._open_estamp_entry()
+        if self.citizen_otp_for_cleanup is not None:
+            self._delete_used_otp_in_background("main", self.citizen_otp_for_cleanup)
+            self.citizen_otp_for_cleanup = None
 
     async def _wait_for_manual_citizen_login(self, message: str) -> None:
         self.emit(UiEvent("log", message))
@@ -266,6 +284,7 @@ class PortalAutomation:
         username = await first_visible(self.page, ["#txtLoginId"], 10_000)
         if username is None:
             return
+        self.egrass_otp_not_before = self._capture_otp_request_time()
         if not credentials.egras_username or not credentials.egras_password:
             await self._wait_for_manual_egras_login(
                 "Complete the eGRAS username, password, and CAPTCHA in Chrome, then click Proceed. "
@@ -274,7 +293,6 @@ class PortalAutomation:
         else:
             await username.fill(credentials.egras_username)
             await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
-            self.otp_sequence_before_egras = self.otp_receiver.sequence
             captcha_entered_manually = await self._solve_captcha(
                 "img.imgcaptcha",
                 "#txtcaptcha",
@@ -293,20 +311,91 @@ class PortalAutomation:
             "div.tab-pane.active #txtcaptcha",
             expected_length=6,
         )
-        if self.otp_auto_fill and self.otp_receiver.is_paired:
-            self.emit(UiEvent("otp_waiting", "Waiting up to 45 seconds for a paired phone OTP..."))
-            otp = await self.otp_receiver.wait_for_new(self.otp_sequence_before_egras, timeout_seconds=45)
+        if self.sms_user_id and self.egrass_otp_not_before:
+            self.emit(UiEvent("otp_waiting", "Waiting for eGRAS OTP from the SMS server..."))
+            otp = await self._wait_for_sms_otp(
+                "egrass",
+                "#txtOTP",
+                self.egrass_otp_not_before,
+                timeout_seconds=EGRASS_OTP_POLL_TIMEOUT_SECONDS,
+            )
             if otp is not None:
                 await self.page.locator("#txtOTP").fill(otp)
-                self.emit(UiEvent("otp_filled", "OTP received from the paired phone and filled in eGRAS."))
-        elif self.otp_auto_fill:
+                self.egrass_otp_for_cleanup = otp
+                self.emit(UiEvent("otp_filled", "OTP received from the SMS server and filled in eGRAS."))
+            else:
+                self.emit(
+                    UiEvent("otp_manual", "Use the manually entered eGRAS OTP, then click Validate OTP.")
+                )
+        else:
             self.emit(
-                UiEvent("otp_manual", "No paired phone is connected; use the manual eGRAS OTP step.")
+                UiEvent("otp_manual", "SMS User ID is empty; use the manual eGRAS OTP step.")
             )
         await self._wait_for_manual_egras_otp(
             "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
             "continue when the payment option appears."
         )
+        if self.egrass_otp_for_cleanup is not None:
+            self._delete_used_otp_in_background("egrass", self.egrass_otp_for_cleanup)
+            self.egrass_otp_for_cleanup = None
+
+    def _capture_otp_request_time(self) -> str | None:
+        """Use UTC so differing local timezones cannot admit old OTPs."""
+        return self.sms_otp_client.request_time() if self.sms_user_id else None
+
+    async def _wait_for_sms_otp(
+        self, otp_type: str, field_selector: str, not_before: str, timeout_seconds: float
+    ) -> str | None:
+        """Poll without blocking Playwright; a missing/unreachable server falls back to manual entry."""
+        started_at = time.monotonic()
+        deadline = started_at + timeout_seconds
+        reported_connection_issue = False
+        while time.monotonic() < deadline:
+            await self.controls.checkpoint()
+            if await self.page.locator(field_selector).input_value():
+                self.emit(
+                    UiEvent("otp_manual", "Manual OTP input detected; automatic OTP entry is disabled.")
+                )
+                return None
+            try:
+                otp = await self.sms_otp_client.get_otp(self.sms_user_id, otp_type, not_before)
+            except SmsOtpServerError as error:
+                if not reported_connection_issue:
+                    self.emit(UiEvent("otp_server_issue", f"SMS OTP server unavailable; retrying: {error}"))
+                    reported_connection_issue = True
+            else:
+                if otp is not None:
+                    if await self.page.locator(field_selector).input_value():
+                        self.emit(
+                            UiEvent(
+                                "otp_manual",
+                                "Manual OTP input detected; automatic OTP entry is disabled.",
+                            )
+                        )
+                        return None
+                    return otp
+            elapsed_seconds = time.monotonic() - started_at
+            # Fast initial checks reduce perceived wait time. The backoff then
+            # avoids needless requests while an SMS is still in transit.
+            interval_seconds = 1 if elapsed_seconds < 10 else 2 if elapsed_seconds < 40 else 3
+            await self.page.wait_for_timeout(interval_seconds * 1_000)
+        return None
+
+    def _delete_used_otp_in_background(self, otp_type: str, otp: str) -> None:
+        """Cleanup is deliberately detached so it cannot delay the browser workflow."""
+
+        async def delete() -> None:
+            try:
+                deleted = await self.sms_otp_client.delete_otp_after_use(
+                    self.sms_user_id, otp_type, otp
+                )
+            except SmsOtpServerError as error:
+                self.emit(UiEvent("otp_cleanup_issue", f"Used {otp_type} OTP could not be removed: {error}"))
+                return
+            if deleted:
+                self.emit(UiEvent("otp_removed", f"Used {otp_type} OTP removed from the SMS server."))
+
+        asyncio.create_task(delete())
 
     async def _wait_for_manual_egras_login(self, message: str) -> None:
         self.emit(UiEvent("log", message))

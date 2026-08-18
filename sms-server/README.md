@@ -17,6 +17,12 @@ $env:OTP_TTL_MS = 300000
 node server.js
 ```
 
+Open `http://localhost:8787/` to verify the server is running. It returns JSON like:
+
+```json
+{ "ok": true, "service": "sms-otp-server", "pendingOtpCount": 0 }
+```
+
 The phone and the computer must be able to reach each other. Use the computer's LAN IP in MacroDroid, for example `http://192.168.1.20:8787`.
 
 ## MacroDroid HTTP request
@@ -60,6 +66,14 @@ GET /api/users/USER_ID/otps/main
 GET /api/users/USER_ID/otps/egrass
 ```
 
+To exclude OTPs that arrived before the website requested a new one, add an ISO-8601 UTC `notBefore` query parameter:
+
+```
+GET /api/users/USER_ID/otps/main?notBefore=2026-08-18T10:00:00.000Z
+```
+
+The desktop app records this timestamp in UTC immediately before requesting an OTP. UTC avoids timezone differences between the desktop and server.
+
 A waiting OTP returns `404` with `{ "found": false }`. A received OTP returns:
 
 ```json
@@ -73,18 +87,22 @@ A waiting OTP returns `404` with `{ "found": false }`. A received OTP returns:
 }
 ```
 
-After the OTP was actually accepted by the target website, remove it:
+After the OTP was actually accepted by the target website, remove it. Send the OTP value used in the body so a delayed cleanup cannot delete a newer replacement OTP. This is one DELETE request; no pre-delete lookup is needed.
 
 ```
 DELETE /api/users/USER_ID/otps/main
 ```
 
-Use the same route with `egrass` for e-GRAS. The delete response is `{ "deleted": true }` when an entry was removed.
+```json
+{ "otp": "36367408" }
+```
+
+Use the same route with `egrass` for e-GRAS. The delete response is `{ "deleted": true }` when an entry was removed. It returns `409` if a newer OTP is already pending.
 
 ## Quick manual check
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri 'http://localhost:8787/api/users/demo/sms' -ContentType 'application/json' -Body '{"sender":"VM-NGDRS","content":"Your OTP to NGDRS Login :- 36367408"}'
 Invoke-RestMethod 'http://localhost:8787/api/users/demo/otps/main'
-Invoke-RestMethod -Method Delete 'http://localhost:8787/api/users/demo/otps/main'
+Invoke-RestMethod -Method Delete -Uri 'http://localhost:8787/api/users/demo/otps/main' -ContentType 'application/json' -Body '{"otp":"36367408"}'
 ```

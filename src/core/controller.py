@@ -19,7 +19,6 @@ from core.controls import RunControls
 from core.models import PortalBrowser, RunOptions, UiEvent
 from core.workflow import WorkflowEngine
 from services.gemini_ocr import GeminiCaptchaSolver
-from services.otp_wifi import WifiOtpReceiver
 
 
 class AutomationController:
@@ -38,7 +37,6 @@ class AutomationController:
         self.portal_browser: PortalBrowserSession | None = None
         self.portal_page: Page | None = None
         self.solver: GeminiCaptchaSolver | None = None
-        self.otp_receiver = WifiOtpReceiver()
         self.run_task: asyncio.Task[None] | None = None
         self._portal_browser_closed = False
         self._ready = threading.Event()
@@ -201,7 +199,7 @@ class AutomationController:
             if page is None:
                 raise RuntimeError("The portal browser did not provide a page.")
             portal_watchdog = asyncio.create_task(self._monitor_portal_browser(page))
-            engine = WorkflowEngine(page, solver, self.controls, self.emit, self.otp_receiver)
+            engine = WorkflowEngine(page, solver, self.controls, self.emit)
             completed = await engine.run(options)
         except asyncio.CancelledError:
             self.emit(UiEvent("run_stopped", "Automation stopped."))
@@ -283,7 +281,6 @@ class AutomationController:
             await asyncio.gather(task, return_exceptions=True)
         await self._close_portal_browser()
         await self._close_gemini_browser()
-        self.otp_receiver.close()
 
     def _submit(self, coroutine: Coroutine[Any, Any, Any]) -> None:
         if self.loop is None:

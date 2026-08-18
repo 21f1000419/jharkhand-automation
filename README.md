@@ -4,7 +4,7 @@ Windows Tkinter application for processing resumable CSV batches through the Jha
 
 Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
 
-At the start of a portal session, the application opens the Jharkhand portal home page and clicks its Citizen **Login** link, rather than requesting the login URL directly. When Citizen credentials are supplied, it captures the displayed `#captcha_image` directly for Gemini OCR, fills the CAPTCHA, and clicks **Get OTP**. It then optionally fills a paired-phone OTP, while the user confirms Login. The app allows up to two minutes for the portal's eStamp entry link to appear before treating the login as incomplete.
+At the start of a portal session, the application opens the Jharkhand portal home page and clicks its Citizen **Login** link, rather than requesting the login URL directly. When Citizen credentials are supplied, it captures the displayed `#captcha_image` directly for Gemini OCR, fills the CAPTCHA, and clicks **Get OTP**. When an SMS User ID is configured, it polls the SMS server and fills the retrieved OTP; the user then confirms Login. The app allows up to two minutes for the portal's eStamp entry link to appear before treating the login as incomplete.
 
 ## Install and run from source
 
@@ -76,9 +76,9 @@ Every application action, workflow stage, error, and stop event is appended to o
 `%LOCALAPPDATA%\Compitcom\eStampAutomation\logs`. Use **Activity > Current Session…** for the current session and
 **Activity > Open Daily Log Folder** to view the persistent diagnostic files.
 
-## Optional Android OTP auto-fill
+## Optional SMS-server OTP auto-fill
 
-Install the companion `otp-reader` APK on a phone you control. With both devices on the same Wi-Fi, open **OTP phone...** in the desktop app and enter its displayed server address and temporary pairing token in the Android app. Enable **Auto-fill eGRAS OTP from paired phone** before starting a batch. The phone forwards only a newly received OTP directly to the desktop, which fills the eGRAS OTP field; CAPTCHA and final submission remain manual. If no phone is paired, or no OTP arrives, the existing manual OTP checkpoint is used.
+Enter the User ID used by the SMS server in **SMS OTP settings**. MacroDroid forwards SMS messages to the shared SMS server, and the application polls that server for matching `main` (NGDRS) and `egrass` OTPs. The default address is `https://sms-server.compitcom.in`; it can be changed in settings if required. An empty or incorrect User ID prevents automatic OTP retrieval, and the browser remains available for manual entry if no OTP arrives.
 
 ## Operating modes and controls
 
@@ -108,4 +108,4 @@ $env:PYTHONPATH = 'src'
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The Android OTP Reader under `otp-reader` is retained for a later OTP-provider integration. It is not used by version 1.
+The SMS-server API contract and MacroDroid setup are documented in `sms-reader.md`.

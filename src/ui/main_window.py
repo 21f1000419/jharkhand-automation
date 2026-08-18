@@ -8,7 +8,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from core.browser_detection import detect_supported_browsers
-from core.config import AppConfig, ConfigStore
+from core.config import DEFAULT_SMS_SERVER_URL, AppConfig, ConfigStore
 from core.controller import AutomationController
 from core.form_options import ARTICLE_OPTIONS
 from core.models import BrowserEngine, Credentials, PortalBrowser, RunMode, RunOptions, UiEvent
@@ -71,7 +71,8 @@ class MainWindow:
         valid_modes = {mode.value for mode in RunMode}
         saved_mode = config.last_mode if config.last_mode in valid_modes else RunMode.ASSISTED
         self.mode_var = tk.StringVar(value=saved_mode)
-        self.otp_auto_fill_var = tk.BooleanVar(value=config.otp_auto_fill)
+        self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
+        self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
         self.citizen_user_var = tk.StringVar(
             value=saved_credentials.citizen_username if saved_credentials else ""
         )
@@ -129,8 +130,7 @@ class MainWindow:
         ttk.Label(
             container,
             text=(
-                "Visible browser automation for Jharkhand NGDRS/eGRAS. "
-                "Payment remains manual; eGRAS OTP can optionally auto-fill from a paired phone."
+                "Visible browser automation for Jharkhand NGDRS/eGRAS. Payment remains manual."
             ),
         ).pack(anchor="w", pady=(0, 10))
 
@@ -143,9 +143,30 @@ class MainWindow:
         ttk.Button(gemini_status, text="Browser profile status...", command=self._show_gemini_setup).pack(
             side="left", padx=(8, 0)
         )
-        ttk.Button(gemini_status, text="OTP phone...", command=self._show_otp_phone_setup).pack(
-            side="left", padx=(8, 0)
+
+        sms_settings = ttk.LabelFrame(container, text="SMS OTP settings", padding=10)
+        sms_settings.pack(fill="x", pady=(0, 8))
+        sms_settings.columnconfigure(1, weight=1)
+        ttk.Label(sms_settings, text="User ID").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        sms_user_id_entry = ttk.Entry(sms_settings, textvariable=self.sms_user_id_var)
+        sms_user_id_entry.grid(row=0, column=1, sticky="ew")
+        sms_user_id_entry.bind("<FocusOut>", self._save_non_secret_settings)
+        ttk.Label(
+            sms_settings,
+            text="Warning: If the User ID is empty or incorrect, automatic OTPs cannot be fetched.",
+            foreground="#b7791f",
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(sms_settings, text="SMS server URL").grid(
+            row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0)
         )
+        sms_server_url_entry = ttk.Entry(sms_settings, textvariable=self.sms_server_url_var)
+        sms_server_url_entry.grid(row=2, column=1, sticky="ew", pady=(8, 0))
+        sms_server_url_entry.bind("<FocusOut>", self._save_non_secret_settings)
+        ttk.Label(
+            sms_settings,
+            text="Default: https://sms-server.compitcom.in. Change only if the SMS server address changes.",
+            foreground="#555555",
+        ).grid(row=3, column=1, sticky="w", pady=(4, 0))
 
         setup = ttk.LabelFrame(container, text="1. Chrome and Gemini setup", padding=10)
         setup.pack(fill="x", pady=(0, 8))
@@ -296,12 +317,6 @@ class MainWindow:
             value=RunMode.CONTINUOUS,
             command=self._save_non_secret_settings,
         ).pack(side="left", padx=12)
-        ttk.Checkbutton(
-            modes,
-            text="Auto-fill eGRAS OTP from paired phone",
-            variable=self.otp_auto_fill_var,
-            command=self._save_non_secret_settings,
-        ).pack(side="left", padx=(12, 0))
 
         controls = ttk.Frame(container)
         controls.pack(fill="x", pady=(0, 8))
@@ -543,7 +558,8 @@ class MainWindow:
     def _save_non_secret_settings(self, _event: object | None = None) -> None:
         self.config.last_download_path = self.download_var.get().strip()
         self.config.last_mode = self.mode_var.get()
-        self.config.otp_auto_fill = self.otp_auto_fill_var.get()
+        self.config.sms_user_id = self.sms_user_id_var.get().strip()
+        self.config.sms_server_url = self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL
         browser = self.portal_browsers.get(self.portal_browser_var.get())
         if browser is not None:
             self.config.last_portal_browser_path = str(browser.executable)
@@ -688,50 +704,6 @@ class MainWindow:
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
-    def _show_otp_phone_setup(self) -> None:
-        self._record_ui_action("otp_phone_setup_clicked")
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Pair Android OTP Reader")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        frame = ttk.Frame(dialog, padding=16)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Pair Android OTP Reader", style="Heading.TLabel").pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                "Keep the phone and this PC on the same Wi-Fi. In the Android app, enter the "
-                "server address and pairing token below, then enable SMS forwarding."
-            ),
-            wraplength=560,
-        ).pack(anchor="w", pady=(8, 12))
-        endpoint = self.controller.otp_receiver.server_address
-        token = self.controller.otp_receiver.token
-        for label, value in (("Server address", endpoint), ("Pairing token", token)):
-            row = ttk.Frame(frame)
-            row.pack(fill="x", pady=3)
-            ttk.Label(row, text=label, width=15).pack(side="left")
-            entry = ttk.Entry(row, width=58)
-            entry.insert(0, value)
-            entry.configure(state="readonly")
-            entry.pack(side="left", fill="x", expand=True)
-
-        def copy_details() -> None:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(f"Server address: {endpoint}\nPairing token: {token}")
-            self._append_session_log("OTP phone pairing details copied to clipboard.")
-
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(14, 0))
-        ttk.Button(buttons, text="Copy details", command=copy_details).pack(side="left")
-        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left", padx=8)
-        ttk.Label(
-            frame,
-            text="The token changes when the desktop app restarts. OTPs are not saved or written to logs.",
-            foreground="#555555",
-            wraplength=560,
-        ).pack(anchor="w", pady=(12, 0))
-
     def _open_gemini(self) -> None:
         self._record_ui_action("open_gemini_setup_clicked")
         if not self._save_browser_settings(reconfigure=False):
@@ -862,7 +834,8 @@ class MainWindow:
             portal_browser=portal_browser,
             mode=RunMode(self.mode_var.get()),
             credentials=self._entered_credentials(),
-            otp_auto_fill=self.otp_auto_fill_var.get(),
+            sms_user_id=self.sms_user_id_var.get().strip(),
+            sms_server_url=self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL,
         )
         self.starting = True
         self.run_status_var.set(f"Checking profile; opening {portal_browser.name}...")
