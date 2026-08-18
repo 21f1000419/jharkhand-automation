@@ -556,7 +556,12 @@ class MainWindow:
             )
             return
         self._record_ui_action("select_csv_clicked")
-        selected = filedialog.askopenfilename(title="Choose batch CSV", filetypes=[("CSV files", "*.csv")])
+        selected = filedialog.askopenfilename(
+            title="Choose batch CSV",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self.root,
+            initialdir=self._dialog_directory(self.csv_var.get()),
+        )
         if selected:
             self.csv_valid = False
             self.csv_var.set(selected)
@@ -565,7 +570,12 @@ class MainWindow:
 
     def _browse_download(self) -> None:
         self._record_ui_action("choose_download_folder_clicked")
-        selected = filedialog.askdirectory(title="Choose eStamp download folder")
+        selected = filedialog.askdirectory(
+            title="Choose eStamp download folder",
+            parent=self.root,
+            initialdir=self._dialog_directory(self.download_var.get()),
+            mustexist=True,
+        )
         if selected:
             self.download_var.set(selected)
             self._save_non_secret_settings()
