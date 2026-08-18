@@ -124,6 +124,8 @@ async function handleRequest(request, response) {
     };
     pendingOtps.set(keyFor(userId, entry.type), entry);
 
+    console.log(`[${receivedAt}] Received OTP - User ID: ${userId}, Sender: ${sender}, Decoded Type: ${entry.type}`);
+
     return sendJson(response, 201, {
       stored: true,
       type: entry.type,
