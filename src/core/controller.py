@@ -30,9 +30,9 @@ class AutomationController:
         self.events: queue.Queue[UiEvent] = queue.Queue()
         self.controls = RunControls(self.emit)
         self.loop: asyncio.AbstractEventLoop | None = None
-        # The dedicated profile is visible for sign-in/setup, then reopened
-        # headlessly while Gemini performs OCR. The portal uses a separate,
-        # fresh session throughout.
+        # Gemini runs in the dedicated signed-in Chrome profile in non-headless mode.
+        # The portal uses a separate, fresh session throughout.
+        # (Headless mode code commented out for future reference).
         self.gemini_browser: BrowserSession | None = None
         self.portal_browser: PortalBrowserSession | None = None
         self.portal_page: Page | None = None
@@ -60,8 +60,9 @@ class AutomationController:
     def verify_gemini(self) -> None:
         self._submit(self._verify_gemini())
 
-    def open_gemini_login_browser(self) -> None:
-        self._submit(self._open_gemini_login_browser())
+    # Setup browser sign-in handler commented out for non-headless only mode:
+    # def open_gemini_login_browser(self) -> None:
+    #     self._submit(self._open_gemini_login_browser())
 
     def start(self, options: RunOptions) -> None:
         if self.loop is None:
@@ -126,23 +127,22 @@ class AutomationController:
         self.loop.close()
 
     async def _ensure_gemini_services(
-        self, *, headless: bool = False
+        self, # *, headless: bool = False
     ) -> tuple[BrowserSession, GeminiCaptchaSolver]:
-        if self.gemini_browser is not None and self.gemini_browser.headless != headless:
-            await self._close_gemini_browser()
+        # Headless mode browser restart logic commented out:
+        # if self.gemini_browser is not None and self.gemini_browser.headless != headless:
+        #     await self._close_gemini_browser()
         if self.gemini_browser is None:
-            # A headless session must never attach to the visible setup Chrome.
-            # Use the adjacent port so BrowserSession launches/attaches only to
-            # a headless Chrome process for batch OCR.
-            debug_port = self.config.debug_port + 1 if headless else self.config.debug_port
-            if headless:
-                self.emit(UiEvent("gemini_headless_starting", "Starting Gemini OCR in headless mode."))
+            # debug_port = self.config.debug_port + 1 if headless else self.config.debug_port
+            # if headless:
+            #     self.emit(UiEvent("gemini_headless_starting", "Starting Gemini OCR in headless mode."))
             self.gemini_browser = BrowserSession(
                 Path(self.config.chrome_executable),
                 self.config.profile_path,
-                debug_port,
+                self.config.debug_port,
                 self._on_gemini_browser_disconnected,
-                headless=headless,
+                headless=False,
+                # headless=headless,
             )
             self.solver = GeminiCaptchaSolver(self.gemini_browser)
         await self.gemini_browser.start()
@@ -152,66 +152,75 @@ class AutomationController:
 
     async def _verify_gemini(self) -> None:
         try:
-            solver = await self._prepare_headless_gemini()
-            if solver is None:
-                return
-            self.emit(UiEvent("gemini_verified", "Headless Gemini OCR is ready."))
+            _, solver = await self._ensure_gemini_services()
+            await solver.open_setup()
+            if await solver.verify_ready():
+                self.emit(UiEvent("gemini_verified", "The browser profile is signed in and Gemini OCR is ready."))
+            else:
+                self.emit(
+                    UiEvent(
+                        "gemini_not_ready",
+                        "A usable Gemini chat was not found in this browser profile. "
+                        "Sign in to Google in the opened browser window and try again.",
+                    )
+                )
         except Exception as error:
             self.emit(UiEvent("fatal_error", f"Browser profile verification failed: {error}"))
 
-    async def _prepare_headless_gemini(self) -> GeminiCaptchaSolver | None:
-        """Use headless Gemini unless the page explicitly requires a Google sign-in."""
-        _, solver = await self._ensure_gemini_services(headless=True)
-        if await solver.sign_in_required():
-            await self._close_gemini_browser()
-            self.emit(
-                UiEvent(
-                    "gemini_login_required",
-                    "Gemini needs sign-in. Click Start OCR browser to open the dedicated Chrome profile.",
-                )
-            )
-            return None
-        if not await solver.verify_ready():
-            self.emit(
-                UiEvent(
-                    "gemini_not_ready",
-                    "Headless Gemini could not find a usable chat. Check your connection, then try "
-                    "Start OCR browser again.",
-                )
-            )
-            return None
-        return solver
+    # Headless helper methods and sign-in page commented out for non-headless only mode:
+    # async def _prepare_headless_gemini(self) -> GeminiCaptchaSolver | None:
+    #     """Use headless Gemini unless the page explicitly requires a Google sign-in."""
+    #     _, solver = await self._ensure_gemini_services(headless=True)
+    #     if await solver.sign_in_required():
+    #         await self._close_gemini_browser()
+    #         self.emit(
+    #             UiEvent(
+    #                 "gemini_login_required",
+    #                 "Gemini needs sign-in. Click Start OCR browser to open the dedicated Chrome profile.",
+    #             )
+    #         )
+    #         return None
+    #     if not await solver.verify_ready():
+    #         self.emit(
+    #             UiEvent(
+    #                 "gemini_not_ready",
+    #                 "Headless Gemini could not find a usable chat. Check your connection, then try "
+    #                 "Start OCR browser again.",
+    #             )
+    #         )
+    #         return None
+    #     return solver
 
-    async def _open_gemini_login_browser(self) -> None:
-        try:
-            visible_browser, _ = await self._ensure_gemini_services(headless=False)
-            login_page = await visible_browser.new_portal_page("about:blank")
-            await login_page.set_content(
-                """
-                <style>
-                  body { font-family: Segoe UI, Arial, sans-serif; }
-                  main {
-                    max-width: 720px; margin: 80px auto; padding: 28px;
-                    border: 1px solid #d1d5db; border-radius: 12px; line-height: 1.5;
-                  }
-                  h1 { margin-top: 0; }
-                </style>
-                <main>
-                  <h1>Chrome profile sign-in required</h1>
-                  <p>Complete the required sign-in in this dedicated Chrome profile.</p>
-                  <p>After sign-in succeeds, close this Chrome window. Return to the application and click
-                     <strong>Start OCR browser</strong> to reopen Gemini headlessly.</p>
-                </main>
-                """
-            )
-            self.emit(
-                UiEvent(
-                    "gemini_login_browser_opened",
-                    "Chrome profile opened for sign-in. Close it after sign-in, then start OCR again.",
-                )
-            )
-        except Exception as error:
-            self.emit(UiEvent("fatal_error", f"Could not open the Chrome profile: {error}"))
+    # async def _open_gemini_login_browser(self) -> None:
+    #     try:
+    #         visible_browser, _ = await self._ensure_gemini_services(headless=False)
+    #         login_page = await visible_browser.new_portal_page("about:blank")
+    #         await login_page.set_content(
+    #             """
+    #             <style>
+    #               body { font-family: Segoe UI, Arial, sans-serif; }
+    #               main {
+    #                 max-width: 720px; margin: 80px auto; padding: 28px;
+    #                 border: 1px solid #d1d5db; border-radius: 12px; line-height: 1.5;
+    #               }
+    #               h1 { margin-top: 0; }
+    #             </style>
+    #             <main>
+    #               <h1>Chrome profile sign-in required</h1>
+    #               <p>Complete the required sign-in in this dedicated Chrome profile.</p>
+    #               <p>After sign-in succeeds, close this Chrome window. Return to the application and click
+    #                  <strong>Start OCR browser</strong> to reopen Gemini headlessly.</p>
+    #             </main>
+    #             """
+    #         )
+    #         self.emit(
+    #             UiEvent(
+    #                 "gemini_login_browser_opened",
+    #                 "Chrome profile opened for sign-in. Close it after sign-in, then start OCR again.",
+    #             )
+    #         )
+    #     except Exception as error:
+    #         self.emit(UiEvent("fatal_error", f"Could not open the Chrome profile: {error}"))
 
     def _start_run(self, options: RunOptions) -> None:
         if self.run_task is not None and not self.run_task.done():
@@ -225,11 +234,22 @@ class AutomationController:
         try:
             solver: GeminiCaptchaSolver | None = None
             if options.ocr_enabled:
-                solver = await self._prepare_headless_gemini()
-                if solver is None:
+                # solver = await self._prepare_headless_gemini()  # Headless mode
+                # if solver is None:
+                #     return
+                _, solver = await self._ensure_gemini_services()
+                await solver.open_setup()
+                if not await solver.verify_ready():
+                    self.emit(
+                        UiEvent(
+                            "gemini_not_ready",
+                            "Gemini OCR is not ready. Sign in to Google in the opened browser window "
+                            "and try again.",
+                        )
+                    )
                     return
                 self.emit(
-                    UiEvent("gemini_verified", "The browser profile and headless Gemini OCR are ready.")
+                    UiEvent("gemini_verified", "The browser profile and Gemini OCR are ready.")
                 )
             else:
                 self.emit(

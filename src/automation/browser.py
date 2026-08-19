@@ -202,10 +202,12 @@ class BrowserSession:
             "--window-size=1280,1000",
             "about:blank",
         ]
-        if self.headless:
-            arguments.append("--headless=new")
-        else:
-            arguments.append("--start-maximized")
+        # Headless mode commented out for non-headless only operation
+        # if self.headless:
+        #     arguments.append("--headless=new")
+        # else:
+        #     arguments.append("--start-maximized")
+        arguments.append("--start-maximized")
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.process = subprocess.Popen(
             arguments,
@@ -219,16 +221,17 @@ class BrowserSession:
     def _disconnected(self, _browser: Browser) -> None:
         process = self.process
         owns_chrome = self.owns_chrome
-        is_headless = self.headless
+        # is_headless = self.headless
         self.browser = None
         self.context = None
         self.process = None
         self.owns_chrome = False
 
-        if is_headless and owns_chrome and process is not None:
-            if process.poll() is None:
-                terminate_process_tree_sync(process)
-            unregister_process(process)
+        # Headless process cleanup commented out for non-headless mode
+        # if is_headless and owns_chrome and process is not None:
+        #     if process.poll() is None:
+        #         terminate_process_tree_sync(process)
+        #     unregister_process(process)
 
         if not self.closing and self.on_disconnect is not None:
             self.on_disconnect()

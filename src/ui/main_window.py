@@ -34,8 +34,8 @@ class MainWindow:
         self.controller = controller
         self.gemini_ready = False
         self.gemini_checking = True
-        self.gemini_login_required = False
-        self.gemini_login_browser_open = False
+        # self.gemini_login_required = False
+        # self.gemini_login_browser_open = False
         self.running = False
         self.starting = False
         self.portal_session_open = False
@@ -400,7 +400,8 @@ class MainWindow:
 
     def _initial_gemini_check(self) -> None:
         self.gemini_checking = True
-        self.gemini_status_var.set("Gemini OCR: starting headless check...")
+        self.gemini_status_var.set("Gemini OCR: checking...")
+        # self.gemini_status_var.set("Gemini OCR: starting headless check...")  # Headless mode
         self._set_run_buttons()
         self.controller.record_activity("gemini_startup_check_started")
         self.controller.verify_gemini()
@@ -648,24 +649,26 @@ class MainWindow:
         self._record_ui_action("start_ocr_browser_clicked")
         if not self._save_browser_settings(reconfigure=False):
             return
-        self.gemini_login_required = False
-        self.gemini_status_var.set("Gemini OCR: checking headlessly...")
+        # self.gemini_login_required = False
+        self.gemini_status_var.set("Gemini OCR: opening browser and checking...")
+        # self.gemini_status_var.set("Gemini OCR: checking headlessly...")  # Headless mode
         self._set_run_buttons()
         self.controller.verify_gemini()
 
-    def _open_ocr_login_browser(self) -> None:
-        self._record_ui_action("open_ocr_login_browser_clicked")
-        if not self._save_browser_settings(reconfigure=False):
-            return
-        self.gemini_login_browser_open = True
-        self.gemini_status_var.set("Gemini OCR: opening Chrome profile for sign-in...")
-        self._set_run_buttons()
-        self.controller.open_gemini_login_browser()
+    # Login setup browser helper commented out for non-headless mode:
+    # def _open_ocr_login_browser(self) -> None:
+    #     self._record_ui_action("open_ocr_login_browser_clicked")
+    #     if not self._save_browser_settings(reconfigure=False):
+    #         return
+    #     self.gemini_login_browser_open = True
+    #     self.gemini_status_var.set("Gemini OCR: opening Chrome profile for sign-in...")
+    #     self._set_run_buttons()
+    #     self.controller.open_gemini_login_browser()
 
     def _close_ocr_browser(self) -> None:
         self._record_ui_action("close_ocr_browser_clicked")
         self.gemini_ready = False
-        self.gemini_login_browser_open = False
+        # self.gemini_login_browser_open = False
         self.config.gemini_verified = False
         self.config_store.save(self.config)
         self.captcha_warning_var.set(
@@ -940,31 +943,33 @@ class MainWindow:
     def _handle_event(self, event: UiEvent) -> None:
         if event.message:
             self._append_session_log(event.message)
-        if event.kind == "gemini_login_required":
-            self.gemini_checking = False
-            self.gemini_ready = False
-            self.gemini_login_required = True
-            self.gemini_login_browser_open = False
-            self.config.gemini_verified = False
-            self.config_store.save(self.config)
-            self.gemini_status_var.set("Gemini OCR: Google sign-in required")
-            self.captcha_warning_var.set(
-                "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
-            )
-        elif event.kind == "gemini_verified":
+        # Login required setup event commented out for non-headless mode:
+        # if event.kind == "gemini_login_required":
+        #     self.gemini_checking = False
+        #     self.gemini_ready = False
+        #     self.gemini_login_required = True
+        #     self.gemini_login_browser_open = False
+        #     self.config.gemini_verified = False
+        #     self.config_store.save(self.config)
+        #     self.gemini_status_var.set("Gemini OCR: Google sign-in required")
+        #     self.captcha_warning_var.set(
+        #         "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+        #     )
+        if event.kind == "gemini_verified":
             self.gemini_checking = False
             self.gemini_ready = True
-            self.gemini_login_required = False
-            self.gemini_login_browser_open = False
+            # self.gemini_login_required = False
+            # self.gemini_login_browser_open = False
             self.config.gemini_verified = True
             self.config_store.save(self.config)
-            self.gemini_status_var.set("Gemini OCR: active (headless)")
+            self.gemini_status_var.set("Gemini OCR: active")
+            # self.gemini_status_var.set("Gemini OCR: active (headless)")  # Headless mode
             self.captcha_warning_var.set("")
         elif event.kind == "gemini_stopped":
             self.gemini_checking = False
             self.gemini_ready = False
-            self.gemini_login_required = False
-            self.gemini_login_browser_open = False
+            # self.gemini_login_required = False
+            # self.gemini_login_browser_open = False
             self.gemini_status_var.set("Gemini OCR: stopped")
             self.captcha_warning_var.set(
                 "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
@@ -973,18 +978,18 @@ class MainWindow:
             if event.kind == "gemini_not_ready":
                 self.gemini_checking = False
                 self.gemini_ready = False
-                self.gemini_login_required = False
-                self.gemini_login_browser_open = False
+                # self.gemini_login_required = False
+                # self.gemini_login_browser_open = False
                 self.config.gemini_verified = False
                 self.config_store.save(self.config)
-                self.gemini_status_var.set("Gemini OCR: unavailable")
+                self.gemini_status_var.set("Gemini OCR: sign-in required / not ready")
                 self.captcha_warning_var.set(
                     "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
                 )
             else:
                 self.gemini_checking = False
                 self.gemini_ready = False
-                self.gemini_login_browser_open = False
+                # self.gemini_login_browser_open = False
                 self.starting = False
                 self.running = False
                 self.run_status_var.set("Stopped with an error")
@@ -1030,24 +1035,25 @@ class MainWindow:
             if event.kind == "browser_closed":
                 if event.data.get("profile_browser"):
                     self.gemini_ready = False
-                    self.gemini_login_required = False
-                    self.gemini_login_browser_open = False
+                    # self.gemini_login_required = False
+                    # self.gemini_login_browser_open = False
                     self.config.gemini_verified = False
                     self.config_store.save(self.config)
                     self.gemini_status_var.set(
-                        "Gemini OCR: browser closed. Click Start OCR browser to check headlessly."
+                        "Gemini OCR: browser closed. Click Start OCR browser to reopen."
                     )
                     self.captcha_warning_var.set(
                         "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
                     )
                 if not event.data.get("profile_browser"):
                     messagebox.showwarning("Browser closed", event.message, parent=self.root)
-        elif event.kind == "gemini_login_browser_opened":
-            self.gemini_checking = False
-            self.gemini_ready = False
-            self.gemini_login_required = True
-            self.gemini_login_browser_open = True
-            self.gemini_status_var.set("Gemini OCR: Chrome profile open for sign-in")
+        # Login browser page opened event commented out:
+        # elif event.kind == "gemini_login_browser_opened":
+        #     self.gemini_checking = False
+        #     self.gemini_ready = False
+        #     self.gemini_login_required = True
+        #     self.gemini_login_browser_open = True
+        #     self.gemini_status_var.set("Gemini OCR: Chrome profile open for sign-in")
         elif event.kind == "batch_update":
             self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
         elif event.kind == "error_prompt":
@@ -1179,12 +1185,14 @@ class MainWindow:
         subprocess.Popen(["explorer.exe", str(directory)])
 
     def _set_run_buttons(self) -> None:
-        if self.gemini_ready or self.gemini_login_browser_open:
+        if self.gemini_ready:
             self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
-        elif self.gemini_login_required:
-            self.ocr_browser_button.configure(
-                text="Start OCR browser", command=self._open_ocr_login_browser
-            )
+        # elif self.gemini_login_browser_open:
+        #     self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
+        # elif self.gemini_login_required:
+        #     self.ocr_browser_button.configure(
+        #         text="Start OCR browser", command=self._open_ocr_login_browser
+        #     )
         else:
             self.ocr_browser_button.configure(text="Start OCR browser", command=self._verify_gemini)
         has_csv = self.csv_valid and Path(self.csv_var.get().strip()).is_file()

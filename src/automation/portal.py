@@ -106,51 +106,56 @@ class PortalAutomation:
         if await visible(self.page, "#payment_purpose_id", 1_000):
             return
         if not await visible(self.page, "#username", 1_000):
-            await self._goto(CITIZEN_LOGIN_URL, timeout_ms=0)
+            await self._goto(CITIZEN_LOGIN_URL, timeout_ms=30_000)
         await self._wait_for_login_element("#username")
-        if not credentials.citizen_username or not credentials.citizen_password:
-            await self._wait_for_manual_citizen_login(
-                "Enter the Citizen username, password, CAPTCHA, and OTP in Chrome. Click Get OTP "
-                "then Login. The app will continue when the Citizen welcome page opens."
-            )
-        else:
+        if credentials.citizen_username and credentials.citizen_password:
             await fill_first(self.page, ["#username"], credentials.citizen_username)
             await fill_first(self.page, ["#password"], credentials.citizen_password)
-            captcha_entered_manually = await self._solve_captcha(
+            await self._solve_captcha(
                 "#captcha_image",
                 "#captcha",
                 expected_length=6,
             )
-            if not captcha_entered_manually:
-                otp_button = await self._wait_for_login_element("#btnotp")
+
+        # Regardless of whether CAPTCHA was entered manually or solved via OCR:
+        # Click Get OTP (#btnotp) if OTP field is not yet visible
+        if not await visible(self.page, "#otp", 500):
+            otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
+            if otp_button is not None:
                 self.citizen_otp_not_before = self._capture_otp_request_time()
                 await otp_button.click()
-                await self._wait_for_login_element("#otp")
-                if self.sms_user_id and self.citizen_otp_not_before:
-                    self.emit(UiEvent("otp_waiting", "Waiting for Citizen OTP from the SMS server..."))
-                    otp = await self._wait_for_sms_otp(
-                        "main",
-                        "#otp",
-                        self.citizen_otp_not_before,
-                        timeout_seconds=MAIN_OTP_POLL_TIMEOUT_SECONDS,
-                    )
-                    if otp is not None:
-                        await self.page.locator("#otp").fill(otp)
-                        self.citizen_otp_for_cleanup = otp
-                        self.emit(
-                            UiEvent("otp_filled", "Citizen OTP received from the SMS server and filled.")
-                        )
-                    else:
-                        self.emit(
-                            UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
-                        )
-                else:
-                    self.emit(
-                        UiEvent("otp_manual", "SMS User ID is empty; enter the Citizen OTP manually.")
-                    )
-            await self._wait_for_manual_citizen_login(
-                "Waiting for the Citizen welcome page after the user completes the login steps."
+        if not self.citizen_otp_not_before:
+            self.citizen_otp_not_before = self._capture_otp_request_time()
+
+        await self._wait_for_login_element("#otp")
+        if self.sms_user_id and self.citizen_otp_not_before:
+            self.emit(UiEvent("otp_waiting", "Waiting for Citizen OTP from the SMS server..."))
+            otp = await self._wait_for_sms_otp(
+                "main",
+                "#otp",
+                self.citizen_otp_not_before,
+                timeout_seconds=MAIN_OTP_POLL_TIMEOUT_SECONDS,
             )
+            if otp is not None:
+                otp_field = self.page.locator("#otp").first
+                if await otp_field.count() > 0 and not (await otp_field.input_value()).strip():
+                    await otp_field.fill(otp)
+                    self.citizen_otp_for_cleanup = otp
+                    self.emit(
+                        UiEvent("otp_filled", "Citizen OTP received from the SMS server and filled.")
+                    )
+            else:
+                self.emit(
+                    UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
+                )
+        else:
+            self.emit(
+                UiEvent("otp_manual", "SMS User ID is empty; enter the Citizen OTP manually.")
+            )
+
+        await self._wait_for_manual_citizen_login(
+            "Waiting for the Citizen welcome page after the user completes the login steps."
+        )
 
         await self._open_estamp_entry()
         if self.citizen_otp_for_cleanup is not None:
@@ -176,10 +181,13 @@ class PortalAutomation:
             await self.page.wait_for_timeout(500)
 
     async def _open_estamp_entry(self) -> None:
-        """Open eStamp directly after login; retry portal-aborted navigations."""
+        """Open eStamp directly after login or row reset."""
         self._status("Opening the direct eStamp form…")
         self.emit(UiEvent("log", "Opening the direct eStamp form."))
-        while True:
+        if await visible(self.page, "#payment_purpose_id", 1_000):
+            return
+
+        for _attempt in range(1, 4):
             await self.controls.checkpoint()
             if self.page.is_closed():
                 raise AutomationError(
@@ -188,24 +196,23 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
-            if await visible(self.page, "#payment_purpose_id", 500):
-                return
             try:
-                # The Citizen portal can abort a normal DOM-content-loaded
-                # navigation while it completes its own redirect. Committing
-                # the request is enough; the form itself is then polled.
-                await self.page.goto(ESTAMP_URL, wait_until="commit", timeout=60_000)
-            except PlaywrightError as error:
-                if self.page.is_closed():
-                    raise AutomationError(
-                        "The portal browser was closed while opening the eStamp form.",
-                        stage=self.stage,
-                        code="browser_closed",
-                        retryable=False,
-                    ) from error
-                self._status("eStamp navigation was interrupted; retrying…")
-                self.emit(UiEvent("log", "eStamp navigation was interrupted; retrying."))
+                await self.page.goto(ESTAMP_URL, wait_until="domcontentloaded", timeout=15_000)
+            except PlaywrightError:
+                pass
+
+            if await visible(self.page, "#payment_purpose_id", 8_000):
+                return
             await self.page.wait_for_timeout(500)
+
+        if await visible(self.page, "#payment_purpose_id", 5_000):
+            return
+
+        raise AutomationError(
+            "The eStamp payment entry form (#payment_purpose_id) did not load in time.",
+            stage=self.stage,
+            code="estamp_form_load_timeout",
+        )
 
     async def _wait_for_login_element(self, selector: str) -> Locator:
         while True:
@@ -285,44 +292,53 @@ class PortalAutomation:
         if username is None:
             return
         self.egrass_otp_not_before = self._capture_otp_request_time()
-        if not credentials.egras_username or not credentials.egras_password:
-            await self._wait_for_manual_egras_login(
-                "Complete the eGRAS username, password, and CAPTCHA in Chrome, then click Proceed. "
-                "The app will continue when the OTP page appears."
-            )
-        else:
+        if credentials.egras_username and credentials.egras_password:
             await username.fill(credentials.egras_username)
             await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
-            captcha_entered_manually = await self._solve_captcha(
+            await self._solve_captcha(
                 "img.imgcaptcha",
                 "#txtcaptcha",
                 expected_length=6,
             )
-            if not captcha_entered_manually:
-                await click_first(self.page, ["#btnproceed", 'input[value="Proceed"]'])
-            await self._wait_for_egras_otp_step()
+
+        # Regardless of whether login CAPTCHA was entered manually or via OCR:
+        # Click Proceed if not already moved to OTP step
+        if not await visible(self.page, "#txtOTP", 500):
+            proceed_btn = await first_visible(self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000)
+            if proceed_btn is not None:
+                self.egrass_otp_not_before = self._capture_otp_request_time()
+                await proceed_btn.click()
+        await self._wait_for_egras_otp_step()
 
         await self._stage(Stage.EGRAS_OTP)
-        # eGRAS presents a new CAPTCHA beside the OTP field after the login
-        # CAPTCHA was accepted. The server reuses the same IDs, so the active
-        # tab's visible controls are targeted.
+        # Start OTP reader task immediately in background
+        otp_task: asyncio.Task[str | None] | None = None
+        if self.sms_user_id and self.egrass_otp_not_before:
+            self.emit(UiEvent("otp_waiting", "Waiting for eGRAS OTP from the SMS server..."))
+            otp_task = asyncio.create_task(
+                self._wait_for_sms_otp(
+                    "egrass",
+                    "#txtOTP",
+                    self.egrass_otp_not_before,
+                    timeout_seconds=EGRASS_OTP_POLL_TIMEOUT_SECONDS,
+                )
+            )
+
+        # Solve second CAPTCHA (whether via Gemini OCR or manual entry)
         await self._solve_captcha(
             "div.tab-pane.active img.imgcaptcha",
             "div.tab-pane.active #txtcaptcha",
             expected_length=6,
         )
-        if self.sms_user_id and self.egrass_otp_not_before:
-            self.emit(UiEvent("otp_waiting", "Waiting for eGRAS OTP from the SMS server..."))
-            otp = await self._wait_for_sms_otp(
-                "egrass",
-                "#txtOTP",
-                self.egrass_otp_not_before,
-                timeout_seconds=EGRASS_OTP_POLL_TIMEOUT_SECONDS,
-            )
+
+        if otp_task is not None:
+            otp = await otp_task
             if otp is not None:
-                await self.page.locator("#txtOTP").fill(otp)
-                self.egrass_otp_for_cleanup = otp
-                self.emit(UiEvent("otp_filled", "OTP received from the SMS server and filled in eGRAS."))
+                otp_field = self.page.locator("#txtOTP").first
+                if await otp_field.count() > 0 and not (await otp_field.input_value()).strip():
+                    await otp_field.fill(otp)
+                    self.egrass_otp_for_cleanup = otp
+                    self.emit(UiEvent("otp_filled", "OTP received from the SMS server and filled in eGRAS."))
             else:
                 self.emit(
                     UiEvent("otp_manual", "Use the manually entered eGRAS OTP, then click Validate OTP.")
@@ -331,6 +347,7 @@ class PortalAutomation:
             self.emit(
                 UiEvent("otp_manual", "SMS User ID is empty; use the manual eGRAS OTP step.")
             )
+
         await self._wait_for_manual_egras_otp(
             "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
             "continue when the payment option appears."
@@ -350,35 +367,46 @@ class PortalAutomation:
         started_at = time.monotonic()
         deadline = started_at + timeout_seconds
         reported_connection_issue = False
+        last_poll_time = 0.0
         while time.monotonic() < deadline:
             await self.controls.checkpoint()
-            if await self.page.locator(field_selector).input_value():
-                self.emit(
-                    UiEvent("otp_manual", "Manual OTP input detected; automatic OTP entry is disabled.")
-                )
-                return None
+            field = self.page.locator(field_selector).first
             try:
-                otp = await self.sms_otp_client.get_otp(self.sms_user_id, otp_type, not_before)
-            except SmsOtpServerError as error:
-                if not reported_connection_issue:
-                    self.emit(UiEvent("otp_server_issue", f"SMS OTP server unavailable; retrying: {error}"))
-                    reported_connection_issue = True
-            else:
-                if otp is not None:
-                    if await self.page.locator(field_selector).input_value():
-                        self.emit(
-                            UiEvent(
-                                "otp_manual",
-                                "Manual OTP input detected; automatic OTP entry is disabled.",
-                            )
-                        )
-                        return None
-                    return otp
-            elapsed_seconds = time.monotonic() - started_at
-            # Fast initial checks reduce perceived wait time. The backoff then
-            # avoids needless requests while an SMS is still in transit.
-            interval_seconds = 1 if elapsed_seconds < 10 else 2 if elapsed_seconds < 40 else 3
-            await self.page.wait_for_timeout(interval_seconds * 1_000)
+                if await field.count() > 0 and (await field.input_value()).strip():
+                    self.emit(
+                        UiEvent("otp_manual", "Manual OTP input detected; automatic OTP entry is disabled.")
+                    )
+                    return None
+            except PlaywrightError:
+                pass
+
+            now = time.monotonic()
+            elapsed_seconds = now - started_at
+            poll_interval = 1.0 if elapsed_seconds < 10 else 2.0 if elapsed_seconds < 40 else 3.0
+            if now - last_poll_time >= poll_interval:
+                last_poll_time = now
+                try:
+                    otp = await self.sms_otp_client.get_otp(self.sms_user_id, otp_type, not_before)
+                except SmsOtpServerError as error:
+                    if not reported_connection_issue:
+                        self.emit(UiEvent("otp_server_issue", f"SMS OTP server unavailable; retrying: {error}"))
+                        reported_connection_issue = True
+                else:
+                    if otp is not None:
+                        try:
+                            if await field.count() > 0 and (await field.input_value()).strip():
+                                self.emit(
+                                    UiEvent(
+                                        "otp_manual",
+                                        "Manual OTP input detected; automatic OTP entry is disabled.",
+                                    )
+                                )
+                                return None
+                        except PlaywrightError:
+                            pass
+                        return otp
+
+            await self.page.wait_for_timeout(250)
         return None
 
     def _delete_used_otp_in_background(self, otp_type: str, otp: str) -> None:
@@ -546,7 +574,7 @@ class PortalAutomation:
             self.stage = Stage.RESET
             await self.controls.checkpoint()
         if not self.page.is_closed():
-            await self._goto(ESTAMP_URL)
+            await self._open_estamp_entry()
 
     async def _solve_captcha(
         self,
