@@ -9,7 +9,8 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
 from core.controls import RunControls
-from core.models import AutomationError, Credentials, Stage, UiEvent, WorkflowStopped
+from core.models import AutomationError, CaptchaCopyMode, Credentials, Stage, UiEvent, WorkflowStopped
+from services.clipboard_image import write_png_to_clipboard
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
@@ -39,6 +40,7 @@ class PortalAutomation:
         emit: EventCallback,
         sms_otp_client: SmsOtpClient,
         sms_user_id: str,
+        captcha_copy_mode: CaptchaCopyMode,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -47,6 +49,7 @@ class PortalAutomation:
         self.emit = emit
         self.sms_otp_client = sms_otp_client
         self.sms_user_id = sms_user_id.strip()
+        self.captcha_copy_mode = captcha_copy_mode
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: str | None = None
         self.citizen_otp_not_before: str | None = None
@@ -230,6 +233,13 @@ class PortalAutomation:
 
     async def fill_estamp_form(self, row: dict[str, str], article: str) -> None:
         await self._stage(Stage.FILL_ESTAMP)
+        mobile = row.get("mobile", "").strip()
+        if not mobile:
+            raise AutomationError(
+                "Mobile number is required in the CSV.",
+                stage=self.stage,
+                code="missing_mobile",
+            )
         await select_value(
             self.page,
             "#payment_purpose_id",
@@ -254,7 +264,7 @@ class PortalAutomation:
             "#payee_fname_en": row["stamp_duty_paid_by"],
             "#payment_reason": row["stamp_purpose"],
             "#PANNO": row["pan"],
-            "#mobile": row["mobile"],
+            "#mobile": mobile,
             "#AMOUNT": row["amount"],
         }
         for selector, value in fields.items():
@@ -601,8 +611,12 @@ class PortalAutomation:
 
         ocr_task: asyncio.Task[str] | None = None
         try:
-            await self._copy_captcha_with_browser_menu(image)
-            ocr_task = asyncio.create_task(solver.solve(expected_length))
+            if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
+                await self._copy_captcha_directly(image)
+                ocr_task = asyncio.create_task(solver.solve_pasted_clipboard_image(expected_length))
+            else:
+                await self._copy_captcha_with_browser_menu(image)
+                ocr_task = asyncio.create_task(solver.solve(expected_length))
             while not ocr_task.done():
                 await self.controls.checkpoint()
                 if (await field.input_value()).strip():
@@ -667,6 +681,25 @@ class PortalAutomation:
                 await self._manual_captcha_entered()
                 return
             await self.page.wait_for_timeout(100)
+
+    async def _copy_captcha_directly(self, image: Locator) -> None:
+        """Capture the rendered CAPTCHA without moving the mouse, then place it on the clipboard."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            await self.controls.checkpoint()
+            loaded = await image.evaluate(
+                "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0"
+            )
+            if loaded:
+                image_png = await image.screenshot()
+                await asyncio.to_thread(write_png_to_clipboard, image_png)
+                return
+            await self.page.wait_for_timeout(150)
+        raise AutomationError(
+            "The CAPTCHA image did not finish loading.",
+            stage=self.stage,
+            code="captcha_not_loaded",
+        )
 
     async def _copy_captcha_with_browser_menu(self, image: Locator) -> None:
         """Calculate desktop coordinates and use Chrome's native Copy image action."""

@@ -4,7 +4,7 @@ import asyncio
 import unittest
 
 from core.controls import RunControls
-from core.models import Credentials, WorkflowStopped
+from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
 from services.credential_store import decode_credentials, encode_credentials
 from services.downloads import extract_reference
 from services.gemini_ocr import normalize_captcha
@@ -50,6 +50,7 @@ class ServiceTests(unittest.TestCase):
                 last_article="AFFIDAVIT (Art. 4)",
                 last_csv_path=r"C:\batches\sample.csv",
                 last_mode="continuous",
+                captcha_copy_mode=CaptchaCopyMode.MOUSE_CURSOR,
             )
             store.save(config)
 
@@ -57,6 +58,7 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(reloaded.last_article, "AFFIDAVIT (Art. 4)")
             self.assertEqual(reloaded.last_csv_path, r"C:\batches\sample.csv")
             self.assertEqual(reloaded.last_mode, "continuous")
+            self.assertEqual(reloaded.captcha_copy_mode, CaptchaCopyMode.MOUSE_CURSOR)
 
     def test_config_store_handles_missing_keys(self) -> None:
         import json

@@ -38,7 +38,7 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
                 <div class="panel-title"><h4><b>Estamp Payment (For Non-Registering Deed Types)</b> </h4></div>
                 <div><a class="btn btn-info pull-right" target="_blank" href="/helpfiles/Payment/userguide_stamp_payment.pdf">Help</a></div>
             </div>
-            <div class="panel-body">
+            <div class="card-body">
                 <input type="hidden" name="RESPONSE_URL" value="http://jharnibandhan.gov.in/JHWebservice/gras_payment_response">
 
                 <input type="hidden" name="requestparam" id="requestparam" class="form-control" value="">
@@ -47,11 +47,11 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
                     <div class="col-sm-3">
                         <div class="form-group">
                             <label>Purpose of Payment <span class="star">*</span> </label>
-                            <div class="input select"><select name="payment_purpose_id" id="payment_purpose_id" class="form-control input-sm" title="--select--">
+                            <div class="input select"><select name="payment_purpose_id" id="payment_purpose_id" class="form-control input-sm">
 
 <option value="">--select--</option>
 <option value="1">To Register Document</option>
-<option value="2">For Non-Registering Deed Types</option>
+<option value="2" selected="selected">For Non-Registering Deed Types</option>
 </select></div>                            <span class="form-error" id="payment_purpose_id_error"></span>
                         </div>
                     </div>  
@@ -83,7 +83,7 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
 <option value="20">Pakur</option>
 <option value="15">Palamu</option>
 <option value="27">Ramgarh</option>
-<option value="24">Ranchi</option>
+<option value="24" selected="selected">Ranchi</option>
 <option value="31">Sahibganj</option>
 <option value="22">SaraikelaKharsawan</option>
 <option value="14">Simdega</option>
@@ -100,7 +100,7 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
 <option value="13">Administration Bond</option>
 <option value="87">Adoption Deed</option>
 <option value="3">Affidavit</option>
-<option value="4">Agreement or Memorandum of an Agreement</option>
+<option value="4" selected="selected">Agreement or Memorandum of an Agreement</option>
 <option value="6">Agreement Relating to Deposit of Title Deeds,Pawn</option>
 <option value="75">Appointment In Execution of a power</option>
 <option value="107">Appraisement of valuation</option>
@@ -156,7 +156,7 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
                         <div class="form-group">
                             <label>First Party Name <span class="star">*</span></label>
                             <div>
-                                <input type="text" name="party1_fullname_en" id="party1_fullname_en" class="form-control" value="" placeholder="Enter First Party Name" title="">
+                                <input type="text" name="party1_fullname_en" id="party1_fullname_en" class="form-control" value="" placeholder="Enter First Party Name" title="AS ">
                             </div>
                             <span class="form-error" id="party1_fullname_en_error"></span>
                         </div>
@@ -168,7 +168,7 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
                         <div class="form-group">
                             <label>Second Party Name <span class="star">*</span></label>
                             <div class="">
-                                <input type="text" name="party2_fullname_en" id="party2_fullname_en" class="form-control" value="" placeholder="Enter NIL if not applicable" title="">
+                                <input type="text" name="party2_fullname_en" id="party2_fullname_en" class="form-control" value="" placeholder="Enter NIL if not applicable" title="NA">
                             </div>
                             <span class="form-error" id="party2_fullname_en_error"></span>
                         </div>
@@ -211,7 +211,7 @@ Validate OTP, poll for both `#rbsbiepay` and `#btnSubmit` before continuing.
                         <div class="form-group">
                             <label>Mobile Number <span class="star">*</span> </label>
                             <div>
-                                <input name="mobile" id="mobile" class="form-control" value="9461743576">
+                                <input name="mobile" id="mobile" class="form-control" value="">
                             </div>
                             <span class="form-error" id="mobile_error"></span>
                         </div>

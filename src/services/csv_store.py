@@ -79,6 +79,7 @@ class CsvBatchStore:
             "first_party_name": "First party name",
             "stamp_duty_paid_by": "Stamp duty paid by",
             "stamp_purpose": "Stamp purpose",
+            "mobile": "Mobile number",
             "amount": "Amount",
         }
         for key, label in labels.items():

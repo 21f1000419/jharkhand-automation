@@ -17,7 +17,9 @@ from core.activity_log import DailyActivityLog
 from core.config import AppConfig
 from core.controls import RunControls
 from core.models import PortalBrowser, RunOptions, UiEvent
+from core.resources import bundled_path
 from core.workflow import WorkflowEngine
+from services.clipboard_image import write_png_to_clipboard
 from services.gemini_ocr import GeminiCaptchaSolver
 
 
@@ -38,6 +40,7 @@ class AutomationController:
         self.portal_page: Page | None = None
         self.solver: GeminiCaptchaSolver | None = None
         self.run_task: asyncio.Task[None] | None = None
+        self.ocr_test_task: asyncio.Task[None] | None = None
         self._portal_browser_closed = False
         self._is_shut_down = False
         self._ready = threading.Event()
@@ -59,6 +62,12 @@ class AutomationController:
 
     def verify_gemini(self) -> None:
         self._submit(self._verify_gemini())
+
+    def test_gemini_ocr(self) -> None:
+        if self.loop is None:
+            self.emit(UiEvent("ocr_test_failed", "Automation worker is unavailable."))
+            return
+        self.loop.call_soon_threadsafe(self._start_gemini_ocr_test)
 
     # Setup browser sign-in handler commented out for non-headless only mode:
     # def open_gemini_login_browser(self) -> None:
@@ -166,6 +175,58 @@ class AutomationController:
                 )
         except Exception as error:
             self.emit(UiEvent("fatal_error", f"Browser profile verification failed: {error}"))
+
+    def _start_gemini_ocr_test(self) -> None:
+        if self.run_task is not None and not self.run_task.done():
+            self.emit(UiEvent("ocr_test_failed", "Stop the active batch before running the OCR test."))
+            return
+        if self.ocr_test_task is not None and not self.ocr_test_task.done():
+            self.emit(UiEvent("ocr_test_failed", "An OCR test is already running."))
+            return
+        self.ocr_test_task = asyncio.create_task(self._test_gemini_ocr())
+
+    async def _test_gemini_ocr(self) -> None:
+        test_page: Page | None = None
+        try:
+            self.emit(UiEvent("ocr_test_started", "Opening the clipboard-paste CAPTCHA OCR test..."))
+            browser, solver = await self._ensure_gemini_services()
+            await solver.open_setup()
+            if not await solver.verify_ready():
+                raise RuntimeError("Gemini is not ready. Sign in and start the OCR browser, then try again.")
+            self.emit(UiEvent("gemini_verified", "The browser profile and Gemini OCR are ready."))
+
+            test_file = bundled_path("test-gemini-ocr.html")
+            if not test_file.is_file():
+                raise RuntimeError(f"OCR test page was not found: {test_file}")
+            self.emit(UiEvent("ocr_test_progress", "Opening the local test CAPTCHA page..."))
+            test_page = await browser.new_portal_page(test_file.as_uri())
+            image = test_page.locator("#captcha_image")
+            await image.wait_for(state="visible", timeout=15_000)
+            await test_page.wait_for_function(
+                """() => {
+                    const image = document.querySelector('#captcha_image');
+                    return Boolean(image && image.complete && image.naturalWidth > 0);
+                }""",
+                timeout=15_000,
+            )
+            self.emit(UiEvent("ocr_test_progress", "Copying the test CAPTCHA to the Windows clipboard..."))
+            await asyncio.to_thread(write_png_to_clipboard, await image.screenshot())
+
+            self.emit(UiEvent("ocr_test_progress", "Pasting the test CAPTCHA into Gemini..."))
+            code = await solver.solve_pasted_clipboard_image(expected_length=6)
+            await test_page.locator("#captcha").fill(code)
+            await test_page.bring_to_front()
+            self.emit(
+                UiEvent(
+                    "ocr_test_succeeded",
+                    f"Clipboard paste test succeeded. Gemini read: {code}",
+                    {"code": code},
+                )
+            )
+        except Exception as error:
+            self.emit(UiEvent("ocr_test_failed", f"Clipboard-paste OCR test failed: {error}"))
+        finally:
+            self.ocr_test_task = None
 
     # Headless helper methods and sign-in page commented out for non-headless only mode:
     # async def _prepare_headless_gemini(self) -> GeminiCaptchaSolver | None:
@@ -359,6 +420,10 @@ class AutomationController:
         task = self.run_task
         if task is not None and task is not asyncio.current_task():
             await asyncio.gather(task, return_exceptions=True)
+        test_task = self.ocr_test_task
+        if test_task is not None and test_task is not asyncio.current_task():
+            test_task.cancel()
+            await asyncio.gather(test_task, return_exceptions=True)
         await asyncio.gather(
             self._close_portal_browser(),
             self._close_gemini_browser(),

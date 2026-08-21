@@ -59,6 +59,7 @@ class WorkflowEngine:
             self.emit,
             SmsOtpClient(options.sms_server_url),
             options.sms_user_id,
+            options.captcha_copy_mode,
         )
         try:
             pending = list(self.store.pending_rows())

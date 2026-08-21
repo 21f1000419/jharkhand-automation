@@ -16,6 +16,11 @@ class BrowserEngine(StrEnum):
     FIREFOX = "firefox"
 
 
+class CaptchaCopyMode(StrEnum):
+    DIRECT = "direct_copy"
+    MOUSE_CURSOR = "mouse_cursor"
+
+
 @dataclass(frozen=True)
 class PortalBrowser:
     name: str
@@ -70,6 +75,7 @@ class RunOptions:
     ocr_enabled: bool = False
     sms_user_id: str = ""
     sms_server_url: str = ""
+    captcha_copy_mode: CaptchaCopyMode = CaptchaCopyMode.DIRECT
 
 
 @dataclass(frozen=True)

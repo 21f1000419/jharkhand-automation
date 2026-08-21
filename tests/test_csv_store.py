@@ -106,7 +106,7 @@ class CsvBatchStoreTests(unittest.TestCase):
         self.assertEqual(len(list(store.pending_rows())), 1)
         self.assertIn("Quantity must be a positive whole number", store.validate_row(store.rows[0]))
 
-    def test_mobile_is_optional_and_not_format_validated(self) -> None:
+    def test_mobile_is_required_and_not_format_validated(self) -> None:
         CsvBatchStore.write_template(self.path)
         store = CsvBatchStore(self.path)
         store.load()
@@ -118,9 +118,12 @@ class CsvBatchStoreTests(unittest.TestCase):
                 "stamp_duty_paid_by": "First Party",
                 "stamp_purpose": "Test purpose",
                 "amount": "50",
-                "mobile": "not-a-phone-number",
+                "mobile": "",
             }
         )
+        self.assertIn("Mobile number is required", store.validate_row(row))
+
+        row["mobile"] = "not-a-phone-number"
         self.assertEqual(store.validate_row(row), [])
 
     def test_legacy_article_and_row_id_columns_are_removed(self) -> None:

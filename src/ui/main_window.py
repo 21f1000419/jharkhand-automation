@@ -12,7 +12,15 @@ from core.browser_detection import detect_supported_browsers
 from core.config import DEFAULT_SMS_SERVER_URL, AppConfig, ConfigStore, app_data_directory
 from core.controller import AutomationController
 from core.form_options import ARTICLE_OPTIONS
-from core.models import BrowserEngine, Credentials, PortalBrowser, RunMode, RunOptions, UiEvent
+from core.models import (
+    BrowserEngine,
+    CaptchaCopyMode,
+    Credentials,
+    PortalBrowser,
+    RunMode,
+    RunOptions,
+    UiEvent,
+)
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
 from services.windows_notifications import show_windows_notification
@@ -34,6 +42,7 @@ class MainWindow:
         self.controller = controller
         self.gemini_ready = False
         self.gemini_checking = True
+        self.ocr_test_running = False
         # self.gemini_login_required = False
         # self.gemini_login_browser_open = False
         self.running = False
@@ -66,6 +75,13 @@ class MainWindow:
         valid_modes = {mode.value for mode in RunMode}
         saved_mode = config.last_mode if config.last_mode in valid_modes else RunMode.ASSISTED
         self.mode_var = tk.StringVar(value=saved_mode)
+        valid_captcha_copy_modes = {mode.value for mode in CaptchaCopyMode}
+        saved_captcha_copy_mode = (
+            config.captcha_copy_mode
+            if config.captcha_copy_mode in valid_captcha_copy_modes
+            else CaptchaCopyMode.DIRECT
+        )
+        self.captcha_copy_mode_var = tk.StringVar(value=saved_captcha_copy_mode)
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
         self.citizen_user_var = tk.StringVar(
@@ -167,6 +183,20 @@ class MainWindow:
         self.ocr_browser_button.pack(
             side="left", padx=(8, 0)
         )
+        self.ocr_test_button = ttk.Button(
+            gemini_status, text="Test CAPTCHA OCR", command=self._test_gemini_ocr
+        )
+        self.ocr_test_button.pack(side="left", padx=(8, 0))
+        ttk.Label(gemini_status, text="CAPTCHA copy").pack(side="left", padx=(12, 4))
+        self.captcha_copy_mode_selector = ttk.Combobox(
+            gemini_status,
+            textvariable=self.captcha_copy_mode_var,
+            values=[mode.value for mode in CaptchaCopyMode],
+            state="readonly",
+            width=14,
+        )
+        self.captcha_copy_mode_selector.pack(side="left")
+        self.captcha_copy_mode_selector.bind("<<ComboboxSelected>>", self._save_non_secret_settings)
         ttk.Label(
             gemini_status,
             textvariable=self.captcha_warning_var,
@@ -536,6 +566,7 @@ class MainWindow:
     def _save_non_secret_settings(self, _event: object | None = None) -> None:
         self.config.last_download_path = self.download_var.get().strip()
         self.config.last_mode = self.mode_var.get()
+        self.config.captcha_copy_mode = self.captcha_copy_mode_var.get()
         self.config.sms_user_id = self.sms_user_id_var.get().strip()
         self.config.sms_server_url = self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL
         self.config.last_article = self.article_var.get().strip()
@@ -654,6 +685,22 @@ class MainWindow:
         # self.gemini_status_var.set("Gemini OCR: checking headlessly...")  # Headless mode
         self._set_run_buttons()
         self.controller.verify_gemini()
+
+    def _test_gemini_ocr(self) -> None:
+        self._record_ui_action("test_captcha_ocr_clicked")
+        if self.running or self.starting:
+            messagebox.showwarning(
+                "OCR test unavailable",
+                "Stop the active batch before running the standalone OCR test.",
+                parent=self.root,
+            )
+            return
+        if not self._save_browser_settings(reconfigure=False):
+            return
+        self.ocr_test_running = True
+        self.gemini_status_var.set("Gemini OCR: running clipboard-paste test...")
+        self._set_run_buttons()
+        self.controller.test_gemini_ocr()
 
     # Login setup browser helper commented out for non-headless mode:
     # def _open_ocr_login_browser(self) -> None:
@@ -906,6 +953,7 @@ class MainWindow:
             ocr_enabled=self.gemini_ready,
             sms_user_id=self.sms_user_id_var.get().strip(),
             sms_server_url=self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL,
+            captcha_copy_mode=CaptchaCopyMode(self.captcha_copy_mode_var.get()),
         )
         self.starting = True
         self.run_status_var.set(f"Opening {portal_browser.name}...")
@@ -965,6 +1013,25 @@ class MainWindow:
             self.gemini_status_var.set("Gemini OCR: active")
             # self.gemini_status_var.set("Gemini OCR: active (headless)")  # Headless mode
             self.captcha_warning_var.set("")
+        elif event.kind == "ocr_test_started":
+            self.ocr_test_running = True
+            self.gemini_status_var.set("Gemini OCR: opening test CAPTCHA and pasting it into Gemini...")
+        elif event.kind == "ocr_test_progress":
+            self.gemini_status_var.set(f"Gemini OCR: {event.message}")
+        elif event.kind == "ocr_test_succeeded":
+            self.ocr_test_running = False
+            code = event.data.get("code", "")
+            self.gemini_status_var.set(f"Gemini OCR: clipboard-paste test passed ({code})")
+            messagebox.showinfo(
+                "CAPTCHA OCR test passed",
+                f"Gemini read the pasted test image as: {code}\n\n"
+                "The test page remains open with the recognized value filled in.",
+                parent=self.root,
+            )
+        elif event.kind == "ocr_test_failed":
+            self.ocr_test_running = False
+            self.gemini_status_var.set("Gemini OCR: clipboard-paste test failed")
+            messagebox.showerror("CAPTCHA OCR test failed", event.message, parent=self.root)
         elif event.kind == "gemini_stopped":
             self.gemini_checking = False
             self.gemini_ready = False
@@ -1195,6 +1262,13 @@ class MainWindow:
         #     )
         else:
             self.ocr_browser_button.configure(text="Start OCR browser", command=self._verify_gemini)
+        self.ocr_test_button.configure(
+            state=(
+                "disabled"
+                if self.gemini_checking or self.ocr_test_running or self.running or self.starting
+                else "normal"
+            )
+        )
         has_csv = self.csv_valid and Path(self.csv_var.get().strip()).is_file()
         has_portal_browser = self.portal_browser_var.get() in self.portal_browsers
         self.start_button.configure(

@@ -27,6 +27,14 @@ The browser profile—not Gemini itself—is the one-time setup. When a batch st
 closed and the same profile is reopened in headless mode for Gemini OCR. If the Google session has expired or Gemini
 cannot accept input, the batch does not start and the setup dialog opens automatically.
 
+Use **Test CAPTCHA OCR** to check the dedicated Gemini profile without touching the live portal workflow. It opens
+`test-gemini-ocr.html`, places its displayed CAPTCHA image on the Windows clipboard, and uses Chrome's normal
+**Ctrl+V** paste into Gemini. The page stays open with Gemini's recognized value filled in.
+
+The **CAPTCHA copy** selector controls the live portal workflow. `direct_copy` (the default) captures the rendered
+CAPTCHA element without moving the mouse, places it on the Windows clipboard, and pastes it into Gemini. The
+`mouse_cursor` option retains the previous right-click **Copy image** browser-menu method.
+
 The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Citizen/eGRAS credentials exist only in application memory and are cleared on exit.
 
 ## Browser selection
@@ -44,7 +52,7 @@ district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan
 
 - `quantity` defaults to `1`.
 - `second_party_name` defaults to `NIL` and `pan` is optional.
-- `mobile` is optional because the portal pre-fills it.
+- `mobile` is required and is entered into the portal from each CSV row.
 - Select or type the one Article to use for the current batch in the application; it is not a CSV column and is remembered across sessions.
 - District must match the visible portal option text.
 - Do not keep the CSV open in Excel while automation is running. If it becomes locked, the application pauses rather than losing progress.

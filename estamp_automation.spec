@@ -3,12 +3,16 @@ from PyInstaller.utils.hooks import collect_all
 
 
 playwright_datas, playwright_binaries, playwright_hiddenimports = collect_all("playwright")
+test_assets = [
+    ("test-gemini-ocr.html", "."),
+    ("test-images", "test-images"),
+]
 
 a = Analysis(
     ["src/app.py"],
     pathex=["src"],
     binaries=playwright_binaries,
-    datas=playwright_datas,
+    datas=playwright_datas + test_assets,
     hiddenimports=playwright_hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -39,4 +43,3 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
-

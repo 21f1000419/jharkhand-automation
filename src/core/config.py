@@ -21,6 +21,7 @@ class AppConfig:
     custom_portal_browser_engine: str = ""
     sms_user_id: str = ""
     sms_server_url: str = DEFAULT_SMS_SERVER_URL
+    captcha_copy_mode: str = "direct_copy"
     gemini_verified: bool = False
     debug_port: int = 9347
     last_article: str = ""

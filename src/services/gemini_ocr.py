@@ -123,6 +123,34 @@ class GeminiCaptchaSolver:
                 return code
             raise RuntimeError(f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}")
 
+    async def solve_pasted_clipboard_image(self, expected_length: int | None = None) -> str:
+        """Paste the Windows clipboard image into Gemini and return its OCR result."""
+        async with self._lock:
+            page = await self.browser_session.page_for_host(
+                "gemini.google.com", create_url="https://gemini.google.com/app"
+            )
+            composer = await find_first_visible(page, COMPOSER_SELECTORS, 15_000)
+            if composer is None:
+                raise RuntimeError("Gemini is not signed in or its prompt box could not be found.")
+            try:
+                await page.wait_for_timeout(1_000)
+                baseline = await read_responses(page)
+                attachment_baseline = await attachment_counts(page)
+                await paste_clipboard_image(page, composer, attachment_baseline)
+                await composer.fill(OCR_PROMPT)
+                await send_prompt(page)
+                raw = await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
+            except GeminiResponseTimeout as error:
+                await stop_response(page)
+                raise RuntimeError(
+                    "Gemini did not return a clipboard-paste CAPTCHA OCR result within "
+                    f"{RESPONSE_TIMEOUT_SECONDS} seconds."
+                ) from error
+            code = normalize_captcha(raw, expected_length)
+            if code:
+                return code
+            raise RuntimeError(f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}")
+
     async def cancel_active_response(self) -> None:
         """Stop Gemini when the user chooses to enter the CAPTCHA manually."""
         try:
@@ -185,6 +213,14 @@ async def attach_image(page: Page, image_bytes: bytes) -> None:
     except Exception as error:
         raise RuntimeError(f"Could not upload the CAPTCHA image to Gemini: {error}") from error
     raise RuntimeError("Gemini did not show the uploaded CAPTCHA image.")
+
+
+async def paste_clipboard_image(page: Page, composer: Locator, baseline: list[int]) -> None:
+    """Use Chrome's normal Ctrl+V image handling and wait for Gemini's attachment preview."""
+    await composer.click()
+    await page.keyboard.press("Control+V")
+    if not await wait_for_attachment(page, baseline, 12_000):
+        raise RuntimeError("Gemini did not show an image after pasting from the Windows clipboard.")
 
 
 async def send_prompt(page: Page) -> None:
