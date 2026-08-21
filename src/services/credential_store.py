@@ -34,14 +34,11 @@ class CredentialRecord(ctypes.Structure):
 class WindowsCredentialStore:
     """Stores optional portal credentials in the current user's Windows vault."""
 
-    def __init__(self, target_name: str = TARGET_NAME) -> None:
-        self.target_name = target_name
-
     def load(self) -> Credentials | None:
         api = _credential_api()
         pointer = ctypes.POINTER(CredentialRecord)()
         if not api.CredReadW(
-            self.target_name,
+            TARGET_NAME,
             CREDENTIAL_TYPE_GENERIC,
             0,
             ctypes.byref(pointer),
@@ -63,7 +60,7 @@ class WindowsCredentialStore:
         blob = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
         record = CredentialRecord()
         record.Type = CREDENTIAL_TYPE_GENERIC
-        record.TargetName = self.target_name
+        record.TargetName = TARGET_NAME
         record.Comment = "Saved by Compitcom eStamp Automation"
         record.CredentialBlobSize = len(payload)
         record.CredentialBlob = ctypes.cast(blob, ctypes.POINTER(ctypes.c_ubyte))
@@ -74,7 +71,7 @@ class WindowsCredentialStore:
 
     def clear(self) -> None:
         api = _credential_api()
-        if api.CredDeleteW(self.target_name, CREDENTIAL_TYPE_GENERIC, 0):
+        if api.CredDeleteW(TARGET_NAME, CREDENTIAL_TYPE_GENERIC, 0):
             return
         error = ctypes.get_last_error()
         if error != ERROR_NOT_FOUND:

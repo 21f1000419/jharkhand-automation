@@ -26,11 +26,6 @@ class AppConfig:
     debug_port: int = 9347
     last_article: str = ""
     last_csv_path: str = ""
-    last_chandigarh_state: str = ""
-    last_chandigarh_article: str = ""
-    last_chandigarh_csv_path: str = ""
-    last_chandigarh_browser_path: str = ""
-    last_chandigarh_time: str = "14:00"
 
     @property
     def profile_path(self) -> Path:
