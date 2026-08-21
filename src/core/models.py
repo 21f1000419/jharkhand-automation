@@ -75,6 +75,8 @@ class RunOptions:
     ocr_enabled: bool = False
     sms_user_id: str = ""
     sms_server_url: str = ""
+    payment_trigger_url: str = ""
+    payment_trigger_method: str = "GET"
     captcha_copy_mode: CaptchaCopyMode = CaptchaCopyMode.DIRECT
 
 

@@ -18,6 +18,7 @@ from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
 from services.credential_store import decode_credentials, encode_credentials
 from services.downloads import EstampDownloader, extract_reference
 from services.gemini_ocr import normalize_captcha
+from services.payment_trigger import send_payment_trigger_request
 
 
 class ServiceTests(unittest.TestCase):
@@ -31,6 +32,27 @@ class ServiceTests(unittest.TestCase):
             extract_reference("https://example.test/gras_estamp_download/7489afcddfd00e8d892a"),
             "7489afcddfd00e8d892a",
         )
+
+    def test_payment_trigger_supports_get_and_post(self) -> None:
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                response = MagicMock()
+                response.status = 202
+                response.read.return_value = b""
+                context = MagicMock()
+                context.__enter__.return_value = response
+                with patch("services.payment_trigger.urlopen", return_value=context) as open_url:
+                    status = asyncio.run(
+                        send_payment_trigger_request(
+                            "https://payment-trigger.example/start",
+                            method,
+                        )
+                    )
+
+                request = open_url.call_args.args[0]
+                self.assertEqual(request.get_method(), method)
+                self.assertEqual(request.data, b"" if method == "POST" else None)
+                self.assertEqual(status, 202)
 
     def test_transaction_confirmation_table_details_are_normalized(self) -> None:
         details = transaction_details_from_rows(
@@ -74,6 +96,7 @@ class ServiceTests(unittest.TestCase):
             "accept_gateway_terms",
             "select_upi",
             "select_upi_qr_and_pay",
+            "wait_for_upi_qr_and_trigger",
         ):
             setattr(portal, method_name, AsyncMock())
         details = {
@@ -195,6 +218,77 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(
             any(getattr(event, "kind", "") == "notification" for event in events),
             "Manual UPI takeover should notify the user.",
+        )
+
+    def test_payment_trigger_runs_after_both_upi_qr_markers_appear(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            side_effect=[
+                "Scan UPI QR",
+                "Scan UPI QR\nTime left to complete the transaction 04:59",
+            ]
+        )
+        page.locator.return_value = body
+        events: list[object] = []
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            events.append,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+            "https://payment-trigger.example/start",
+            "POST",
+        )
+
+        with patch(
+            "automation.portal.send_payment_trigger_request",
+            new=AsyncMock(return_value=204),
+        ) as trigger:
+            asyncio.run(portal.wait_for_upi_qr_and_trigger())
+
+        trigger.assert_awaited_once_with("https://payment-trigger.example/start", "POST")
+        page.wait_for_timeout.assert_awaited_once_with(250)
+        self.assertTrue(any("HTTP 204" in getattr(event, "message", "") for event in events))
+
+    def test_payment_trigger_failure_is_logged_and_ignored(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value="Scan UPI QR Time left to complete the transaction"
+        )
+        page.locator.return_value = body
+        events: list[object] = []
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            events.append,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+            "https://payment-trigger.example/start",
+            "GET",
+        )
+
+        with patch(
+            "automation.portal.send_payment_trigger_request",
+            new=AsyncMock(side_effect=RuntimeError("connection refused")),
+        ):
+            asyncio.run(portal.wait_for_upi_qr_and_trigger())
+
+        self.assertTrue(
+            any(
+                "failed and was ignored" in getattr(event, "message", "")
+                for event in events
+            )
         )
 
     def test_download_retries_in_live_browser_and_saves_pdf(self) -> None:
@@ -418,6 +512,8 @@ class ServiceTests(unittest.TestCase):
                 last_csv_path=r"C:\batches\sample.csv",
                 last_mode="continuous",
                 captcha_copy_mode=CaptchaCopyMode.MOUSE_CURSOR,
+                payment_trigger_url="https://payment-trigger.example/start",
+                payment_trigger_method="POST",
             )
             store.save(config)
 
@@ -426,6 +522,11 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(reloaded.last_csv_path, r"C:\batches\sample.csv")
             self.assertEqual(reloaded.last_mode, "continuous")
             self.assertEqual(reloaded.captcha_copy_mode, CaptchaCopyMode.MOUSE_CURSOR)
+            self.assertEqual(
+                reloaded.payment_trigger_url,
+                "https://payment-trigger.example/start",
+            )
+            self.assertEqual(reloaded.payment_trigger_method, "POST")
 
     def test_config_store_handles_missing_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

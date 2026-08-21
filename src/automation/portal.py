@@ -22,6 +22,7 @@ from core.models import (
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
+from services.payment_trigger import send_payment_trigger_request
 from services.sms_otp_client import SmsOtpClient, SmsOtpServerError
 
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
@@ -39,6 +40,8 @@ TRANSACTION_FIELD_NAMES = {
     "cin": "CIN",
     "time": "Time",
 }
+UPI_QR_READY_TEXT = "scan upi qr"
+UPI_TRANSACTION_TIMER_TEXT = "time left to complete the transaction"
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -58,6 +61,8 @@ class PortalAutomation:
         sms_otp_client: SmsOtpClient,
         sms_user_id: str,
         captcha_copy_mode: CaptchaCopyMode,
+        payment_trigger_url: str = "",
+        payment_trigger_method: str = "GET",
     ) -> None:
         self.page = page
         self.solver = solver
@@ -67,6 +72,10 @@ class PortalAutomation:
         self.sms_otp_client = sms_otp_client
         self.sms_user_id = sms_user_id.strip()
         self.captcha_copy_mode = captcha_copy_mode
+        self.payment_trigger_url = payment_trigger_url.strip()
+        self.payment_trigger_method = (
+            "POST" if payment_trigger_method.strip().upper() == "POST" else "GET"
+        )
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: str | None = None
         self.citizen_otp_not_before: str | None = None
@@ -93,6 +102,7 @@ class PortalAutomation:
             await self.accept_gateway_terms()
             await self.select_upi()
             await self.select_upi_qr_and_pay()
+            await self.wait_for_upi_qr_and_trigger()
             details = await self.find_result_details()
             reference = (
                 details.get("Transaction ID")
@@ -662,6 +672,62 @@ class PortalAutomation:
                     self.emit(UiEvent("log", "UPI QR selected and Pay Now clicked."))
                     return
             await self.page.wait_for_timeout(500)
+
+    async def wait_for_upi_qr_and_trigger(self) -> None:
+        """Wait for SBI's QR payment screen, then call the optional external trigger once."""
+        self._status("Waiting for the SBI UPI QR payment screen…")
+        body = self.page.locator("body")
+        while True:
+            await self.controls.checkpoint()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed while waiting for the UPI QR payment screen.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            try:
+                visible_text = " ".join((await body.inner_text()).casefold().split())
+            except PlaywrightError:
+                await self.page.wait_for_timeout(250)
+                continue
+            if (
+                UPI_QR_READY_TEXT in visible_text
+                and UPI_TRANSACTION_TIMER_TEXT in visible_text
+            ):
+                self.emit(
+                    UiEvent(
+                        "log",
+                        'UPI QR payment screen detected: "Scan UPI QR" and transaction timer are visible.',
+                    )
+                )
+                break
+            await self.page.wait_for_timeout(250)
+
+        if not self.payment_trigger_url:
+            return
+
+        try:
+            status = await send_payment_trigger_request(
+                self.payment_trigger_url,
+                self.payment_trigger_method,
+            )
+        except Exception as error:
+            self.emit(
+                UiEvent(
+                    "log",
+                    f"Payment trigger request failed and was ignored: {error}",
+                    {"level": "warning"},
+                )
+            )
+            return
+
+        self.emit(
+            UiEvent(
+                "log",
+                f"Payment trigger request sent with {self.payment_trigger_method}; HTTP {status}.",
+            )
+        )
 
     async def find_result_details(self) -> dict[str, str]:
         await self._stage(Stage.RESULT)

@@ -91,10 +91,17 @@ Every application action, workflow stage, error, and stop event is appended to o
 
 Enter the User ID used by the SMS server in **SMS OTP settings**. MacroDroid forwards SMS messages to the shared SMS server, and the application polls that server for matching `main` (NGDRS) and `egrass` OTPs. The default address is `https://sms-server.compitcom.in`; it can be changed in settings if required. An empty or incorrect User ID prevents automatic OTP retrieval, and the browser remains available for manual entry if no OTP arrives.
 
+## Optional payment trigger
+
+Batch setup accepts an optional payment-trigger URL and `GET`/`POST` method. After Pay Now, automation waits until
+both **Scan UPI QR** and **Time left to complete the transaction** are visible, then calls the configured URL once.
+POST sends an empty request body. The setting is remembered with the other non-secret preferences. Trigger timeouts,
+HTTP errors, and invalid URLs are written to the activity log and never stop transaction-result polling.
+
 ## Operating modes and controls
 
-- **Assisted errors** returns Chrome to the starting page and asks whether to retry or move to the next row. Next Row is the default.
-- **Continuous** records ordinary errors and moves to the next row without a prompt.
+- **Assisted errors** asks whether to retry the current quantity or record it as skipped and move to the next quantity.
+- **Continuous** records ordinary errors, skips that quantity, and advances once without a prompt.
 - **Pause** keeps the current page and stops before the next browser action.
 - **Stop** cancels the active unit and preserves it as retryable.
 - Closing the selected portal browser stops the entire run. Gemini OCR runs headlessly while a batch is active; closing the application closes both automation browsers.

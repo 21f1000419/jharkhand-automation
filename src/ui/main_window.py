@@ -84,6 +84,11 @@ class MainWindow:
         self.captcha_copy_mode_var = tk.StringVar(value=saved_captcha_copy_mode)
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
+        self.payment_trigger_url_var = tk.StringVar(value=config.payment_trigger_url)
+        saved_trigger_method = config.payment_trigger_method.strip().upper()
+        self.payment_trigger_method_var = tk.StringVar(
+            value=saved_trigger_method if saved_trigger_method in {"GET", "POST"} else "GET"
+        )
         self.citizen_user_var = tk.StringVar(
             value=saved_credentials.citizen_username if saved_credentials else ""
         )
@@ -313,8 +318,32 @@ class MainWindow:
         ttk.Button(batch, text="Browse…", command=self._browse_download).grid(
             row=6, column=2, padx=(8, 0), pady=(8, 0)
         )
+        ttk.Label(batch, text="Optional payment trigger").grid(
+            row=7, column=0, sticky="w", padx=(0, 8), pady=(8, 0)
+        )
+        payment_trigger_entry = ttk.Entry(batch, textvariable=self.payment_trigger_url_var)
+        payment_trigger_entry.grid(row=7, column=1, sticky="ew", pady=(8, 0))
+        payment_trigger_entry.bind("<FocusOut>", self._save_non_secret_settings)
+        payment_trigger_method = ttk.Combobox(
+            batch,
+            textvariable=self.payment_trigger_method_var,
+            values=("GET", "POST"),
+            state="readonly",
+            width=7,
+        )
+        payment_trigger_method.grid(row=7, column=2, padx=(8, 0), pady=(8, 0))
+        payment_trigger_method.bind("<<ComboboxSelected>>", self._save_non_secret_settings)
+        ttk.Label(
+            batch,
+            text=(
+                'Called once after "Scan UPI QR" and the transaction countdown appear. '
+                "Failures are logged without stopping the batch."
+            ),
+            foreground="#555555",
+            wraplength=500,
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(5, 0))
         modes = ttk.Frame(batch)
-        modes.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        modes.grid(row=9, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Radiobutton(
             modes,
             text="Assisted errors",
@@ -569,6 +598,8 @@ class MainWindow:
         self.config.captcha_copy_mode = self.captcha_copy_mode_var.get()
         self.config.sms_user_id = self.sms_user_id_var.get().strip()
         self.config.sms_server_url = self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL
+        self.config.payment_trigger_url = self.payment_trigger_url_var.get().strip()
+        self.config.payment_trigger_method = self.payment_trigger_method_var.get().strip().upper()
         self.config.last_article = self.article_var.get().strip()
         self.config.last_csv_path = self.csv_var.get().strip()
         browser = self.portal_browsers.get(self.portal_browser_var.get())
@@ -955,6 +986,8 @@ class MainWindow:
             ocr_enabled=self.gemini_ready,
             sms_user_id=self.sms_user_id_var.get().strip(),
             sms_server_url=self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL,
+            payment_trigger_url=self.payment_trigger_url_var.get().strip(),
+            payment_trigger_method=self.payment_trigger_method_var.get().strip().upper(),
             captcha_copy_mode=CaptchaCopyMode(self.captcha_copy_mode_var.get()),
         )
         self.starting = True
