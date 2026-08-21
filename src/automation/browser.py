@@ -13,9 +13,20 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
-
 from core.models import BrowserEngine, PortalBrowser
+from core.playwright_browsers import configure_browser_install_directory
+
+# Must be set before Playwright creates its driver.  The folder is independent
+# of the EXE's location, so a copy placed on the Desktop still finds Firefox.
+configure_browser_install_directory()
+
+from playwright.async_api import (  # noqa: E402
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    async_playwright,
+)
 
 _PROCESS_LOCK = threading.Lock()
 _TRACKED_PROCESSES: set[subprocess.Popen[bytes]] = set()
@@ -298,7 +309,7 @@ class PortalBrowserSession:
     async def start(self) -> BrowserContext:
         if self.context is not None and self.browser is not None and self.browser.is_connected():
             return self.context
-        if not self.choice.executable.is_file():
+        if self.choice.engine == BrowserEngine.CHROMIUM and not self.choice.executable.is_file():
             raise RuntimeError(f"{self.choice.name} was not found at {self.choice.executable}.")
         self.playwright = await async_playwright().start()
         try:
@@ -312,7 +323,7 @@ class PortalBrowserSession:
                 if not bundled_firefox.is_file():
                     raise RuntimeError(
                         "Firefox-based portal automation requires Playwright Firefox. "
-                        "Run '.venv\\Scripts\\playwright.exe install firefox' once, then try again."
+                        "Click 'Download managed Firefox' in the application, then try again."
                     )
             launch_args = ["--start-maximized"] if self.choice.engine == BrowserEngine.CHROMIUM else []
             launch_options: dict[str, object] = {"headless": False, "args": launch_args}

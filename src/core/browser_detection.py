@@ -13,7 +13,6 @@ SUPPORTED_BROWSERS = (
     ("Opera GX", "opera.exe", BrowserEngine.CHROMIUM, ("Programs", "Opera GX")),
     ("Vivaldi", "vivaldi.exe", BrowserEngine.CHROMIUM, ("Vivaldi", "Application")),
     ("Yandex Browser", "browser.exe", BrowserEngine.CHROMIUM, ("Yandex", "YandexBrowser", "Application")),
-    ("Firefox (managed automation)", "firefox.exe", BrowserEngine.FIREFOX, ("Mozilla Firefox",)),
 )
 
 
@@ -25,6 +24,11 @@ def detect_supported_browsers() -> list[PortalBrowser]:
         )
         if executable is not None:
             detected.append(PortalBrowser(name, executable, engine))
+    # Playwright controls its own Firefox build.  List it even before it has
+    # been downloaded so users can select it and use the download button.
+    detected.append(
+        PortalBrowser("Firefox (managed automation)", Path("managed-firefox"), BrowserEngine.FIREFOX)
+    )
     return detected
 
 

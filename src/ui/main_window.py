@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import shutil
 import subprocess
+import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,11 @@ from core.models import (
     RunMode,
     RunOptions,
     UiEvent,
+)
+from core.playwright_browsers import (
+    browser_install_directory,
+    install_managed_firefox,
+    managed_firefox_is_installed,
 )
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
@@ -51,6 +57,7 @@ class MainWindow:
         self.paused = False
         self.auto_waiting = False
         self.csv_valid = False
+        self.managed_firefox_downloading = False
         self.credential_store = WindowsCredentialStore()
         try:
             saved_credentials = self.credential_store.load()
@@ -444,6 +451,12 @@ class MainWindow:
 
     def _build_menu(self) -> None:
         menu = tk.Menu(self.root)
+        browser_menu = tk.Menu(menu, tearoff=False)
+        browser_menu.add_command(label="Download managed Firefox", command=self._download_managed_firefox)
+        menu.add_cascade(label="Browser", menu=browser_menu)
+        self.browser_menu = browser_menu
+        self.managed_firefox_menu_index = 0
+        self._update_managed_firefox_menu()
         menu.add_command(label="Download CSV Format…", command=self._download_template)
         profile_menu = tk.Menu(menu, tearoff=False)
         profile_menu.add_command(label="Edit profile path…", command=self._show_ocr_profile_settings)
@@ -505,14 +518,72 @@ class MainWindow:
         return BrowserEngine.CHROMIUM
 
     def _portal_browser_note(self) -> str:
-        if not self.portal_browsers:
-            return (
-                "No supported browser was found. Install Chrome, Edge, Brave, Opera, or Firefox, "
-                "then refresh or choose Custom browser from the list."
-            )
         return (
             "The portal opens in a fresh session; it does not use your personal browser profile "
-            "or saved login. Firefox-based choices use Playwright's managed Firefox build."
+            "or saved login. Firefox-based choices use Playwright's managed Firefox build. "
+            "Use Browser > Download managed Firefox once if it is not already installed."
+        )
+
+    def _update_managed_firefox_menu(self) -> None:
+        if self.managed_firefox_downloading:
+            self.browser_menu.entryconfigure(
+                self.managed_firefox_menu_index,
+                label="Downloading managed Firefox...",
+                state="disabled",
+            )
+        elif managed_firefox_is_installed():
+            self.browser_menu.entryconfigure(
+                self.managed_firefox_menu_index,
+                label="Managed Firefox downloaded",
+                state="disabled",
+            )
+        else:
+            self.browser_menu.entryconfigure(
+                self.managed_firefox_menu_index,
+                label="Download managed Firefox",
+                state="normal",
+            )
+
+    def _download_managed_firefox(self) -> None:
+        self._record_ui_action("download_managed_firefox_clicked")
+        if not messagebox.askyesno(
+            "Download managed Firefox",
+            "Download the Firefox build required for portal automation?\n\n"
+            f"It will be saved in:\n{browser_install_directory()}\n\n"
+            "This can take a few minutes and requires an internet connection.",
+            parent=self.root,
+        ):
+            return
+        self.managed_firefox_downloading = True
+        self._update_managed_firefox_menu()
+        self.run_status_var.set("Downloading managed Firefox...")
+
+        def download() -> None:
+            try:
+                install_managed_firefox()
+            except Exception as error:
+                def show_error(error: Exception = error) -> None:
+                    self._managed_firefox_download_finished(error)
+
+                self.root.after(0, show_error)
+            else:
+                self.root.after(0, lambda: self._managed_firefox_download_finished(None))
+
+        threading.Thread(target=download, name="managed-firefox-download", daemon=True).start()
+
+    def _managed_firefox_download_finished(self, error: Exception | None) -> None:
+        self.managed_firefox_downloading = False
+        self._update_managed_firefox_menu()
+        if error is not None:
+            self.run_status_var.set("Managed Firefox download failed")
+            messagebox.showerror("Firefox download failed", str(error), parent=self.root)
+            return
+        self.run_status_var.set("Managed Firefox downloaded")
+        self._append_session_log("Managed Firefox downloaded.")
+        messagebox.showinfo(
+            "Managed Firefox ready",
+            "Managed Firefox was downloaded successfully. You can now select Firefox and start the batch.",
+            parent=self.root,
         )
 
     def _refresh_portal_browsers(self) -> None:
@@ -588,7 +659,7 @@ class MainWindow:
         selected = self.portal_browsers.get(self.portal_browser_var.get())
         is_custom = selected is not None and selected.name.startswith("Custom browser (")
         if is_custom:
-            self.custom_engine_frame.grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
+            self.custom_engine_frame.grid(row=1, column=2, sticky="e", pady=(5, 0))
         else:
             self.custom_engine_frame.grid_remove()
 
