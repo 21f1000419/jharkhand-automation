@@ -589,6 +589,7 @@ class PortalAutomation:
                 upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
                 if upi is not None:
                     await upi.click()
+                    await self.page.wait_for_timeout(1_000)
                     self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
                     return
             await self.page.wait_for_timeout(500)
