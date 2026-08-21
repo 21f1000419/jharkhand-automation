@@ -234,12 +234,6 @@ class PortalAutomation:
     async def fill_estamp_form(self, row: dict[str, str], article: str) -> None:
         await self._stage(Stage.FILL_ESTAMP)
         mobile = row.get("mobile", "").strip()
-        if not mobile:
-            raise AutomationError(
-                "Mobile number is required in the CSV.",
-                stage=self.stage,
-                code="missing_mobile",
-            )
         await select_value(
             self.page,
             "#payment_purpose_id",
@@ -264,9 +258,10 @@ class PortalAutomation:
             "#payee_fname_en": row["stamp_duty_paid_by"],
             "#payment_reason": row["stamp_purpose"],
             "#PANNO": row["pan"],
-            "#mobile": mobile,
             "#AMOUNT": row["amount"],
         }
+        if mobile:
+            fields["#mobile"] = mobile
         for selector, value in fields.items():
             await self.controls.checkpoint()
             await fill_first(self.page, [selector], value)
