@@ -323,7 +323,7 @@ class PortalBrowserSession:
                 if not bundled_firefox.is_file():
                     raise RuntimeError(
                         "Firefox-based portal automation requires Playwright Firefox. "
-                        "Click 'Download managed Firefox' in the application, then try again."
+                        "Choose 'Download managed Firefox' from the main menu, then try again."
                     )
             launch_args = ["--start-maximized"] if self.choice.engine == BrowserEngine.CHROMIUM else []
             launch_options: dict[str, object] = {"headless": False, "args": launch_args}

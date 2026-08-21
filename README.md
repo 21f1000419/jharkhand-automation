@@ -40,7 +40,7 @@ The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\C
 
 ## Browser selection
 
-The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, and Yandex Browser. It also always lists **Firefox (managed automation)**. Choose **Browser > Download managed Firefox** once to install the Playwright Firefox build required for Firefox-based automation. The menu item disables itself after a successful download. It is stored in `%LOCALAPPDATA%\Compitcom\eStampAutomation\playwright-browsers`, not beside the executable, so it remains available when the `.exe` is moved to the Desktop or updated. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Chromium choices run the selected installed browser, while Firefox-based choices run a fresh managed Firefox session. The custom choice is saved. Portal automation launches a separate, visible fresh session without touching saved browser profiles or downloads. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing the portal browser stops the automation safely.
+The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, and Yandex Browser. It also always lists **Firefox (managed automation)**. Use the top-level **Download managed Firefox** menu item once to install the Playwright Firefox build required for Firefox-based automation. The item changes to **Managed Firefox downloaded** after a successful download. It is stored in `%LOCALAPPDATA%\Compitcom\eStampAutomation\playwright-browsers`, not beside the executable, so it remains available when the `.exe` is moved to the Desktop or updated. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Chromium choices run the selected installed browser, while Firefox-based choices run a fresh managed Firefox session. The custom choice is saved. Portal automation launches a separate, visible fresh session without touching saved browser profiles or downloads. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing the portal browser stops the automation safely.
 
 ## CSV batches
 
@@ -116,7 +116,7 @@ Continuous mode still pauses for manual OTP and payment. Retrying a failure afte
 .\build_exe.ps1
 ```
 
-The output is `dist\Compitcom-eStamp-Automation.exe`. Chrome is required for the dedicated Gemini profile; the portal may use any supported detected browser. For managed Firefox, users download the browser from **Browser > Download managed Firefox** after starting the executable. Playwright does not download its own Chromium build.
+The output is `dist\Compitcom-eStamp-Automation.exe`. Chrome is required for the dedicated Gemini profile; the portal may use any supported detected browser. For managed Firefox, users use the top-level **Download managed Firefox** menu item after starting the executable. Playwright does not download its own Chromium build.
 
 ## Development checks
 

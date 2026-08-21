@@ -453,10 +453,8 @@ class MainWindow:
 
     def _build_menu(self) -> None:
         menu = tk.Menu(self.root)
-        browser_menu = tk.Menu(menu, tearoff=False)
-        browser_menu.add_command(label="Download managed Firefox", command=self._download_managed_firefox)
-        menu.add_cascade(label="Browser", menu=browser_menu)
-        self.browser_menu = browser_menu
+        menu.add_command(label="Download managed Firefox", command=self._download_managed_firefox)
+        self.application_menu = menu
         self.managed_firefox_menu_index = 0
         self._update_managed_firefox_menu()
         menu.add_command(label="Download CSV Format…", command=self._download_template)
@@ -523,24 +521,24 @@ class MainWindow:
         return (
             "The portal opens in a fresh session; it does not use your personal browser profile "
             "or saved login. Firefox-based choices use Playwright's managed Firefox build. "
-            "Use Browser > Download managed Firefox once if it is not already installed."
+            "Use the Download managed Firefox menu item once if it is not already installed."
         )
 
     def _update_managed_firefox_menu(self) -> None:
         if self.managed_firefox_downloading:
-            self.browser_menu.entryconfigure(
+            self.application_menu.entryconfigure(
                 self.managed_firefox_menu_index,
                 label="Downloading managed Firefox...",
                 state="disabled",
             )
         elif managed_firefox_is_installed():
-            self.browser_menu.entryconfigure(
+            self.application_menu.entryconfigure(
                 self.managed_firefox_menu_index,
                 label="Managed Firefox downloaded",
                 state="disabled",
             )
         else:
-            self.browser_menu.entryconfigure(
+            self.application_menu.entryconfigure(
                 self.managed_firefox_menu_index,
                 label="Download managed Firefox",
                 state="normal",
