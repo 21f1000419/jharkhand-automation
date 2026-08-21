@@ -113,10 +113,8 @@ class AutomationController:
                     future.result(timeout=15)
             except Exception:
                 pass
-            try:
+            with suppress(Exception):
                 self.loop.call_soon_threadsafe(self.loop.stop)
-            except Exception:
-                pass
         if self._thread.is_alive():
             self._thread.join(timeout=2)
         cleanup_all_spawned_processes()
@@ -164,7 +162,12 @@ class AutomationController:
             _, solver = await self._ensure_gemini_services()
             await solver.open_setup()
             if await solver.verify_ready():
-                self.emit(UiEvent("gemini_verified", "The browser profile is signed in and Gemini OCR is ready."))
+                self.emit(
+                    UiEvent(
+                        "gemini_verified",
+                        "The browser profile is signed in and Gemini OCR is ready.",
+                    )
+                )
             else:
                 self.emit(
                     UiEvent(
@@ -174,7 +177,7 @@ class AutomationController:
                     )
                 )
         except Exception as error:
-            self.emit(UiEvent("fatal_error", f"Browser profile verification failed: {error}"))
+            self.emit(UiEvent("gemini_not_ready", f"Browser profile verification failed: {error}"))
 
     def _start_gemini_ocr_test(self) -> None:
         if self.run_task is not None and not self.run_task.done():
@@ -400,19 +403,15 @@ class AutomationController:
         browser, self.gemini_browser = self.gemini_browser, None
         self.solver = None
         if browser is not None:
-            try:
+            with suppress(Exception):
                 await browser.close()
-            except Exception:
-                pass
 
     async def _close_portal_browser(self) -> None:
         browser, self.portal_browser = self.portal_browser, None
         self.portal_page = None
         if browser is not None:
-            try:
+            with suppress(Exception):
                 await browser.close()
-            except Exception:
-                pass
 
     async def _shutdown_async(self) -> None:
         self.emit(UiEvent("browsers_closing", "Closing the portal browser and signed-in Chrome profile."))

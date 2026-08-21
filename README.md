@@ -32,8 +32,9 @@ Use **Test CAPTCHA OCR** to check the dedicated Gemini profile without touching 
 **Ctrl+V** paste into Gemini. The page stays open with Gemini's recognized value filled in.
 
 The **CAPTCHA copy** selector controls the live portal workflow. `direct_copy` (the default) captures the rendered
-CAPTCHA element without moving the mouse, places it on the Windows clipboard, and pastes it into Gemini. The
-`mouse_cursor` option retains the previous right-click **Copy image** browser-menu method.
+CAPTCHA element without moving the mouse and uploads those exact PNG bytes directly to Gemini. This avoids desktop
+clipboard ownership and browser-focus races. The `mouse_cursor` option retains the previous right-click **Copy
+image** browser-menu method.
 
 The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Citizen/eGRAS credentials exist only in application memory and are cleared on exit.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextlib import suppress
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
@@ -44,6 +45,12 @@ RESPONSE_TIMEOUT_SECONDS = 60
 ATTACHMENT_SELECTORS = [
     'img[src^="blob:"]',
     '[data-test-id*="attachment" i]',
+    '[aria-label*="Remove image" i]',
+    '[aria-label*="Remove attachment" i]',
+]
+REMOVE_ATTACHMENT_SELECTORS = [
+    'button[aria-label*="Remove image" i]',
+    'button[aria-label*="Remove attachment" i]',
     '[aria-label*="Remove image" i]',
     '[aria-label*="Remove attachment" i]',
 ]
@@ -97,6 +104,12 @@ class GeminiCaptchaSolver:
 
     async def solve(self, expected_length: int | None = None) -> str:
         """Read the CAPTCHA image that the portal has copied to the clipboard."""
+        return await self.solve_image(read_clipboard_image_png(), expected_length)
+
+    async def solve_image(
+        self, image_bytes: bytes, expected_length: int | None = None
+    ) -> str:
+        """Upload the supplied CAPTCHA bytes directly and return Gemini's OCR result."""
         async with self._lock:
             page = await self.browser_session.page_for_host(
                 "gemini.google.com", create_url="https://gemini.google.com/app"
@@ -105,10 +118,11 @@ class GeminiCaptchaSolver:
             if composer is None:
                 raise RuntimeError("Gemini is not signed in or its prompt box could not be found.")
             try:
+                await clear_composer(page, composer)
                 # Let the dynamically-created upload control finish binding before opening it.
                 await page.wait_for_timeout(1_000)
                 baseline = await read_responses(page)
-                await attach_image(page, read_clipboard_image_png())
+                await attach_image(page, image_bytes)
                 await composer.fill(OCR_PROMPT)
                 await send_prompt(page)
                 raw = await wait_for_response(page, baseline, RESPONSE_TIMEOUT_SECONDS)
@@ -133,6 +147,7 @@ class GeminiCaptchaSolver:
             if composer is None:
                 raise RuntimeError("Gemini is not signed in or its prompt box could not be found.")
             try:
+                await clear_composer(page, composer)
                 await page.wait_for_timeout(1_000)
                 baseline = await read_responses(page)
                 attachment_baseline = await attachment_counts(page)
@@ -152,12 +167,15 @@ class GeminiCaptchaSolver:
             raise RuntimeError(f"Gemini returned an unusable CAPTCHA value: {raw[:120]!r}")
 
     async def cancel_active_response(self) -> None:
-        """Stop Gemini when the user chooses to enter the CAPTCHA manually."""
+        """Stop Gemini and clear an abandoned OCR draft after manual input takes over."""
         try:
             page = await self.browser_session.page_for_host(
                 "gemini.google.com", create_url="https://gemini.google.com/app"
             )
             await stop_response(page)
+            composer = await find_first_visible(page, COMPOSER_SELECTORS, 1_000)
+            if composer is not None:
+                await clear_composer(page, composer)
         except (PlaywrightError, RuntimeError):
             return
 
@@ -221,6 +239,23 @@ async def paste_clipboard_image(page: Page, composer: Locator, baseline: list[in
     await page.keyboard.press("Control+V")
     if not await wait_for_attachment(page, baseline, 12_000):
         raise RuntimeError("Gemini did not show an image after pasting from the Windows clipboard.")
+
+
+async def clear_composer(page: Page, composer: Locator) -> None:
+    """Remove stale text/attachments left by a cancelled or interrupted OCR attempt."""
+    await stop_response(page)
+    with suppress(PlaywrightError):
+        await composer.fill("")
+    for selector in REMOVE_ATTACHMENT_SELECTORS:
+        matches = page.locator(selector)
+        for index in range(await safe_count(matches) - 1, -1, -1):
+            button = matches.nth(index)
+            if not await is_visible(button):
+                continue
+            try:
+                await button.click()
+            except PlaywrightError:
+                continue
 
 
 async def send_prompt(page: Page) -> None:

@@ -2,6 +2,7 @@ import csv
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -13,11 +14,13 @@ try:
     from .config import ConfigStore
     from .credential_store import WindowsCredentialStore
     from .models import BrowserEngine, Credentials
+    from .reference_recorder import ReferenceRecorder
 except ImportError:
     from browser_detection import detect_supported_browsers
     from config import ConfigStore
     from credential_store import WindowsCredentialStore
     from models import BrowserEngine, Credentials
+    from reference_recorder import ReferenceRecorder
 
 try:
     from playwright.sync_api import TimeoutError as PWTimeoutError
@@ -79,6 +82,50 @@ SAMPLE_ROW = [
     "RAM KUMAR SHARMA",
     "500",
 ]
+
+COLLECTION_MODES = [
+    ("Self Printing", "SELF"),
+    ("Sub Registrar Office", "SRO"),
+    ("Home Delivery / Courier", "CUR"),
+    ("Nearest StockHolding Branch", "BRN"),
+    ("Authorized Collection Center", "ACC"),
+]
+
+
+def find_in_any_frame(page, selector, *, state="visible", timeout=30_000):
+    """Return the first matching locator from the page or any live iframe.
+
+    The SHCIL portal replaces its nested frames without changing the browser
+    URL.  ``page.frames`` contains the main frame and every descendant frame,
+    so this lookup does not rely on a fixed ``loginFrame > prodPage >
+    actionFrame`` hierarchy.
+
+    ``state='attached'`` is useful for controls that are intentionally hidden
+    and driven by a styled label, such as the article radio buttons.
+    """
+    deadline = time.monotonic() + (timeout / 1_000)
+    last_error = None
+
+    while time.monotonic() < deadline:
+        # Take a fresh snapshot each time: selecting State can recreate one or
+        # more portal iframes while this function is waiting.
+        for frame in page.frames:
+            try:
+                matches = frame.locator(selector)
+                for index in range(matches.count()):
+                    candidate = matches.nth(index)
+                    if state == "attached" or candidate.is_visible():
+                        return candidate
+            except Exception as exc:  # Frame may be navigating or detached.
+                last_error = exc
+
+        page.wait_for_timeout(150)
+
+    detail = f" Last frame error: {last_error}" if last_error else ""
+    raise PWTimeoutError(
+        f"Timed out waiting for {selector!r} in the page or any iframe "
+        f"(required state: {state}).{detail}"
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -273,9 +320,13 @@ class EStampAutomation:
         rows,
         browser_executable,
         browser_time,
+        collection_mode,
+        sro_location,
+        courier_address,
         log_fn,
         status_fn,
         stop_event,
+        capture_references,
     ):
         self.user_id = user_id
         self.password = password
@@ -284,11 +335,15 @@ class EStampAutomation:
         self.rows = rows
         self.browser_executable = Path(browser_executable)
         self.browser_time = browser_time
+        self.collection_mode = collection_mode
+        self.sro_location = sro_location
+        self.courier_address = courier_address
         self.log_fn = log_fn
         self.status_fn = status_fn
         self.current_record = None
         self.log = self._log
         self.stop_event = stop_event
+        self.capture_references = capture_references
 
     def _log(self, message):
         self.log_fn(message, self.current_record)
@@ -314,6 +369,9 @@ class EStampAutomation:
             else:
                 self._log("Browser time override: Disabled (using system time)")
             page = context.new_page()
+            if self.capture_references:
+                recorder = ReferenceRecorder(Path(__file__).resolve().parent / "refs" / "captures", self._log)
+                page.on("framenavigated", recorder.record)
 
             # Auto-accept every alert/confirm/prompt dialog the site raises,
             # for the entire lifetime of the page. No manual clicking needed.
@@ -335,7 +393,12 @@ class EStampAutomation:
                 self._log(f"--- Processing record {idx}/{total}: {row['description'][:40]}...")
                 self._process_record(page, row, pay_stamp_open=pay_stamp_open)
                 pay_stamp_open = False
-                self.status_fn(idx, "completed", "Certificate printed.")
+                completion = (
+                    "Certificate printed."
+                    if self.collection_mode == "SELF"
+                    else "Payment and collection request completed."
+                )
+                self.status_fn(idx, "completed", completion)
                 self._log(f"--- Record {idx}/{total} complete.")
 
             self.current_record = None
@@ -347,15 +410,18 @@ class EStampAutomation:
 
     def _login(self, page):
         self.log("Waiting for SHCIL login form...")
-        login_scope = self._portal_scope(page, "#sUID", timeout=120_000)
 
         self.log("Entering User ID...")
-        login_scope.locator("#sUID").fill(self.user_id)
-        login_scope.locator("#bLogin").click()
+        self._find_in_any_frame(page, "#sUID", timeout=120_000).fill(self.user_id)
+        self.log("Submitting User ID (the portal runs Google reCAPTCHA before the password screen)...")
+        self._find_in_any_frame(page, "#bLogin", timeout=120_000).click()
 
-        self.log("Waiting for password field...")
-        login_scope = self._portal_scope(page, "#sPass", timeout=120_000)
-        login_scope.locator("#sPass").fill(self.password)
+        self.log(
+            "Waiting for password field. Complete the Google reCAPTCHA manually if the portal presents one."
+        )
+        password_field = self._find_in_any_frame(page, "#sPass", timeout=180_000)
+        password_field.fill(self.password)
+        password_field.press("Tab")
 
         self.log("Password entered. If a CAPTCHA challenge appears, please solve it manually.")
         self.log("Polling continuously for 'Pay Stamp Duty'...")
@@ -366,33 +432,18 @@ class EStampAutomation:
         self.log("Login successful. Pay Stamp Duty form opened.")
         return True
 
-    def _portal_scope(self, page, selector, state="visible", timeout=120_000):
-        """Use the top page first, with a lazy iframe fallback for older portal layouts."""
-        top_locator = page.locator(selector)
-        try:
-            top_locator.wait_for(state=state, timeout=min(timeout, 3_000))
-            return page
-        except PWTimeoutError:
-            frame_locator = page.frame_locator("iframe[name='loginFrame']")
-            frame_locator.locator(selector).wait_for(state=state, timeout=timeout)
-            return frame_locator
-
-    def _product_scope(self, page):
-        """Return the nested product frame that contains the post-login portal."""
-        return page.frame_locator("iframe[name='loginFrame']").frame_locator("iframe[name='prodPage']")
-
-    def _action_scope(self, page):
-        """Return the action frame containing the eStamp form controls."""
-        return self._product_scope(page).frame_locator("iframe[name='actionFrame']")
+    @staticmethod
+    def _find_in_any_frame(page, selector, *, state="visible", timeout=30_000):
+        """Portal-wide locator that tolerates the site's changing iframe tree."""
+        return find_in_any_frame(page, selector, state=state, timeout=timeout)
 
     def _wait_for_pay_stamp_duty_link(self, page, timeout=120_000):
-        self._product_scope(page).locator("a.button_ecf:has-text('Pay Stamp Duty')").wait_for(
-            state="visible", timeout=timeout
+        self._find_in_any_frame(
+            page, "a.button_ecf:has-text('Pay Stamp Duty')", timeout=timeout
         )
 
     def _click_pay_stamp_duty(self, page):
-        button = self._product_scope(page).locator("a.button_ecf:has-text('Pay Stamp Duty')")
-        button.wait_for(state="visible", timeout=30_000)
+        button = self._find_in_any_frame(page, "a.button_ecf:has-text('Pay Stamp Duty')")
         button.scroll_into_view_if_needed()
         button.click()
 
@@ -403,84 +454,169 @@ class EStampAutomation:
             self.log("Polling for 'Pay Stamp Duty' and clicking it...")
         self._wait_for_pay_stamp_duty_link(page)
         self._click_pay_stamp_duty(page)
-        portal_scope = self._action_scope(page)
 
         # Step 5: select state. The portal refreshes its hidden options here.
         self.log(f"Selecting state {self.state_code}...")
-        portal_scope.locator("#iSttCd").wait_for(state="visible", timeout=60_000)
-        portal_scope.locator("#iSttCd").select_option(value=self.state_code)
+        self._find_in_any_frame(page, "#iSttCd", timeout=60_000).select_option(value=self.state_code)
 
-        # Set the self-print limit after StateSelect() has finished, because
-        # that portal callback overwrites the hidden field with its default.
-        portal_scope.locator("#iEsiSelfPrintLimit").wait_for(state="attached", timeout=60_000)
-        portal_scope.locator("#iEsiSelfPrintLimit").evaluate("el => { el.value = '999999'; }")
+        # StateSelect determines which collection methods the portal permits.
+        # Use its normal radio/change handling rather than manipulating a hidden
+        # value, so state-specific availability and self-print limits apply.
+        self._select_collection_mode(page)
 
         # Step 6: select article type
         self.log(f"Selecting article {self.article_value}...")
-        portal_scope.locator(f"input.cArt[value='{self.article_value}']").click()
+        # The portal hides the real radio input and displays a styled control.
+        # Force-check the attached input so the native change handler still
+        # runs, without depending on the particular iframe or CSS layout.
+        self._find_in_any_frame(
+            page, f"input.cArt[value='{self.article_value}']", state="attached", timeout=60_000
+        ).check(force=True)
 
         # Step 7: proceed
         self.log("Clicking Proceed...")
-        portal_scope.locator("#btn_sub[value='Proceed']").click()
+        self._find_in_any_frame(page, "#btn_sub[value='Proceed']", timeout=60_000).click()
 
         # Step 9: fill the record's fields
         self._check_stop()
-        portal_scope.locator("#iPropDesc").wait_for(state="visible", timeout=60_000)
         self.log("Filling description, price, and party details...")
-        portal_scope.locator("#iPropDesc").fill(row["description"])
-        portal_scope.locator("#iConPrice").fill(row["consideration_price"])
-        portal_scope.locator("#iParty1Nm").fill(row["party1"])
-        portal_scope.locator("#iParty2Nm").fill(row["party2"])
-        portal_scope.locator("#iStampPdBy").fill(row["paid_by"])
-        portal_scope.locator("#iStampAmt").fill(row["stamp_amount"])
+        self._find_in_any_frame(page, "#iPropDesc", timeout=60_000).fill(row["description"])
+        self._find_in_any_frame(page, "#iConPrice", timeout=60_000).fill(row["consideration_price"])
+        self._find_in_any_frame(page, "#iParty1Nm", timeout=60_000).fill(row["party1"])
+        self._find_in_any_frame(page, "#iParty2Nm", timeout=60_000).fill(row["party2"])
+        self._find_in_any_frame(page, "#iStampPdBy", timeout=60_000).fill(row["paid_by"])
+        stamp_amount = self._find_in_any_frame(page, "#iStampAmt", timeout=60_000)
+        stamp_amount.fill(row["stamp_amount"])
         # Press Tab to trigger the onblur validation - any resulting alert()
         # is auto-accepted by the global dialog handler registered above.
-        portal_scope.locator("#iStampAmt").press("Tab")
+        stamp_amount.press("Tab")
         page.wait_for_timeout(500)
 
         # Select RAZORPAY as payment mode
         self.log("Selecting RAZORPAY payment mode...")
-        portal_scope.locator("#iPmtMode").wait_for(state="visible", timeout=60_000)
-        portal_scope.locator("#iPmtMode").select_option(value="RAZORPAY")
+        self._find_in_any_frame(page, "#iPmtMode", timeout=60_000).select_option(value="RAZORPAY")
 
         # Press Save
         self._check_stop()
         self.log("Clicking Save...")
-        portal_scope.locator("input#btn_sub[value='Save']").click()
+        self._find_in_any_frame(page, "input#btn_sub[value='Save']", timeout=60_000).click()
         page.wait_for_timeout(500)
 
         # Press Confirm
         self.log("Clicking Confirm...")
-        portal_scope.locator("#btnConfirm").wait_for(state="visible", timeout=60_000)
-        portal_scope.locator("#btnConfirm").click()
+        self._find_in_any_frame(page, "#btnConfirm", timeout=60_000).click()
         page.wait_for_timeout(500)
 
         # Accept terms & conditions checkbox
         self.log("Checking 'I accept Terms and Conditions'...")
-        portal_scope.locator("#iChk").wait_for(state="visible", timeout=60_000)
-        portal_scope.locator("#iChk").check()
+        self._find_in_any_frame(page, "#iChk", timeout=60_000).check()
 
-        # At this point the actual Razorpay payment (bank login / UPI / OTP)
-        # normally has to happen. The script does not attempt this - it just
-        # waits for the certificate button, giving the user time to complete
-        # payment manually in this same browser window.
-        self.log(
-            "Waiting for payment to complete and 'Print eStamp Certificate' "
-            "button to appear. Complete the Razorpay payment manually if prompted..."
+        if self.collection_mode == "SELF":
+            # At this point the actual Razorpay payment (bank login / UPI / OTP)
+            # normally has to happen. The script does not attempt this - it just
+            # waits for the certificate button, giving the user time to complete
+            # payment manually in this same browser window.
+            self.log(
+                "Waiting for payment to complete and 'Print eStamp Certificate' "
+                "button to appear. Complete the Razorpay payment manually if prompted..."
+            )
+            self._find_in_any_frame(page, "#btnPrintCert", timeout=900_000)
+
+            self.log("Clicking 'Print eStamp Certificate'...")
+            self._find_in_any_frame(page, "#btnPrintCert", timeout=60_000).click()
+            page.wait_for_timeout(500)
+
+            # Wait for the final Print button and click it.
+            self.log("Waiting for 'Print' button...")
+            self._find_in_any_frame(page, "#printBtn", timeout=180_000).click()
+        else:
+            self.log(
+                "Complete the Razorpay payment manually. This collection mode does not "
+                "self-print a certificate; wait for the portal to return to 'Pay Stamp Duty'."
+            )
+
+        self.log("Waiting to return to 'Pay Stamp Duty' for the next record...")
+        self._wait_for_pay_stamp_duty_link(page, timeout=900_000)
+
+    def _select_collection_mode(self, page):
+        mode = self.collection_mode
+        option = self._find_in_any_frame(
+            page, f"input[name='iOpt'][value='{mode}']", state="attached", timeout=60_000
         )
-        portal_scope.locator("#btnPrintCert").wait_for(state="visible", timeout=900_000)
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            is_available = option.evaluate(
+                """el => {
+                    if (el.disabled) return false;
+                    // The actual radio can be visually replaced by a styled
+                    // label. Check its containers instead of the input itself.
+                    for (let node = el.parentElement; node; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        if (style.display === 'none' || style.visibility === 'hidden') return false;
+                    }
+                    return true;
+                }"""
+            )
+            if is_available:
+                break
+            page.wait_for_timeout(150)
+        else:
+            raise RuntimeError(
+                f"{mode} is not offered by the SHCIL portal for state {self.state_code}. "
+                "Select a collection method shown by the portal."
+            )
 
-        self.log("Clicking 'Print eStamp Certificate'...")
-        portal_scope.locator("#btnPrintCert").click()
-        page.wait_for_timeout(500)
+        # The radio is sometimes styled or otherwise not directly clickable.
+        # Force-checking the attached control still invokes its native handler,
+        # which keeps the portal's dependent fields in sync.
+        self.log(f"Selecting collection mode {mode}...")
+        option.check(force=True)
 
-        # Wait for the final Print button and click it
-        self.log("Waiting for 'Print' button...")
-        page.locator("#printBtn").wait_for(state="visible", timeout=180_000)
-        page.locator("#printBtn").click()
+        if mode == "SRO":
+            self._select_sro_location(page)
+        elif mode == "CUR":
+            self._fill_courier_address(page)
 
-        self.log("Certificate printed. Waiting to return to 'Pay Stamp Duty' for the next record...")
-        self._wait_for_pay_stamp_duty_link(page, timeout=180_000)
+    def _select_sro_location(self, page):
+        self.log(f"Selecting SRO location: {self.sro_location}...")
+        location_select = self._find_in_any_frame(
+            page, "#iSroLoc", state="attached", timeout=60_000
+        )
+        deadline = time.monotonic() + 60
+        choices = []
+        while time.monotonic() < deadline:
+            options = location_select.locator("option")
+            choices = [
+                (options.nth(index).text_content() or "").strip()
+                for index in range(options.count())
+            ]
+            if any(choice and choice != "Select SRO Location" for choice in choices):
+                break
+            page.wait_for_timeout(150)
+        else:
+            raise RuntimeError("The portal did not return any SRO locations for the selected state.")
+
+        requested = self.sro_location.strip()
+        match = next((choice for choice in choices if choice.casefold() == requested.casefold()), None)
+        if match is None:
+            available = ", ".join(choice for choice in choices if choice and choice != "Select SRO Location")
+            raise RuntimeError(
+                f"SRO location {requested!r} is not available for {self.state_code}. "
+                f"Portal choices: {available}"
+            )
+        location_select.select_option(label=match)
+
+    def _fill_courier_address(self, page):
+        fields = {
+            "#iCurAdd1": self.courier_address["line1"],
+            "#iCurAdd2": self.courier_address["line2"],
+            "#iCurLm": self.courier_address["landmark"],
+            "#iCurCity": self.courier_address["city"],
+            "#iCurPin": self.courier_address["pin"],
+        }
+        self.log("Filling courier delivery address...")
+        for selector, value in fields.items():
+            self._find_in_any_frame(page, selector, timeout=60_000).fill(value)
 
 
 # ----------------------------------------------------------------------------
@@ -507,6 +643,19 @@ class App(tk.Tk):
         self.state_var = tk.StringVar(value=self.config.last_state or STATES[0][1])
         self.article_var = tk.StringVar(value=self.config.last_article or ARTICLES[0][1])
         self.time_var = tk.StringVar(value=self.config.last_time)
+        collection_mode_values = {code for _label, code in COLLECTION_MODES}
+        self.collection_mode_var = tk.StringVar(
+            value=self.config.last_collection_mode
+            if self.config.last_collection_mode in collection_mode_values
+            else "SELF"
+        )
+        self.sro_location_var = tk.StringVar(value=self.config.last_sro_location)
+        self.courier_line1_var = tk.StringVar(value=self.config.courier_address_line1)
+        self.courier_line2_var = tk.StringVar(value=self.config.courier_address_line2)
+        self.courier_landmark_var = tk.StringVar(value=self.config.courier_landmark)
+        self.courier_city_var = tk.StringVar(value=self.config.courier_city)
+        self.courier_pin_var = tk.StringVar(value=self.config.courier_pin)
+        self.capture_references_var = tk.BooleanVar(value=self.config.capture_references)
         self.uid_var = tk.StringVar(value=saved_credentials.citizen_username if saved_credentials else "")
         self.pwd_var = tk.StringVar(value=saved_credentials.citizen_password if saved_credentials else "")
         self.credentials_saved = saved_credentials is not None
@@ -584,9 +733,50 @@ class App(tk.Tk):
                 row=i, column=0, sticky="w"
             )
 
-        ttk.Label(opts, text="Browser Time (IST):").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(opts, text="Certificate Collection:").grid(row=2, column=0, sticky="w", **pad)
+        collection_combo = ttk.Combobox(
+            opts,
+            state="readonly",
+            width=37,
+            values=[f"{label} ({code})" for label, code in COLLECTION_MODES],
+        )
+        collection_combo.grid(row=2, column=1, sticky="w", **pad)
+        collection_codes = [code for _label, code in COLLECTION_MODES]
+        collection_combo.current(collection_codes.index(self.collection_mode_var.get()))
+        collection_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self._collection_mode_selected(collection_combo, collection_codes),
+        )
+
+        self.sro_settings = ttk.Frame(opts)
+        ttk.Label(self.sro_settings, text="SRO location (exact portal name):").pack(side="left")
+        ttk.Entry(self.sro_settings, textvariable=self.sro_location_var, width=38).pack(
+            side="left", padx=(6, 0)
+        )
+        self.sro_settings.grid(row=3, column=1, sticky="w", **pad)
+
+        self.courier_settings = ttk.Frame(opts)
+        courier_fields = [
+            ("Address line 1", self.courier_line1_var),
+            ("Address line 2", self.courier_line2_var),
+            ("Landmark", self.courier_landmark_var),
+            ("City", self.courier_city_var),
+            ("PIN", self.courier_pin_var),
+        ]
+        for index, (label, variable) in enumerate(courier_fields):
+            ttk.Label(self.courier_settings, text=f"{label}:").grid(
+                row=index, column=0, sticky="w", pady=2
+            )
+            ttk.Entry(
+                self.courier_settings,
+                textvariable=variable,
+                width=45 if label != "PIN" else 12,
+            ).grid(row=index, column=1, sticky="w", padx=(6, 0), pady=2)
+        self.courier_settings.grid(row=4, column=1, sticky="w", **pad)
+
+        ttk.Label(opts, text="Browser Time (IST):").grid(row=5, column=0, sticky="w", **pad)
         time_frame = ttk.Frame(opts)
-        time_frame.grid(row=2, column=1, sticky="w", **pad)
+        time_frame.grid(row=5, column=1, sticky="w", **pad)
         ttk.Entry(time_frame, textvariable=self.time_var, width=18).pack(side="left")
         ttk.Button(time_frame, text="Set 2:00 PM", command=lambda: self.time_var.set("14:00")).pack(
             side="left", padx=(6, 0)
@@ -596,9 +786,20 @@ class App(tk.Tk):
         )
         ttk.Label(
             opts,
-            text="Leave blank to use actual system time, or set custom time (e.g. 14:00, 02:00 PM, 2026-08-21 14:00).",
+            text=(
+                "Leave blank to use actual system time, or set custom time "
+                "(e.g. 14:00, 02:00 PM, 2026-08-21 14:00)."
+            ),
             foreground="#555555",
-        ).grid(row=3, column=1, sticky="w", **pad)
+        ).grid(row=6, column=1, sticky="w", **pad)
+
+        ttk.Checkbutton(
+            opts,
+            text="Save page HTML and connected resources to refs/captures",
+            variable=self.capture_references_var,
+            command=self._save_settings,
+        ).grid(row=7, column=1, sticky="w", **pad)
+        self._update_collection_fields()
 
         csvf = ttk.LabelFrame(self, text="Records CSV")
         csvf.pack(fill="x", **pad)
@@ -690,11 +891,34 @@ class App(tk.Tk):
         self.state_var.set(state_codes[state_combo.current()])
         self._save_settings()
 
+    def _collection_mode_selected(self, collection_combo, collection_codes):
+        self.collection_mode_var.set(collection_codes[collection_combo.current()])
+        self._update_collection_fields()
+        self._save_settings()
+
+    def _update_collection_fields(self):
+        if self.collection_mode_var.get() == "SRO":
+            self.sro_settings.grid()
+        else:
+            self.sro_settings.grid_remove()
+        if self.collection_mode_var.get() == "CUR":
+            self.courier_settings.grid()
+        else:
+            self.courier_settings.grid_remove()
+
     def _save_settings(self):
         self.config.last_state = self.state_var.get()
         self.config.last_article = self.article_var.get()
         self.config.last_csv_path = self.csv_path.get().strip()
         self.config.last_time = self.time_var.get().strip()
+        self.config.last_collection_mode = self.collection_mode_var.get()
+        self.config.last_sro_location = self.sro_location_var.get().strip()
+        self.config.courier_address_line1 = self.courier_line1_var.get().strip()
+        self.config.courier_address_line2 = self.courier_line2_var.get().strip()
+        self.config.courier_landmark = self.courier_landmark_var.get().strip()
+        self.config.courier_city = self.courier_city_var.get().strip()
+        self.config.courier_pin = self.courier_pin_var.get().strip()
+        self.config.capture_references = self.capture_references_var.get()
         if self.browser_path is not None:
             self.config.last_browser_path = str(self.browser_path)
         self.config_store.save(self.config)
@@ -835,6 +1059,7 @@ class App(tk.Tk):
         pwd = self.pwd_var.get()
         csv_path = self.csv_path.get().strip()
         time_str = self.time_var.get().strip()
+        collection_mode = self.collection_mode_var.get()
 
         if not uid or not pwd:
             messagebox.showerror("Missing info", "Please enter User ID and Password.")
@@ -845,6 +1070,30 @@ class App(tk.Tk):
         if not csv_path or not os.path.isfile(csv_path):
             messagebox.showerror("Missing CSV", "Please select a valid records CSV file.")
             return
+        if collection_mode == "SRO" and not self.sro_location_var.get().strip():
+            messagebox.showerror(
+                "Missing SRO location",
+                "Enter the exact SRO location name shown by the portal for the selected state.",
+            )
+            return
+        if collection_mode == "CUR":
+            courier_values = {
+                "Address line 1": self.courier_line1_var.get().strip(),
+                "Address line 2": self.courier_line2_var.get().strip(),
+                "Landmark": self.courier_landmark_var.get().strip(),
+                "City": self.courier_city_var.get().strip(),
+                "PIN": self.courier_pin_var.get().strip(),
+            }
+            missing_fields = [label for label, value in courier_values.items() if not value]
+            if missing_fields:
+                messagebox.showerror(
+                    "Missing courier address",
+                    "Enter: " + ", ".join(missing_fields) + ".",
+                )
+                return
+            if not (courier_values["PIN"].isdigit() and len(courier_values["PIN"]) == 6):
+                messagebox.showerror("Invalid courier PIN", "Courier PIN must contain exactly six digits.")
+                return
 
         try:
             browser_time = parse_browser_time(time_str)
@@ -878,7 +1127,7 @@ class App(tk.Tk):
         if not messagebox.askyesno(
             "Confirm",
             f"About to process {len(rows)} record(s). This will submit real forms and "
-            "may involve real payments on the SHCIL portal. Continue?",
+            f"may involve real payments on the SHCIL portal using {collection_mode} collection. Continue?",
         ):
             return
 
@@ -899,9 +1148,19 @@ class App(tk.Tk):
             rows=rows,
             browser_executable=self.browser_path,
             browser_time=browser_time,
+            collection_mode=collection_mode,
+            sro_location=self.sro_location_var.get().strip(),
+            courier_address={
+                "line1": self.courier_line1_var.get().strip(),
+                "line2": self.courier_line2_var.get().strip(),
+                "landmark": self.courier_landmark_var.get().strip(),
+                "city": self.courier_city_var.get().strip(),
+                "pin": self.courier_pin_var.get().strip(),
+            },
             log_fn=self._log,
             status_fn=self._record_status,
             stop_event=self.stop_event,
+            capture_references=self.capture_references_var.get(),
         )
 
         def worker():

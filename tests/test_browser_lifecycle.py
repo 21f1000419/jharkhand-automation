@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
+from contextlib import suppress
+
 from automation.browser import (
     _TRACKED_PROCESSES,
     cleanup_all_spawned_processes,
@@ -26,10 +28,8 @@ class BrowserLifecycleTests(unittest.TestCase):
             self.assertNotIn(proc, _TRACKED_PROCESSES)
         finally:
             terminate_process_tree_sync(proc)
-            try:
+            with suppress(Exception):
                 proc.wait(timeout=2)
-            except Exception:
-                pass
 
     def test_cleanup_all_spawned_processes(self) -> None:
         proc1 = subprocess.Popen(

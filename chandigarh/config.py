@@ -14,6 +14,14 @@ class ChandigarhConfig:
     last_csv_path: str = ""
     last_browser_path: str = ""
     last_time: str = "14:00"
+    last_collection_mode: str = "SELF"
+    last_sro_location: str = ""
+    courier_address_line1: str = ""
+    courier_address_line2: str = ""
+    courier_landmark: str = ""
+    courier_city: str = ""
+    courier_pin: str = ""
+    capture_references: bool = True
 
 
 class ConfigStore:

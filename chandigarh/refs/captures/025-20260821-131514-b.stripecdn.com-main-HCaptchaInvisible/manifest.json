@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-08-21T13:15:15+05:30",
+  "frame_name": "main",
+  "url": "https://b.stripecdn.com/stripethirdparty-srv/assets/v33.8/HCaptchaInvisible.html?id=50b77514-764d-4a0e-a446-9ca19988e138&origin=https%3A%2F%2Fjs.stripe.com",
+  "asset_count": 3,
+  "assets": [
+    {
+      "url": "https://b.stripecdn.com/stripethirdparty-srv/assets/v33.8/HCaptchaInvisible.1385fb7b39b94547633f.bundle.js",
+      "file": "assets/001-HCaptchaInvisible.1385fb7b39b94547633f.bundle.js"
+    },
+    {
+      "url": "https://b.stripecdn.com/stripethirdparty-srv/assets/v33.8/vendors~AddressAutocomplete~AffirmInContext~AfterpayInContext~AlgoliaSearch~AmazonPayButton~ApplePay~92869408.61509b42b7c5c4302128.bundle.js",
+      "file": "assets/002-vendors-AddressAutocomplete-AffirmInContext-AfterpayInContext-AlgoliaSearch-AmazonPayButton-ApplePay-92869408.61509b42b7c5c4302128.bundle.js"
+    },
+    {
+      "url": "https://hcaptcha.com/1/api.js?onload=captchaLoad&amp;render=explicit",
+      "file": "assets/003-api.js"
+    }
+  ]
+}

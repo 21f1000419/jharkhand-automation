@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -51,10 +52,8 @@ def terminate_process_tree_sync(process: subprocess.Popen[bytes] | int | None) -
             except subprocess.TimeoutExpired:
                 process.kill()
         else:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+            with suppress(OSError):
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def cleanup_all_spawned_processes() -> None:
@@ -169,10 +168,8 @@ class BrowserSession:
                 await cdp.send("Browser.close")
             except Exception:
                 pass
-            try:
+            with suppress(Exception):
                 await browser.close()
-            except Exception:
-                pass
 
         if owns_chrome and process is not None and process.poll() is None:
             await terminate_process_tree(process)
@@ -219,8 +216,8 @@ class BrowserSession:
         register_process(self.process)
 
     def _disconnected(self, _browser: Browser) -> None:
-        process = self.process
-        owns_chrome = self.owns_chrome
+        # process = self.process
+        # owns_chrome = self.owns_chrome
         # is_headless = self.headless
         self.browser = None
         self.context = None
@@ -327,10 +324,8 @@ class PortalBrowserSession:
             return self.context
         except Exception:
             if self.browser is not None:
-                try:
+                with suppress(Exception):
                     await self.browser.close()
-                except Exception:
-                    pass
                 self.browser = None
             await self._stop_playwright()
             raise

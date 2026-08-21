@@ -1,0 +1,12 @@
+{
+  "captured_at": "2026-08-21T13:15:37+05:30",
+  "frame_name": "main",
+  "url": "https://www.shcilestamp.com/eStampIndia/selfPrint/SelfPrintServlet?rDoAction=printEstamp",
+  "asset_count": 1,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/html/js/popcalendar.js",
+      "file": "assets/001-popcalendar.js"
+    }
+  ]
+}

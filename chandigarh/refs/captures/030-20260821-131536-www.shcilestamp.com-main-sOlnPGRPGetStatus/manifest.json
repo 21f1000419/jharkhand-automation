@@ -1,0 +1,48 @@
+{
+  "captured_at": "2026-08-21T13:15:37+05:30",
+  "frame_name": "main",
+  "url": "https://www.shcilestamp.com/OnlineStamping/sOlnPGRPGetStatus",
+  "asset_count": 10,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/olnesi_hdr.jpg",
+      "file": "assets/001-olnesi_hdr.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/olnsys_body_bg.jpg",
+      "file": "assets/002-olnsys_body_bg.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/olnsys_bottom_bg.jpg",
+      "file": "assets/003-olnsys_bottom_bg.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/olnsys_hdr_bg.jpg",
+      "file": "assets/004-olnsys_hdr_bg.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/OlnCss.css",
+      "file": "assets/005-OlnCss.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/commonValidation.js",
+      "file": "assets/006-commonValidation.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/disableRC.js",
+      "file": "assets/007-disableRC.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/facebox.css",
+      "file": "assets/008-facebox.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.js",
+      "file": "assets/009-jquery.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.validate.js",
+      "file": "assets/010-jquery.validate.js"
+    }
+  ]
+}

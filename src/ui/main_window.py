@@ -680,6 +680,8 @@ class MainWindow:
         self._record_ui_action("start_ocr_browser_clicked")
         if not self._save_browser_settings(reconfigure=False):
             return
+        self.gemini_checking = True
+        self.gemini_ready = False
         # self.gemini_login_required = False
         self.gemini_status_var.set("Gemini OCR: opening browser and checking...")
         # self.gemini_status_var.set("Gemini OCR: checking headlessly...")  # Headless mode
@@ -1045,6 +1047,8 @@ class MainWindow:
             if event.kind == "gemini_not_ready":
                 self.gemini_checking = False
                 self.gemini_ready = False
+                self.starting = False
+                self.running = False
                 # self.gemini_login_required = False
                 # self.gemini_login_browser_open = False
                 self.config.gemini_verified = False
@@ -1054,8 +1058,6 @@ class MainWindow:
                     "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
                 )
             else:
-                self.gemini_checking = False
-                self.gemini_ready = False
                 # self.gemini_login_browser_open = False
                 self.starting = False
                 self.running = False
@@ -1276,6 +1278,7 @@ class MainWindow:
                 "normal"
                 if has_csv
                 and has_portal_browser
+                and not self.gemini_checking
                 and not self.running
                 and not self.starting
                 else "disabled"

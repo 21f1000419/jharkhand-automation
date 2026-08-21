@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 
 from playwright.async_api import Error as PlaywrightError
@@ -10,7 +11,6 @@ from playwright.async_api import Locator, Page
 
 from core.controls import RunControls
 from core.models import AutomationError, CaptchaCopyMode, Credentials, Stage, UiEvent, WorkflowStopped
-from services.clipboard_image import write_png_to_clipboard
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
@@ -78,10 +78,10 @@ class PortalAutomation:
             await self.select_upi_qr_and_pay()
             link = await self.find_result_link()
             await self._stage(Stage.DOWNLOAD)
-            downloader = EstampDownloader(self.page.context)
+            downloader = EstampDownloader()
             return await downloader.download(
                 self.page,
-                await link.get_attribute("href") or "",
+                link,
                 download_root,
                 row_number,
                 sequence,
@@ -114,15 +114,17 @@ class PortalAutomation:
         if credentials.citizen_username and credentials.citizen_password:
             await fill_first(self.page, ["#username"], credentials.citizen_username)
             await fill_first(self.page, ["#password"], credentials.citizen_password)
-            await self._solve_captcha(
+            captcha_entered_manually = await self._solve_captcha(
                 "#captcha_image",
                 "#captcha",
                 expected_length=6,
             )
+        else:
+            captcha_entered_manually = True
 
-        # Regardless of whether CAPTCHA was entered manually or solved via OCR:
-        # Click Get OTP (#btnotp) if OTP field is not yet visible
-        if not await visible(self.page, "#otp", 500):
+        # Once a person takes over CAPTCHA entry, they also own the associated
+        # portal action. Do not submit while they may still be typing.
+        if not captcha_entered_manually and not await visible(self.page, "#otp", 500):
             otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
             if otp_button is not None:
                 self.citizen_otp_not_before = self._capture_otp_request_time()
@@ -147,6 +149,8 @@ class PortalAutomation:
                     self.emit(
                         UiEvent("otp_filled", "Citizen OTP received from the SMS server and filled.")
                     )
+                    await click_first(self.page, ["#btnSubmit", 'button:has-text("Login")'])
+                    self.emit(UiEvent("log", "Citizen OTP login submitted automatically."))
             else:
                 self.emit(
                     UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
@@ -199,10 +203,8 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
-            try:
+            with suppress(PlaywrightError):
                 await self.page.goto(ESTAMP_URL, wait_until="domcontentloaded", timeout=15_000)
-            except PlaywrightError:
-                pass
 
             if await visible(self.page, "#payment_purpose_id", 8_000):
                 return
@@ -300,15 +302,16 @@ class PortalAutomation:
         if credentials.egras_username and credentials.egras_password:
             await username.fill(credentials.egras_username)
             await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
-            await self._solve_captcha(
+            login_captcha_entered_manually = await self._solve_captcha(
                 "img.imgcaptcha",
                 "#txtcaptcha",
                 expected_length=6,
             )
+        else:
+            login_captcha_entered_manually = True
 
-        # Regardless of whether login CAPTCHA was entered manually or via OCR:
-        # Click Proceed if not already moved to OTP step
-        if not await visible(self.page, "#txtOTP", 500):
+        # Manual CAPTCHA entry also makes Proceed a manual action.
+        if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
             proceed_btn = await first_visible(self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000)
             if proceed_btn is not None:
                 self.egrass_otp_not_before = self._capture_otp_request_time()
@@ -330,7 +333,7 @@ class PortalAutomation:
             )
 
         # Solve second CAPTCHA (whether via Gemini OCR or manual entry)
-        await self._solve_captcha(
+        otp_captcha_entered_manually = await self._solve_captcha(
             "div.tab-pane.active img.imgcaptcha",
             "div.tab-pane.active #txtcaptcha",
             expected_length=6,
@@ -344,6 +347,9 @@ class PortalAutomation:
                     await otp_field.fill(otp)
                     self.egrass_otp_for_cleanup = otp
                     self.emit(UiEvent("otp_filled", "OTP received from the SMS server and filled in eGRAS."))
+                    if not otp_captcha_entered_manually:
+                        await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
+                        self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
             else:
                 self.emit(
                     UiEvent("otp_manual", "Use the manually entered eGRAS OTP, then click Validate OTP.")
@@ -394,7 +400,9 @@ class PortalAutomation:
                     otp = await self.sms_otp_client.get_otp(self.sms_user_id, otp_type, not_before)
                 except SmsOtpServerError as error:
                     if not reported_connection_issue:
-                        self.emit(UiEvent("otp_server_issue", f"SMS OTP server unavailable; retrying: {error}"))
+                        self.emit(
+                            UiEvent("otp_server_issue", f"SMS OTP server unavailable; retrying: {error}")
+                        )
                         reported_connection_issue = True
                 else:
                     if otp is not None:
@@ -520,6 +528,9 @@ class PortalAutomation:
                 upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
                 if upi is not None:
                     await upi.click()
+                    # SBI renders the UPI QR radio asynchronously after the UPI section expands.
+                    # Give its handler a moment to finish before the next stage begins polling #upiQR1.
+                    await self.page.wait_for_timeout(1_000)
                     self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
                     return
             await self.page.wait_for_timeout(500)
@@ -540,7 +551,9 @@ class PortalAutomation:
             qr_option = await first_visible(self.page, ["#upiQR1"], 500)
             if qr_option is not None:
                 if not await qr_option.is_checked():
-                    await qr_option.check(force=True)
+                    # SBI's UPI page can run its own selection handler without updating the
+                    # native radio state. Click it, but do not fail solely on that state.
+                    await qr_option.click(force=True)
                 pay_now = await first_visible(self.page, ["#upiButton"], 10_000)
                 if pay_now is not None:
                     await pay_now.click()
@@ -607,8 +620,8 @@ class PortalAutomation:
         ocr_task: asyncio.Task[str] | None = None
         try:
             if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
-                await self._copy_captcha_directly(image)
-                ocr_task = asyncio.create_task(solver.solve_pasted_clipboard_image(expected_length))
+                image_png = await self._capture_captcha_directly(image)
+                ocr_task = asyncio.create_task(solver.solve_image(image_png, expected_length))
             else:
                 await self._copy_captcha_with_browser_menu(image)
                 ocr_task = asyncio.create_task(solver.solve(expected_length))
@@ -677,8 +690,8 @@ class PortalAutomation:
                 return
             await self.page.wait_for_timeout(100)
 
-    async def _copy_captcha_directly(self, image: Locator) -> None:
-        """Capture the rendered CAPTCHA without moving the mouse, then place it on the clipboard."""
+    async def _capture_captcha_directly(self, image: Locator) -> bytes:
+        """Capture the rendered CAPTCHA for direct in-memory upload to Gemini."""
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             await self.controls.checkpoint()
@@ -686,9 +699,7 @@ class PortalAutomation:
                 "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0"
             )
             if loaded:
-                image_png = await image.screenshot()
-                await asyncio.to_thread(write_png_to_clipboard, image_png)
-                return
+                return await image.screenshot()
             await self.page.wait_for_timeout(150)
         raise AutomationError(
             "The CAPTCHA image did not finish loading.",

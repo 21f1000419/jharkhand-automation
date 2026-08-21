@@ -1,0 +1,24 @@
+{
+  "captured_at": "2026-08-21T13:14:58+05:30",
+  "frame_name": "prodPage",
+  "url": "https://www.shcilestamp.com/OnlineStamping/sOlnProductCntl?doPage=prodHome&isid=110235219140_21081314202630108358",
+  "asset_count": 4,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/JSP/OlnEsiUsrHome.jsp?isid=110235219140_21081314202630108358",
+      "file": "assets/001-OlnEsiUsrHome.jsp"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/commonValidation.js",
+      "file": "assets/002-commonValidation.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.js",
+      "file": "assets/003-jquery.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.validate.js",
+      "file": "assets/004-jquery.validate.js"
+    }
+  ]
+}
