@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from playwright.async_api import Download
+from playwright.async_api import Error as PlaywrightError
 
-from automation.portal import PortalAutomation
+from automation.portal import PortalAutomation, transaction_details_from_rows
 from core.config import AppConfig, ConfigStore
 from core.controls import RunControls
 from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
@@ -29,6 +30,171 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(
             extract_reference("https://example.test/gras_estamp_download/7489afcddfd00e8d892a"),
             "7489afcddfd00e8d892a",
+        )
+
+    def test_transaction_confirmation_table_details_are_normalized(self) -> None:
+        details = transaction_details_from_rows(
+            [
+                ["Name", " MahindraAndMahindraFinancialServices "],
+                ["Token No / Depositor ID", "C157925"],
+                ["Amount", "20"],
+                ["Transaction ID", "15a44b09719f32951d72"],
+                ["GRN", "2604247253"],
+                ["CIN", "10002162026082107215"],
+                ["Time", "2026-08-21 17:16:10"],
+            ]
+        )
+
+        self.assertEqual(details["Name"], "MahindraAndMahindraFinancialServices")
+        self.assertEqual(details["Token No / Depositor ID"], "C157925")
+        self.assertEqual(details["Transaction ID"], "15a44b09719f32951d72")
+        self.assertEqual(details["GRN"], "2604247253")
+        self.assertEqual(details["CIN"], "10002162026082107215")
+
+    def test_confirmed_transaction_survives_pdf_download_failure(self) -> None:
+        page = MagicMock()
+        events: list[object] = []
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            events.append,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        for method_name in (
+            "ensure_citizen_session",
+            "fill_estamp_form",
+            "confirm_estamp",
+            "accept_egras_terms",
+            "complete_egras_login",
+            "choose_gateway",
+            "accept_gateway_terms",
+            "select_upi",
+            "select_upi_qr_and_pay",
+        ):
+            setattr(portal, method_name, AsyncMock())
+        details = {
+            "Transaction ID": "transaction-123",
+            "GRN": "grn-123",
+            "CIN": "cin-123",
+        }
+        portal.find_result_details = AsyncMock(return_value=details)  # type: ignore[method-assign]
+        portal._stage = AsyncMock()  # type: ignore[method-assign]
+        link = MagicMock()
+
+        with (
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=link)),
+            patch("automation.portal.EstampDownloader") as downloader_type,
+        ):
+            downloader_type.return_value.download = AsyncMock(side_effect=RuntimeError("HTTP 500"))
+            result = asyncio.run(
+                portal.process_unit(
+                    {},
+                    "Article",
+                    Credentials(),
+                    Path("downloads"),
+                    1,
+                    1,
+                )
+            )
+
+        self.assertEqual(result.reference, "transaction-123")
+        self.assertEqual(result.details, details)
+        self.assertIsNone(result.destination)
+        self.assertEqual(result.download_error, "HTTP 500")
+
+    def test_egras_terms_checkbox_uses_native_fallback(self) -> None:
+        portal = PortalAutomation(
+            MagicMock(),
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._stage = AsyncMock()  # type: ignore[method-assign]
+        checkbox = MagicMock()
+        checkbox.check = AsyncMock(side_effect=PlaywrightError("Checkbox state did not change"))
+        checkbox.evaluate = AsyncMock()
+        checkbox.is_checked = AsyncMock(return_value=True)
+
+        with (
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=checkbox)),
+            patch("automation.portal.click_first", new=AsyncMock()) as click,
+        ):
+            asyncio.run(portal.accept_egras_terms())
+
+        checkbox.evaluate.assert_awaited_once()
+        click.assert_awaited_once()
+
+    def test_upi_qr_uses_javascript_fallback_before_clicking_pay(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
+        qr_option = MagicMock()
+        qr_option.count = AsyncMock(return_value=1)
+        qr_option.is_checked = AsyncMock(side_effect=[False, False, True])
+        qr_option.click = AsyncMock()
+        qr_option.evaluate = AsyncMock(return_value=True)
+        page.locator.return_value.first = qr_option
+        pay_now = MagicMock()
+        pay_now.click = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._stage = AsyncMock()  # type: ignore[method-assign]
+
+        with patch("automation.portal.first_visible", new=AsyncMock(return_value=pay_now)):
+            asyncio.run(portal.select_upi_qr_and_pay())
+
+        qr_option.click.assert_awaited_once()
+        qr_option.evaluate.assert_awaited_once()
+        pay_now.click.assert_awaited_once()
+
+    def test_upi_qr_unverified_hands_payment_to_user_without_failing(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
+        qr_option = MagicMock()
+        qr_option.count = AsyncMock(return_value=1)
+        qr_option.is_checked = AsyncMock(return_value=False)
+        qr_option.click = AsyncMock()
+        qr_option.evaluate = AsyncMock(return_value=False)
+        page.locator.return_value.first = qr_option
+        pay_now = MagicMock()
+        pay_now.click = AsyncMock()
+        events: list[object] = []
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            events.append,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._stage = AsyncMock()  # type: ignore[method-assign]
+
+        with patch("automation.portal.first_visible", new=AsyncMock(return_value=pay_now)):
+            asyncio.run(portal.select_upi_qr_and_pay())
+
+        pay_now.click.assert_not_awaited()
+        self.assertTrue(
+            any(getattr(event, "kind", "") == "notification" for event in events),
+            "Manual UPI takeover should notify the user.",
         )
 
     def test_download_retries_in_live_browser_and_saves_pdf(self) -> None:

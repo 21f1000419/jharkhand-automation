@@ -79,6 +79,14 @@ class RunOptions:
 
 
 @dataclass(frozen=True)
+class TransactionResult:
+    details: dict[str, str]
+    reference: str
+    destination: Path | None = None
+    download_error: str = ""
+
+
+@dataclass(frozen=True)
 class UiEvent:
     kind: str
     message: str = ""

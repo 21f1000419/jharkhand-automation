@@ -10,7 +10,15 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
 from core.controls import RunControls
-from core.models import AutomationError, CaptchaCopyMode, Credentials, Stage, UiEvent, WorkflowStopped
+from core.models import (
+    AutomationError,
+    CaptchaCopyMode,
+    Credentials,
+    Stage,
+    TransactionResult,
+    UiEvent,
+    WorkflowStopped,
+)
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.gemini_ocr import GeminiCaptchaSolver
@@ -22,6 +30,15 @@ ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estam
 SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
 MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
 EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
+TRANSACTION_FIELD_NAMES = {
+    "name": "Name",
+    "token no / depositor id": "Token No / Depositor ID",
+    "amount": "Amount",
+    "transaction id": "Transaction ID",
+    "grn": "GRN",
+    "cin": "CIN",
+    "time": "Time",
+}
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -65,7 +82,7 @@ class PortalAutomation:
         download_root: Path,
         row_number: int,
         sequence: int,
-    ) -> tuple[Path, str]:
+    ) -> TransactionResult:
         try:
             await self.ensure_citizen_session(credentials)
             await self.fill_estamp_form(row, article)
@@ -76,16 +93,32 @@ class PortalAutomation:
             await self.accept_gateway_terms()
             await self.select_upi()
             await self.select_upi_qr_and_pay()
-            link = await self.find_result_link()
-            await self._stage(Stage.DOWNLOAD)
-            downloader = EstampDownloader()
-            return await downloader.download(
-                self.page,
-                link,
-                download_root,
-                row_number,
-                sequence,
+            details = await self.find_result_details()
+            reference = (
+                details.get("Transaction ID")
+                or details.get("GRN")
+                or details.get("CIN")
+                or details.get("Token No / Depositor ID")
+                or f"unit-{sequence}"
             )
+            try:
+                await self._stage(Stage.DOWNLOAD)
+                link = await first_visible(self.page, ['a[href*="gras_estamp_download"]'], 5_000)
+                if link is None:
+                    raise RuntimeError("The eStamp download button was not found.")
+                downloader = EstampDownloader()
+                destination, _download_reference = await downloader.download(
+                    self.page,
+                    link,
+                    download_root,
+                    row_number,
+                    sequence,
+                )
+            except Exception as download_error:
+                error = str(download_error)
+                self._report_nonfatal_download_error(error)
+                return TransactionResult(details, reference, download_error=error)
+            return TransactionResult(details, reference, destination)
         except AutomationError:
             raise
         except PlaywrightError as error:
@@ -290,7 +323,25 @@ class PortalAutomation:
         checkbox = await first_visible(self.page, ["#takenBefore", 'input[name="ch"]'], 20_000)
         if checkbox is None:
             return
-        await checkbox.check(force=True)
+        try:
+            await checkbox.check(force=True)
+        except PlaywrightError:
+            # This portal sometimes handles the forced click but immediately reports the
+            # checkbox as unchanged. Set the native property and emit the same form events
+            # so a transient Playwright actionability mismatch does not discard the unit.
+            await checkbox.evaluate(
+                """element => {
+                    element.checked = true;
+                    element.dispatchEvent(new Event('input', {bubbles: true}));
+                    element.dispatchEvent(new Event('change', {bubbles: true}));
+                }"""
+            )
+        if not await checkbox.is_checked():
+            raise AutomationError(
+                "The eGRAS terms checkbox could not be selected.",
+                stage=self.stage,
+                code="terms_checkbox_failed",
+            )
         await click_first(self.page, ["button.close_model", 'button:has-text("OK")'])
 
     async def complete_egras_login(self, credentials: Credentials) -> None:
@@ -528,9 +579,6 @@ class PortalAutomation:
                 upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
                 if upi is not None:
                     await upi.click()
-                    # SBI renders the UPI QR radio asynchronously after the UPI section expands.
-                    # Give its handler a moment to finish before the next stage begins polling #upiQR1.
-                    await self.page.wait_for_timeout(1_000)
                     self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
                     return
             await self.page.wait_for_timeout(500)
@@ -539,6 +587,8 @@ class PortalAutomation:
         """Select UPI QR and begin the user-facing UPI payment."""
         await self._stage(Stage.PAYMENT)
         self._status("Selecting UPI QR and preparing payment…")
+        automatic_selection_attempted = False
+        manual_takeover = False
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
@@ -548,22 +598,74 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
-            qr_option = await first_visible(self.page, ["#upiQR1"], 500)
-            if qr_option is not None:
-                if not await qr_option.is_checked():
-                    # SBI's UPI page can run its own selection handler without updating the
-                    # native radio state. Click it, but do not fail solely on that state.
-                    await qr_option.click(force=True)
-                pay_now = await first_visible(self.page, ["#upiButton"], 10_000)
-                if pay_now is not None:
+            qr_option = self.page.locator("#upiQR1").first
+            qr_available = await qr_option.count() > 0
+            qr_checked = await locator_is_checked(qr_option) if qr_available else False
+
+            if qr_available and not qr_checked and not automatic_selection_attempted:
+                automatic_selection_attempted = True
+                try:
+                    await qr_option.click(force=True, timeout=3_000)
+                except PlaywrightError as error:
+                    self.emit(UiEvent("log", f"Normal UPI QR click was not accepted: {error}"))
+                qr_checked = await locator_is_checked(qr_option)
+
+                if not qr_checked:
+                    try:
+                        await qr_option.evaluate(
+                            """element => {
+                                element.scrollIntoView({block: 'center', inline: 'center'});
+                                element.click();
+                                if (!element.checked) {
+                                    element.checked = true;
+                                    element.dispatchEvent(new Event('input', {bubbles: true}));
+                                    element.dispatchEvent(new Event('change', {bubbles: true}));
+                                }
+                                return element.checked;
+                            }"""
+                        )
+                    except PlaywrightError as error:
+                        self.emit(UiEvent("log", f"JavaScript UPI QR click was not accepted: {error}"))
+                    qr_checked = await locator_is_checked(qr_option)
+
+                if qr_checked:
+                    self.emit(UiEvent("log", "UPI QR selected using the automatic fallback."))
+                else:
+                    manual_takeover = True
+                    self._status("Select UPI QR and click Pay Now manually…")
+                    self.emit(
+                        UiEvent(
+                            "notification",
+                            "UPI QR could not be verified automatically. Select UPI QR and "
+                            "click Pay Now in the browser; automation will keep waiting.",
+                            {
+                                "title": "Manual UPI QR selection needed",
+                                "level": "warning",
+                            },
+                        )
+                    )
+
+            # Look up Pay Now independently of the native radio state. SBI can run its
+            # selection handler without reflecting `checked` back to browser automation.
+            pay_now = await first_visible(self.page, ["#upiButton"], 500)
+            if pay_now is not None:
+                if manual_takeover:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            "Pay Now is available; waiting for the user to complete UPI QR selection.",
+                        )
+                    )
+                    return
+                if qr_checked:
                     await pay_now.click()
                     self.emit(UiEvent("log", "UPI QR selected and Pay Now clicked."))
                     return
             await self.page.wait_for_timeout(500)
 
-    async def find_result_link(self) -> Locator:
+    async def find_result_details(self) -> dict[str, str]:
         await self._stage(Stage.RESULT)
-        self._status("Waiting for UPI payment completion and eStamp download…")
+        self._status("Waiting for UPI payment completion and transaction confirmation…")
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
@@ -573,9 +675,6 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
-            links = self.page.locator('a[href*="gras_estamp_download"]')
-            if await links.count() and await links.first.is_visible():
-                return links.first
             content = (await self.page.locator("body").inner_text()).lower()
             if "transaction failed" in content:
                 raise AutomationError(
@@ -583,7 +682,47 @@ class PortalAutomation:
                     stage=self.stage,
                     code="transaction_failed",
                 )
+            details = await self._read_transaction_details()
+            if details:
+                self.emit(
+                    UiEvent(
+                        "log",
+                        "Transaction confirmed: "
+                        f"ID {details.get('Transaction ID', 'N/A')}, "
+                        f"GRN {details.get('GRN', 'N/A')}, CIN {details.get('CIN', 'N/A')}.",
+                    )
+                )
+                return details
             await self.page.wait_for_timeout(500)
+
+    async def _read_transaction_details(self) -> dict[str, str]:
+        tables = self.page.locator("table.table-bordred")
+        for table_index in range(await tables.count()):
+            table = tables.nth(table_index)
+            if not await table.is_visible():
+                continue
+            cell_rows: list[list[str]] = []
+            rows = table.locator("tr")
+            for row_index in range(await rows.count()):
+                cell_rows.append(await rows.nth(row_index).locator("td").all_inner_texts())
+            details = transaction_details_from_rows(cell_rows)
+            if any(details.get(key) for key in ("Transaction ID", "GRN", "CIN")):
+                return details
+        return {}
+
+    def _report_nonfatal_download_error(self, error: str) -> None:
+        self.emit(
+            UiEvent(
+                "notification",
+                "The transaction succeeded, but its PDF could not be saved. "
+                "Transaction details were recorded.",
+                {
+                    "title": "eStamp PDF download issue",
+                    "level": "warning",
+                    "error": error,
+                },
+            )
+        )
 
     async def reset_to_start(self, *, record_stage: bool = True) -> None:
         if record_stage:
@@ -757,6 +896,25 @@ class PortalAutomation:
     async def _goto(self, url: str, *, timeout_ms: int = 120_000) -> None:
         await self.controls.checkpoint()
         await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+
+def transaction_details_from_rows(rows: list[list[str]]) -> dict[str, str]:
+    details: dict[str, str] = {}
+    for cells in rows:
+        cleaned = [text.strip() for text in cells]
+        if len(cleaned) < 2:
+            continue
+        canonical_name = TRANSACTION_FIELD_NAMES.get(" ".join(cleaned[0].casefold().split()))
+        if canonical_name:
+            details[canonical_name] = cleaned[1]
+    return details
+
+
+async def locator_is_checked(locator: Locator) -> bool:
+    try:
+        return await locator.is_checked()
+    except PlaywrightError:
+        return False
 
 
 async def first_visible(page: Page, selectors: list[str], timeout_ms: int = 15_000) -> Locator | None:

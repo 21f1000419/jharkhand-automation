@@ -62,15 +62,30 @@ class CsvBatchStoreTests(unittest.TestCase):
         row["quantity"] = "2"
 
         store.set_running(row, Stage.CITIZEN_LOGIN)
-        store.mark_success(row, "ref-one", "downloads/one.pdf")
+        store.mark_success(
+            row,
+            "ref-one",
+            "downloads/one.pdf",
+            {"Transaction ID": "ref-one", "PDF status": "saved", "PDF error": ""},
+        )
         self.assertEqual(row["status"], RowStatus.PARTIAL)
         store.set_running(row, Stage.CITIZEN_LOGIN)
-        store.mark_success(row, "ref-two", "downloads/two.pdf")
+        store.mark_success(
+            row,
+            "ref-two",
+            "downloads/two.pdf",
+            {"Transaction ID": "ref-two", "PDF status": "saved", "PDF error": ""},
+        )
 
         self.assertEqual(row["completed_quantity"], "2")
+        self.assertEqual(row["processed_quantity"], "2")
         self.assertEqual(row["status"], RowStatus.COMPLETED)
         self.assertEqual(json.loads(row["transaction_refs"]), ["ref-one", "ref-two"])
         self.assertEqual(json.loads(row["estamp_files"]), ["downloads/one.pdf", "downloads/two.pdf"])
+        self.assertEqual(
+            [details["Transaction ID"] for details in json.loads(row["transaction_details"])],
+            ["ref-one", "ref-two"],
+        )
 
     def test_single_quantity_stores_result_values_directly(self) -> None:
         CsvBatchStore.write_template(self.path)
@@ -82,6 +97,38 @@ class CsvBatchStoreTests(unittest.TestCase):
 
         self.assertEqual(row["transaction_refs"], "ref-one")
         self.assertEqual(row["estamp_files"], "downloads/one.pdf")
+
+    def test_skip_advances_processed_quantity_without_counting_success(self) -> None:
+        CsvBatchStore.write_template(self.path)
+        store = CsvBatchStore(self.path)
+        store.load()
+        row = store.rows[0]
+        row["quantity"] = "2"
+
+        store.mark_skipped_quantity(row, 1, Stage.EGRAS_LOGIN, "Portal rejected the CAPTCHA")
+
+        self.assertEqual(row["completed_quantity"], "0")
+        self.assertEqual(row["processed_quantity"], "1")
+        self.assertEqual(row["status"], RowStatus.ERROR)
+        self.assertEqual(json.loads(row["skipped_quantities"])[0]["quantity"], "1")
+        self.assertEqual(len(list(store.pending_rows())), 1)
+
+        store.mark_success(
+            row,
+            "transaction-two",
+            "",
+            {
+                "Transaction ID": "transaction-two",
+                "PDF status": "failed",
+                "PDF error": "HTTP 500",
+            },
+        )
+
+        self.assertEqual(row["completed_quantity"], "1")
+        self.assertEqual(row["processed_quantity"], "2")
+        self.assertEqual(row["status"], RowStatus.PARTIAL)
+        self.assertIn("PDF download failed", row["last_error"])
+        self.assertEqual(len(list(store.pending_rows())), 0)
 
     def test_interrupted_running_row_becomes_retryable_error(self) -> None:
         CsvBatchStore.write_template(self.path)

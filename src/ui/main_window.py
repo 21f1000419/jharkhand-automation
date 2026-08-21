@@ -388,7 +388,7 @@ class MainWindow:
             "district": "District",
             "amount": "Amount",
             "status": "Status",
-            "completed": "Completed",
+            "completed": "Success / Processed / Total",
             "error": "Last error",
         }
         widths = {
@@ -398,7 +398,7 @@ class MainWindow:
             "district": 120,
             "amount": 90,
             "status": 100,
-            "completed": 85,
+            "completed": 145,
             "error": 260,
         }
         for column in columns:
@@ -1139,9 +1139,13 @@ class MainWindow:
         dialog.resizable(False, False)
         frame = ttk.Frame(dialog, padding=16)
         frame.pack(fill="both", expand=True)
+        quantity_action = bool(event.data.get("quantity_action"))
+        failure_target = f"Row {event.data.get('row')}"
+        if quantity_action:
+            failure_target += f", quantity {event.data.get('quantity')}"
         ttk.Label(
             frame,
-            text=f"Row {event.data.get('row')} failed at {event.data.get('stage', 'unknown')}.",
+            text=f"{failure_target} failed at {event.data.get('stage', 'unknown')}.",
             font=("Segoe UI", 11, "bold"),
         ).pack(anchor="w")
         ttk.Label(frame, text=event.message, wraplength=560).pack(anchor="w", pady=(8, 0))
@@ -1160,9 +1164,11 @@ class MainWindow:
             dialog.destroy()
             self.controller.decide_error(action)
 
-        next_button = ttk.Button(buttons, text="Move to Next Row", command=lambda: choose("next"))
+        next_label = "Move to Next Quantity" if quantity_action else "Move to Next Row"
+        retry_label = "Retry Current Quantity" if quantity_action else "Retry Current Row"
+        next_button = ttk.Button(buttons, text=next_label, command=lambda: choose("next"))
         next_button.pack(side="right")
-        ttk.Button(buttons, text="Retry Current Row", command=lambda: choose("retry")).pack(
+        ttk.Button(buttons, text=retry_label, command=lambda: choose("retry")).pack(
             side="right", padx=(0, 8)
         )
         dialog.protocol("WM_DELETE_WINDOW", lambda: choose("next"))
@@ -1218,7 +1224,7 @@ class MainWindow:
                     row.get("district", ""),
                     row.get("amount", ""),
                     row.get("status", ""),
-                    row.get("completed", "0"),
+                    f"{row.get('completed', '0')} / {row.get('processed', '0')} / {row.get('quantity', '1')}",
                     row.get("error", ""),
                 ),
             )

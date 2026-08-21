@@ -61,10 +61,12 @@ district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan
 The application adds and constantly updates:
 
 ```text
-status,completed_quantity,attempt_count,error_count,last_stage,last_error,updated_at,transaction_refs,estamp_files
+status,completed_quantity,processed_quantity,attempt_count,error_count,last_stage,last_error,updated_at,transaction_refs,transaction_details,estamp_files,skipped_quantities
 ```
 
-Every successful quantity unit is recorded. Failed units remain retryable until `completed_quantity` reaches `quantity`.
+Every quantity is tracked separately. Retry stays on the current quantity; Move to Next Quantity records that
+quantity as skipped and advances once. The transaction confirmation table is the success boundary, while PDF status
+is recorded separately in `transaction_details`.
 The app uses the fixed CSV row number internally and does not add a user-facing row identifier. It updates the
 selected CSV in place; atomic replacement may create a short-lived temporary file while saving, but no duplicate
 CSV is retained.

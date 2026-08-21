@@ -95,14 +95,14 @@ class WorkflowEngine:
                             continue
                     continue
 
-                while int(row["completed_quantity"]) < int(row["quantity"]):
+                while int(row["processed_quantity"]) < int(row["quantity"]):
                     self.current_stage = Stage.CITIZEN_LOGIN
                     self.store.set_running(row, self.current_stage)
                     await self._persist()
                     self._publish_progress(row_number, row)
-                    sequence = int(row["completed_quantity"]) + 1
+                    sequence = int(row["processed_quantity"]) + 1
                     try:
-                        destination, reference = await portal.process_unit(
+                        result = await portal.process_unit(
                             row,
                             options.article,
                             options.credentials,
@@ -110,17 +110,42 @@ class WorkflowEngine:
                             row_number + 1,
                             sequence,
                         )
-                        relative_path = os.path.relpath(destination, options.csv_path.parent)
-                        self.store.mark_success(row, reference, relative_path)
+                        relative_path = (
+                            os.path.relpath(result.destination, options.csv_path.parent)
+                            if result.destination is not None
+                            else ""
+                        )
+                        details = dict(result.details)
+                        details["PDF status"] = "saved" if result.destination is not None else "failed"
+                        details["PDF file"] = relative_path
+                        details["PDF error"] = result.download_error
+                        self.store.mark_success(row, result.reference, relative_path, details)
                         await self._persist()
                         self._publish_progress(row_number, row)
+                        outcome = (
+                            result.destination.name
+                            if result.destination is not None
+                            else "transaction recorded; PDF unavailable"
+                        )
                         self.emit(
                             UiEvent(
                                 "log",
-                                f"Row {row_number + 1}, unit {sequence} completed: {destination.name}",
+                                f"Row {row_number + 1}, quantity {sequence} completed: {outcome}",
                             )
                         )
-                        await portal.reset_to_start()
+                        try:
+                            await portal.reset_to_start()
+                        except AutomationError as reset_error:
+                            self.emit(
+                                UiEvent(
+                                    "log",
+                                    "Transaction was recorded, but the portal could not reset: "
+                                    f"{reset_error}",
+                                    {"level": "error"},
+                                )
+                            )
+                            if reset_error.code == "browser_closed":
+                                raise WorkflowStopped from reset_error
                     except WorkflowStopped:
                         raise
                     except AutomationError as error:
@@ -129,7 +154,22 @@ class WorkflowEngine:
                             raise WorkflowStopped from error
                         if action == "retry":
                             continue
-                        break
+                        self.store.mark_skipped_quantity(
+                            row,
+                            sequence,
+                            error.stage,
+                            str(error),
+                        )
+                        await self._persist()
+                        self._publish_progress(row_number, row)
+                        self.emit(
+                            UiEvent(
+                                "log",
+                                f"Row {row_number + 1}, quantity {sequence} skipped; "
+                                "moving to the next quantity.",
+                            )
+                        )
+                        continue
 
             self.current_row = None
             self.current_stage = Stage.IDLE
@@ -137,7 +177,12 @@ class WorkflowEngine:
             # leaving it on a payment/result page after the final row.
             await portal.reset_to_start()
             self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
-            self.emit(UiEvent("run_completed", "Batch pass finished. Failed rows remain retryable."))
+            self.emit(
+                UiEvent(
+                    "run_completed",
+                    "Batch pass finished. Skipped quantities and PDF issues are recorded in the CSV.",
+                )
+            )
             return True
         except (WorkflowStopped, asyncio.CancelledError):
             if self.current_row is not None and not self.browser_interrupted:
@@ -208,7 +253,9 @@ class WorkflowEngine:
                 str(error),
                 {
                     "row": row_number + 1,
+                    "quantity": int(row["processed_quantity"]) + 1,
                     "stage": error.stage.value,
+                    "quantity_action": error.stage != Stage.VALIDATING,
                     "post_payment_warning": error.stage in {Stage.PAYMENT, Stage.RESULT, Stage.DOWNLOAD},
                 },
             )
@@ -246,7 +293,10 @@ class WorkflowEngine:
                 data={
                     "rows": store.summaries(),
                     "current_row": row_number + 1,
-                    "current_unit": int(row["completed_quantity"]) + 1,
+                    "current_unit": min(
+                        int(row["processed_quantity"]) + 1,
+                        int(row["quantity"]),
+                    ),
                 },
             )
         )
