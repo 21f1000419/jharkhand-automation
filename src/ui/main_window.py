@@ -30,6 +30,7 @@ from core.playwright_browsers import (
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
 from services.windows_notifications import show_windows_notification
+from ui.automation_status import AutomationStatusWindow
 
 
 class MainWindow:
@@ -58,6 +59,7 @@ class MainWindow:
         self.auto_waiting = False
         self.csv_valid = False
         self.managed_firefox_downloading = False
+        self.automation_status_window: AutomationStatusWindow | None = None
         self.credential_store = WindowsCredentialStore()
         try:
             saved_credentials = self.credential_store.load()
@@ -1063,8 +1065,49 @@ class MainWindow:
         )
         self.starting = True
         self.run_status_var.set(f"Opening {portal_browser.name}...")
+        self._show_automation_status_window().set_status(
+            "Starting automation", f"Opening {portal_browser.name}…"
+        )
         self._set_run_buttons()
         self.controller.start(options)
+
+    def _show_automation_status_window(self) -> AutomationStatusWindow:
+        window = self.automation_status_window
+        if window is None or not window.exists:
+            window = AutomationStatusWindow(
+                self.root,
+                on_pause=self._pause,
+                on_resume=self._resume,
+                on_stop=self._stop,
+                on_error_decision=self._decide_status_error,
+            )
+            self.automation_status_window = window
+        return window
+
+    def _close_automation_status_window(self) -> None:
+        if self.automation_status_window is not None:
+            self.automation_status_window.close()
+        self.automation_status_window = None
+
+    def _update_status_window_controls(self) -> None:
+        window = self.automation_status_window
+        if window is not None and window.exists:
+            window.set_controls(
+                running=self.running or self.starting,
+                paused=self.paused,
+                auto_waiting=self.auto_waiting,
+            )
+
+    def _decide_status_error(self, action: str) -> None:
+        self._record_ui_action(f"status_window_error_{action}_clicked")
+        self.paused = False
+        self.auto_waiting = False
+        window = self.automation_status_window
+        if window is not None and window.exists:
+            window.clear_error()
+            window.set_status("Continuing", "Applying your choice and preparing the next portal action…")
+        self._set_run_buttons()
+        self.controller.decide_error(action)
 
     def _pause(self) -> None:
         self._record_ui_action("pause_clicked")
@@ -1166,10 +1209,13 @@ class MainWindow:
                 self.starting = False
                 self.running = False
                 self.run_status_var.set("Stopped with an error")
+                if self.automation_status_window is not None and self.automation_status_window.exists:
+                    self.automation_status_window.set_status("Stopped due to an error", event.message)
                 show_windows_notification(
                     "eStamp Automation error", "An error occurred. Please look into the application."
                 )
                 messagebox.showerror("Automation error", event.message, parent=self.root)
+                self._close_automation_status_window()
         elif event.kind == "run_started":
             self.starting = False
             self.running = True
@@ -1177,29 +1223,47 @@ class MainWindow:
             self.paused = False
             self.auto_waiting = False
             self.run_status_var.set("Running")
+            self._show_automation_status_window().set_status(
+                "Automation running", "Opening the portal session…"
+            )
         elif event.kind == "stage":
-            self.run_status_var.set(f"Running: {event.message.replace('_', ' ').title()}")
+            stage = event.message.replace("_", " ").title()
+            self.run_status_var.set(f"Running: {stage}")
+            window = self._show_automation_status_window()
+            window.clear_error()
+            window.set_status("Working", stage)
         elif event.kind == "status":
             self.run_status_var.set(event.message)
+            self._show_automation_status_window().set_status("Working", event.message)
         elif event.kind in {"manual_checkpoint", "paused"}:
             self.paused = True
             self.auto_waiting = bool(event.data.get("auto_continue"))
             self.run_status_var.set("Waiting for user")
+            self._show_automation_status_window().set_status(
+                "Waiting for you", event.message or "Continue the required step in the portal."
+            )
         elif event.kind == "persistence_blocked":
             self.paused = False
             self.auto_waiting = False
             self.run_status_var.set("Waiting for CSV file access")
+            self._show_automation_status_window().set_status("CSV needs attention", event.message)
             messagebox.showwarning("CSV is locked", event.message, parent=self.root)
         elif event.kind == "resumed":
             self.paused = False
             self.auto_waiting = False
             self.run_status_var.set("Running")
+            window = self._show_automation_status_window()
+            window.clear_error()
+            window.set_status("Automation running", "Continuing with the portal…")
         elif event.kind in {"run_completed", "run_stopped", "browser_closed", "portal_closed"}:
             self.starting = False
             self.running = False
             self.paused = False
             self.auto_waiting = False
             if event.kind == "run_completed":
+                self._show_automation_status_window().set_status(
+                    "Batch complete", "The portal remains open and ready for another CSV."
+                )
                 self.portal_session_open = True
                 self.run_status_var.set("Completed — portal ready for another CSV")
             else:
@@ -1220,6 +1284,10 @@ class MainWindow:
                     )
                 if not event.data.get("profile_browser"):
                     messagebox.showwarning("Browser closed", event.message, parent=self.root)
+            if event.kind in {"run_stopped", "portal_closed"} or (
+                event.kind == "browser_closed" and not event.data.get("profile_browser")
+            ):
+                self._close_automation_status_window()
         # Login browser page opened event commented out:
         # elif event.kind == "gemini_login_browser_opened":
         #     self.gemini_checking = False
@@ -1229,55 +1297,30 @@ class MainWindow:
         #     self.gemini_status_var.set("Gemini OCR: Chrome profile open for sign-in")
         elif event.kind == "batch_update":
             self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
+            status_window = self.automation_status_window
+            if status_window is not None and status_window.exists:
+                status_window.set_progress(event.data.get("current_row"), event.data.get("current_unit"))
         elif event.kind == "error_prompt":
+            self.paused = True
+            self.auto_waiting = True
             self._show_error_dialog(event)
         elif event.kind == "notification":
+            status_window = self.automation_status_window
+            if status_window is not None and status_window.exists:
+                status_window.set_status("Attention", event.message)
             show_windows_notification(event.data.get("title", "eStamp Automation"), event.message)
         self._set_run_buttons()
 
     def _show_error_dialog(self, event: UiEvent) -> None:
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Row error")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        frame = ttk.Frame(dialog, padding=16)
-        frame.pack(fill="both", expand=True)
         quantity_action = bool(event.data.get("quantity_action"))
-        failure_target = f"Row {event.data.get('row')}"
-        if quantity_action:
-            failure_target += f", quantity {event.data.get('quantity')}"
-        ttk.Label(
-            frame,
-            text=f"{failure_target} failed at {event.data.get('stage', 'unknown')}.",
-            font=("Segoe UI", 11, "bold"),
-        ).pack(anchor="w")
-        ttk.Label(frame, text=event.message, wraplength=560).pack(anchor="w", pady=(8, 0))
-        if event.data.get("post_payment_warning"):
-            ttk.Label(
-                frame,
-                text="Warning: retrying after payment began can cause a duplicate charge.",
-                foreground="#b00020",
-                wraplength=560,
-            ).pack(anchor="w", pady=(8, 0))
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(16, 0))
-
-        def choose(action: str) -> None:
-            self._record_ui_action(f"error_dialog_{action}_clicked")
-            dialog.destroy()
-            self.controller.decide_error(action)
-
-        next_label = "Move to Next Quantity" if quantity_action else "Move to Next Row"
-        retry_label = "Retry Current Quantity" if quantity_action else "Retry Current Row"
-        next_button = ttk.Button(buttons, text=next_label, command=lambda: choose("next"))
-        next_button.pack(side="right")
-        ttk.Button(buttons, text=retry_label, command=lambda: choose("retry")).pack(
-            side="right", padx=(0, 8)
+        self._show_automation_status_window().show_error(
+            message=event.message,
+            row=event.data.get("row"),
+            quantity=event.data.get("quantity"),
+            stage=str(event.data.get("stage", "unknown")),
+            quantity_action=quantity_action,
+            post_payment_warning=bool(event.data.get("post_payment_warning")),
         )
-        dialog.protocol("WM_DELETE_WINDOW", lambda: choose("next"))
-        next_button.focus_set()
-        dialog.bind("<Return>", lambda _event: choose("next"))
 
     def _load_preview(self, path: Path, quiet: bool = False) -> None:
         try:
@@ -1403,6 +1446,7 @@ class MainWindow:
         self.stop_button.configure(
             state="normal" if self.running or self.portal_session_open else "disabled"
         )
+        self._update_status_window_controls()
 
     def _on_close(self) -> None:
         if (self.running or self.starting) and not messagebox.askyesno(

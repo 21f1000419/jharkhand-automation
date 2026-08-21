@@ -106,6 +106,8 @@ HTTP errors, and invalid URLs are written to the activity log and never stop tra
 - **Stop** cancels the active unit and preserves it as retryable.
 - Closing the selected portal browser stops the entire run. Gemini OCR runs headlessly while a batch is active; closing the application closes both automation browsers.
 
+While a portal automation session is active, a small always-on-top **Automation status** window shows the current step and row/quantity, with Pause, Resume, and Stop controls. Actionable row failures appear there with **Retry** and **Move to next** choices; the window closes when the portal browser closes.
+
 Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
 
 ## Build the Windows executable
