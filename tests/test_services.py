@@ -77,6 +77,34 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(loaded.last_article, "")
             self.assertEqual(loaded.last_csv_path, "")
             self.assertEqual(loaded.last_mode, "assisted")
+            self.assertEqual(loaded.last_chandigarh_time, "14:00")
+
+    def test_parse_browser_time(self) -> None:
+        from chandigarh.app import parse_browser_time
+
+        self.assertIsNone(parse_browser_time(""))
+        self.assertIsNone(parse_browser_time("   "))
+        self.assertIsNone(parse_browser_time(None))
+
+        parsed_24h = parse_browser_time("14:30")
+        self.assertIsNotNone(parsed_24h)
+        self.assertEqual(parsed_24h.hour, 14)
+        self.assertEqual(parsed_24h.minute, 30)
+
+        parsed_12h = parse_browser_time("02:45 PM")
+        self.assertIsNotNone(parsed_12h)
+        self.assertEqual(parsed_12h.hour, 14)
+        self.assertEqual(parsed_12h.minute, 45)
+
+        parsed_full = parse_browser_time("2026-08-21 14:00")
+        self.assertIsNotNone(parsed_full)
+        self.assertEqual(parsed_full.year, 2026)
+        self.assertEqual(parsed_full.month, 8)
+        self.assertEqual(parsed_full.day, 21)
+        self.assertEqual(parsed_full.hour, 14)
+
+        with self.assertRaises(ValueError):
+            parse_browser_time("invalid-time-string")
 
 
 if __name__ == "__main__":
