@@ -78,8 +78,6 @@ class PortalAutomation:
         )
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: str | None = None
-        self.citizen_otp_not_before: str | None = None
-        self.egrass_otp_not_before: str | None = None
         self.stage = Stage.IDLE
         self.page.set_default_timeout(15_000)
 
@@ -154,6 +152,11 @@ class PortalAutomation:
         if not await visible(self.page, "#username", 1_000):
             await self._goto(CITIZEN_LOGIN_URL, timeout_ms=30_000)
         await self._wait_for_login_element("#username")
+        # Start watching before CAPTCHA handling.  The watcher does not poll the
+        # SMS server until the portal exposes the OTP field, so a manually
+        # entered CAPTCHA (and the user's later Get OTP click) cannot delay
+        # automatic OTP handling.
+        citizen_otp_task = self._start_otp_watcher("main", "#otp")
         if credentials.citizen_username and credentials.citizen_password:
             await fill_first(self.page, ["#username"], credentials.citizen_username)
             await fill_first(self.page, ["#password"], credentials.citizen_password)
@@ -170,38 +173,21 @@ class PortalAutomation:
         if not captcha_entered_manually and not await visible(self.page, "#otp", 500):
             otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
             if otp_button is not None:
-                self.citizen_otp_not_before = self._capture_otp_request_time()
                 await otp_button.click()
-        if not self.citizen_otp_not_before:
-            self.citizen_otp_not_before = self._capture_otp_request_time()
-
-        await self._wait_for_login_element("#otp")
-        if self.sms_user_id and self.citizen_otp_not_before:
-            self.emit(UiEvent("otp_waiting", "Waiting for Citizen OTP from the SMS server..."))
-            otp = await self._wait_for_sms_otp(
-                "main",
-                "#otp",
-                self.citizen_otp_not_before,
-                timeout_seconds=MAIN_OTP_POLL_TIMEOUT_SECONDS,
-            )
+        try:
+            await self._wait_for_login_element("#otp")
+            otp = await self._await_otp_watcher(citizen_otp_task)
             if otp is not None:
-                otp_field = self.page.locator("#otp").first
-                if await otp_field.count() > 0 and not (await otp_field.input_value()).strip():
-                    await otp_field.fill(otp)
-                    self.citizen_otp_for_cleanup = otp
-                    self.emit(
-                        UiEvent("otp_filled", "Citizen OTP received from the SMS server and filled.")
-                    )
-                    await click_first(self.page, ["#btnSubmit", 'button:has-text("Login")'])
-                    self.emit(UiEvent("log", "Citizen OTP login submitted automatically."))
+                # Manual CAPTCHA does not imply manual OTP/login.  Only a
+                # manual OTP takes ownership of the final Login action.
+                await click_first(self.page, ["#btnSubmit", 'button:has-text("Login")'])
+                self.emit(UiEvent("log", "Citizen OTP login submitted automatically."))
             else:
                 self.emit(
                     UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
                 )
-        else:
-            self.emit(
-                UiEvent("otp_manual", "SMS User ID is empty; enter the Citizen OTP manually.")
-            )
+        finally:
+            await self._cancel_otp_watcher(citizen_otp_task)
 
         await self._wait_for_manual_citizen_login(
             "Waiting for the Citizen welcome page after the user completes the login steps."
@@ -359,7 +345,10 @@ class PortalAutomation:
         username = await first_visible(self.page, ["#txtLoginId"], 10_000)
         if username is None:
             return
-        self.egrass_otp_not_before = self._capture_otp_request_time()
+        # This watcher remains independent of both eGRAS CAPTCHA steps.  It
+        # waits for #txtOTP to appear before beginning the SMS poll, then fills
+        # the field as soon as a code is available.
+        egrass_otp_task = self._start_otp_watcher("egrass", "#txtOTP")
         if credentials.egras_username and credentials.egras_password:
             await username.fill(credentials.egras_username)
             await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
@@ -375,55 +364,37 @@ class PortalAutomation:
         if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
             proceed_btn = await first_visible(self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000)
             if proceed_btn is not None:
-                self.egrass_otp_not_before = self._capture_otp_request_time()
                 await proceed_btn.click()
-        await self._wait_for_egras_otp_step()
+        try:
+            await self._wait_for_egras_otp_step()
 
-        await self._stage(Stage.EGRAS_OTP)
-        # Start OTP reader task immediately in background
-        otp_task: asyncio.Task[str | None] | None = None
-        if self.sms_user_id and self.egrass_otp_not_before:
-            self.emit(UiEvent("otp_waiting", "Waiting for eGRAS OTP from the SMS server..."))
-            otp_task = asyncio.create_task(
-                self._wait_for_sms_otp(
-                    "egrass",
-                    "#txtOTP",
-                    self.egrass_otp_not_before,
-                    timeout_seconds=EGRASS_OTP_POLL_TIMEOUT_SECONDS,
-                )
+            await self._stage(Stage.EGRAS_OTP)
+            # The watcher can now fill #txtOTP while Gemini or the user handles
+            # the validation CAPTCHA.
+            otp_captcha_entered_manually = await self._solve_captcha(
+                "div.tab-pane.active img.imgcaptcha",
+                "div.tab-pane.active #txtcaptcha",
+                expected_length=6,
             )
 
-        # Solve second CAPTCHA (whether via Gemini OCR or manual entry)
-        otp_captcha_entered_manually = await self._solve_captcha(
-            "div.tab-pane.active img.imgcaptcha",
-            "div.tab-pane.active #txtcaptcha",
-            expected_length=6,
-        )
-
-        if otp_task is not None:
-            otp = await otp_task
+            otp = await self._await_otp_watcher(egrass_otp_task)
             if otp is not None:
-                otp_field = self.page.locator("#txtOTP").first
-                if await otp_field.count() > 0 and not (await otp_field.input_value()).strip():
-                    await otp_field.fill(otp)
-                    self.egrass_otp_for_cleanup = otp
-                    self.emit(UiEvent("otp_filled", "OTP received from the SMS server and filled in eGRAS."))
-                    if not otp_captcha_entered_manually:
-                        await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
-                        self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
+                # eGRAS requires every input at this validation point to be
+                # automatic before clicking Validate OTP.  A manual CAPTCHA or
+                # manual OTP leaves that action to the user.
+                if not login_captcha_entered_manually and not otp_captcha_entered_manually:
+                    await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
+                    self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
             else:
                 self.emit(
                     UiEvent("otp_manual", "Use the manually entered eGRAS OTP, then click Validate OTP.")
                 )
-        else:
-            self.emit(
-                UiEvent("otp_manual", "SMS User ID is empty; use the manual eGRAS OTP step.")
+            await self._wait_for_manual_egras_otp(
+                "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
+                "continue when the payment option appears."
             )
-
-        await self._wait_for_manual_egras_otp(
-            "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
-            "continue when the payment option appears."
-        )
+        finally:
+            await self._cancel_otp_watcher(egrass_otp_task)
         if self.egrass_otp_for_cleanup is not None:
             self._delete_used_otp_in_background("egrass", self.egrass_otp_for_cleanup)
             self.egrass_otp_for_cleanup = None
@@ -431,6 +402,63 @@ class PortalAutomation:
     def _capture_otp_request_time(self) -> str | None:
         """Use UTC so differing local timezones cannot admit old OTPs."""
         return self.sms_otp_client.request_time() if self.sms_user_id else None
+
+    def _start_otp_watcher(
+        self, otp_type: str, field_selector: str
+    ) -> asyncio.Task[str | None] | None:
+        """Start an OTP watcher without coupling it to CAPTCHA entry."""
+        if not self.sms_user_id:
+            return None
+        timeout_seconds = (
+            MAIN_OTP_POLL_TIMEOUT_SECONDS if otp_type == "main" else EGRASS_OTP_POLL_TIMEOUT_SECONDS
+        )
+        return asyncio.create_task(
+            self._watch_and_fill_sms_otp(otp_type, field_selector, timeout_seconds)
+        )
+
+    async def _await_otp_watcher(self, task: asyncio.Task[str | None] | None) -> str | None:
+        if task is None:
+            return None
+        return await task
+
+    async def _cancel_otp_watcher(self, task: asyncio.Task[str | None] | None) -> None:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _watch_and_fill_sms_otp(
+        self, otp_type: str, field_selector: str, timeout_seconds: float
+    ) -> str | None:
+        """Wait for the portal OTP field, then retrieve and fill an untouched OTP."""
+        await self._wait_for_login_element(field_selector)
+        field = self.page.locator(field_selector).first
+        not_before = self._capture_otp_request_time()
+        if not_before is None:
+            return None
+        self.emit(UiEvent("otp_waiting", f"Waiting for {otp_type} OTP from the SMS server..."))
+        otp = await self._wait_for_sms_otp(otp_type, field_selector, not_before, timeout_seconds)
+        if otp is None:
+            return None
+        try:
+            # Check again immediately before filling so manual input always
+            # wins if it was entered while the SMS request was in flight.
+            if (await field.input_value()).strip():
+                self.emit(
+                    UiEvent("otp_manual", "Manual OTP input detected; automatic OTP entry is disabled.")
+                )
+                return None
+            await field.fill(otp)
+        except PlaywrightError:
+            return None
+
+        if otp_type == "main":
+            self.citizen_otp_for_cleanup = otp
+            message = "Citizen OTP received from the SMS server and filled."
+        else:
+            self.egrass_otp_for_cleanup = otp
+            message = "OTP received from the SMS server and filled in eGRAS."
+        self.emit(UiEvent("otp_filled", message))
+        return otp
 
     async def _wait_for_sms_otp(
         self, otp_type: str, field_selector: str, not_before: str, timeout_seconds: float

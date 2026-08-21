@@ -445,6 +445,98 @@ class ServiceTests(unittest.TestCase):
         get_otp_button.click.assert_awaited_once_with()
         login_button.click.assert_awaited_once_with()
 
+    def test_manual_citizen_captcha_with_automatic_otp_clicks_login(self) -> None:
+        page = MagicMock()
+        controls = RunControls(lambda _event: None)
+        sms_client = MagicMock()
+        sms_client.request_time.return_value = "2026-08-21T10:00:00Z"
+        portal = PortalAutomation(
+            page,
+            None,
+            controls,
+            AsyncMock(),
+            lambda _event: None,
+            sms_client,
+            "sms-user",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._solve_captcha = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_sms_otp = AsyncMock(return_value="123456")  # type: ignore[method-assign]
+        portal._wait_for_manual_citizen_login = AsyncMock()  # type: ignore[method-assign]
+        portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
+        portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
+        otp_field = MagicMock()
+        otp_field.count = AsyncMock(return_value=1)
+        otp_field.input_value = AsyncMock(return_value="")
+        otp_field.fill = AsyncMock()
+        page.locator.return_value.first = otp_field
+
+        async def is_visible(_page: object, selector: str, _timeout: int) -> bool:
+            return selector == "#username"
+
+        with (
+            patch("automation.portal.visible", side_effect=is_visible),
+            patch("automation.portal.fill_first", new=AsyncMock()),
+            patch("automation.portal.first_visible", new=AsyncMock()) as find,
+            patch("automation.portal.click_first", new=AsyncMock()) as click,
+        ):
+            asyncio.run(portal.ensure_citizen_session(Credentials("user", "pass")))
+
+        find.assert_not_awaited()
+        otp_field.fill.assert_awaited_once_with("123456")
+        click.assert_awaited_once_with(page, ["#btnSubmit", 'button:has-text("Login")'])
+
+    def test_automatic_egras_captcha_and_otp_submit_validation(self) -> None:
+        page = MagicMock()
+        controls = RunControls(lambda _event: None)
+        sms_client = MagicMock()
+        sms_client.request_time.return_value = "2026-08-21T10:00:00Z"
+        portal = PortalAutomation(
+            page,
+            None,
+            controls,
+            AsyncMock(),
+            lambda _event: None,
+            sms_client,
+            "sms-user",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
+        portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_sms_otp = AsyncMock(return_value="A09AFD")  # type: ignore[method-assign]
+        portal._wait_for_egras_otp_step = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_manual_egras_otp = AsyncMock()  # type: ignore[method-assign]
+        portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
+        username = MagicMock()
+        username.fill = AsyncMock()
+        proceed = MagicMock()
+        proceed.click = AsyncMock()
+        otp_field = MagicMock()
+        otp_field.count = AsyncMock(return_value=1)
+        otp_field.input_value = AsyncMock(return_value="")
+        otp_field.fill = AsyncMock()
+        page.locator.return_value.first = otp_field
+
+        with (
+            patch("automation.portal.visible", new=AsyncMock(return_value=False)),
+            patch("automation.portal.fill_first", new=AsyncMock()),
+            patch(
+                "automation.portal.first_visible",
+                new=AsyncMock(side_effect=[username, proceed]),
+            ),
+            patch("automation.portal.click_first", new=AsyncMock()) as click,
+        ):
+            asyncio.run(
+                portal.complete_egras_login(
+                    Credentials(egras_username="egras-user", egras_password="egras-pass")
+                )
+            )
+
+        proceed.click.assert_awaited_once_with()
+        otp_field.fill.assert_awaited_once_with("A09AFD")
+        click.assert_awaited_once_with(page, ["#btnproceed", 'input[value="Validate OTP"]'])
+
     def test_manual_egras_captchas_do_not_submit_portal_actions(self) -> None:
         page = MagicMock()
         controls = RunControls(lambda _event: None)
@@ -461,6 +553,7 @@ class ServiceTests(unittest.TestCase):
             CaptchaCopyMode.DIRECT,
         )
         portal._solve_captcha = AsyncMock(side_effect=[True, True])  # type: ignore[method-assign]
+        portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_sms_otp = AsyncMock(return_value="123456")  # type: ignore[method-assign]
         portal._wait_for_egras_otp_step = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_manual_egras_otp = AsyncMock()  # type: ignore[method-assign]
