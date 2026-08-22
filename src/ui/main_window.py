@@ -452,7 +452,7 @@ class MainWindow:
         scrollbar.grid(row=0, column=1, sticky="ns")
 
     def _build_menu(self) -> None:
-        menu = tk.Menu(self.root)
+        menu = tk.Menu(self.root, tearoff=False)
         menu.add_command(label="Download managed Firefox", command=self._download_managed_firefox)
         self.application_menu = menu
         self.managed_firefox_menu_index = 0
