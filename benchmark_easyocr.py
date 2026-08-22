@@ -15,7 +15,7 @@ async def main() -> None:
     image_directory = Path(__file__).parent / "test-images"
     images = sorted(
         image_directory.glob("*.png"),
-        key=lambda path: int(path.stem) if path.stem.isdigit() else path.stem,
+        key=lambda path: getattr(path.stat(), "st_birthtime", path.stat().st_ctime),
     )
     if not images:
         raise RuntimeError(f"No PNG images found in {image_directory}")

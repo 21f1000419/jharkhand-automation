@@ -17,7 +17,7 @@ from core.controls import RunControls
 from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
 from services.credential_store import decode_credentials, encode_credentials
 from services.downloads import EstampDownloader, extract_reference
-from services.gemini_ocr import normalize_captcha
+from services.gemini_ocr import join_ocr_fragments, normalize_captcha
 from services.payment_trigger import send_payment_trigger_request
 
 
@@ -29,6 +29,22 @@ class ServiceTests(unittest.TestCase):
 
     def test_normalize_captcha_uppercases_alphanumeric_values(self) -> None:
         self.assertEqual(normalize_captcha("ab12cd", 6), "AB12CD")
+
+    def test_join_ocr_fragments_uses_left_to_right_order(self) -> None:
+        results = [
+            ([[100, 0], [150, 0], [150, 30], [100, 30]], "CXJ", 0.9),
+            ([[0, 0], [70, 0], [70, 30], [0, 30]], "1C8", 0.9),
+        ]
+
+        self.assertEqual(join_ocr_fragments(results, 6), "1C8CXJ")
+
+    def test_join_ocr_fragments_requires_the_expected_length(self) -> None:
+        results = [
+            ([[0, 0], [30, 0], [30, 30], [0, 30]], "ABC", 0.9),
+            ([[50, 0], [80, 0], [80, 30], [50, 30]], "12", 0.9),
+        ]
+
+        self.assertEqual(join_ocr_fragments(results, 6), "")
 
     def test_extract_download_reference(self) -> None:
         self.assertEqual(

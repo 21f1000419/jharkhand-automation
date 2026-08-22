@@ -4,6 +4,8 @@ import asyncio
 import io
 import re
 from collections import Counter
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -39,6 +41,33 @@ def normalize_captcha(value: str, expected_length: int | None = None) -> str:
             return exact[-1]
     useful = [candidate for candidate in candidates if 4 <= len(candidate) <= 10]
     return useful[-1] if useful else ""
+
+
+def join_ocr_fragments(results: Sequence[Sequence[Any]], expected_length: int | None) -> str:
+    """Join left-to-right OCR fragments only when they form the expected CAPTCHA length."""
+    if expected_length is None:
+        return ""
+
+    fragments: list[tuple[float, str]] = []
+    for result in results:
+        if len(result) < 2:
+            continue
+        bounding_box, raw = result[0], str(result[1])
+        if not isinstance(bounding_box, Sequence) or isinstance(bounding_box, str | bytes):
+            continue
+        x_positions = [
+            float(point[0])
+            for point in bounding_box
+            if isinstance(point, Sequence) and not isinstance(point, str | bytes) and point
+        ]
+        if not x_positions:
+            continue
+        fragment = "".join(re.findall(r"[A-Za-z0-9]+", raw.upper()))
+        if fragment:
+            fragments.append((min(x_positions), fragment))
+
+    combined = "".join(fragment for _, fragment in sorted(fragments))
+    return combined if len(combined) == expected_length else ""
 
 
 class EasyOcrCaptchaSolver:
@@ -109,7 +138,7 @@ class EasyOcrCaptchaSolver:
         for variant in variants:
             results = reader.readtext(
                 np.asarray(variant),
-                detail=0,
+                detail=1,
                 paragraph=False,
                 allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
                 decoder="beamsearch",
@@ -119,10 +148,14 @@ class EasyOcrCaptchaSolver:
                 width_ths=0.3,
                 height_ths=0.3,
             )
-            for raw in results:
+            for _, raw, _ in results:
                 normalized = normalize_captcha(str(raw), expected_length)
                 if normalized:
                     votes.append(normalized)
+
+            joined = join_ocr_fragments(results, expected_length)
+            if joined:
+                votes.append(joined)
 
         if expected_length:
             exact_votes = [vote for vote in votes if len(vote) == expected_length]

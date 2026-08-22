@@ -24,7 +24,6 @@ class CaptchaCopyMode(StrEnum):
 class OcrEngine(StrEnum):
     EASYOCR = "easyocr"
     GEMINI = "gemini"
-    FALLBACK = "easyocr_gemini"
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ from core.controls import RunControls
 from core.models import OcrEngine, PortalBrowser, RunOptions, UiEvent
 from core.resources import bundled_path
 from core.workflow import WorkflowEngine
-from services.captcha_ocr import CaptchaSolver, FallbackCaptchaSolver
+from services.captcha_ocr import CaptchaSolver
 from services.gemini_ocr import EasyOcrCaptchaSolver
 from services.gemini_web_ocr import GeminiWebCaptchaSolver
 
@@ -28,7 +28,6 @@ def _ocr_engine_label(engine: OcrEngine) -> str:
     return {
         OcrEngine.EASYOCR: "EasyOCR (local)",
         OcrEngine.GEMINI: "Gemini (browser)",
-        OcrEngine.FALLBACK: "EasyOCR + Gemini fallback",
     }[engine]
 
 
@@ -170,11 +169,8 @@ class AutomationController:
     async def _ensure_ocr_solver(self, engine: OcrEngine) -> CaptchaSolver:
         if engine == OcrEngine.EASYOCR:
             solver: CaptchaSolver = EasyOcrCaptchaSolver()
-        elif engine == OcrEngine.GEMINI:
-            _, solver = await self._ensure_gemini_services()
         else:
-            _, gemini = await self._ensure_gemini_services()
-            solver = FallbackCaptchaSolver(EasyOcrCaptchaSolver(), gemini)
+            _, solver = await self._ensure_gemini_services()
         if not await solver.verify_ready():
             raise RuntimeError(f"{_ocr_engine_label(engine)} is not ready.")
         self.solver = solver

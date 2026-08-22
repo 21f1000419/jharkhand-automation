@@ -180,9 +180,6 @@ class PortalAutomation:
             )
             if outcome != "captcha_failed":
                 break
-            mark_rejected = getattr(self.solver, "mark_rejected", None)
-            if callable(mark_rejected):
-                mark_rejected()
             self.emit(
                 UiEvent(
                     "log",
@@ -395,9 +392,6 @@ class PortalAutomation:
             )
             if outcome != "captcha_failed":
                 break
-            mark_rejected = getattr(self.solver, "mark_rejected", None)
-            if callable(mark_rejected):
-                mark_rejected()
             self.emit(
                 UiEvent(
                     "log",
