@@ -21,7 +21,7 @@ from core.models import (
 )
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
-from services.gemini_ocr import GeminiCaptchaSolver
+from services.captcha_ocr import CaptchaSolver
 from services.payment_trigger import send_payment_trigger_request
 from services.sms_otp_client import SmsOtpClient, SmsOtpServerError
 
@@ -42,6 +42,7 @@ TRANSACTION_FIELD_NAMES = {
 }
 UPI_QR_READY_TEXT = "scan upi qr"
 UPI_TRANSACTION_TIMER_TEXT = "time left to complete the transaction"
+CAPTCHA_FAILURE_TEXT = "captcha validation failed"
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -54,7 +55,7 @@ class PortalAutomation:
     def __init__(
         self,
         page: Page,
-        solver: GeminiCaptchaSolver | None,
+        solver: CaptchaSolver | None,
         controls: RunControls,
         on_stage: StageCallback,
         emit: EventCallback,
@@ -157,23 +158,37 @@ class PortalAutomation:
         # entered CAPTCHA (and the user's later Get OTP click) cannot delay
         # automatic OTP handling.
         citizen_otp_task = self._start_otp_watcher("main", "#otp")
-        if credentials.citizen_username and credentials.citizen_password:
-            await fill_first(self.page, ["#username"], credentials.citizen_username)
-            await fill_first(self.page, ["#password"], credentials.citizen_password)
-            captcha_entered_manually = await self._solve_captcha(
-                "#captcha_image",
-                "#captcha",
-                expected_length=6,
-            )
-        else:
-            captcha_entered_manually = True
+        captcha_entered_manually = True
+        while True:
+            await self._prepare_citizen_login_attempt(credentials)
+            if credentials.citizen_username and credentials.citizen_password:
+                captcha_entered_manually = await self._solve_captcha(
+                    "#captcha_image",
+                    "#captcha",
+                    expected_length=6,
+                )
 
-        # Once a person takes over CAPTCHA entry, they also own the associated
-        # portal action. Do not submit while they may still be typing.
-        if not captcha_entered_manually and not await visible(self.page, "#otp", 500):
-            otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
-            if otp_button is not None:
-                await otp_button.click()
+            if not captcha_entered_manually and not await visible(self.page, "#otp", 500):
+                otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
+                if otp_button is not None:
+                    await otp_button.click()
+
+            outcome = await self._wait_for_login_progress(
+                otp_selector="#otp",
+                success_url_prefix=CITIZEN_WELCOME_URL,
+                field_selectors=["#username", "#password", "#captcha"],
+            )
+            if outcome != "captcha_failed":
+                break
+            mark_rejected = getattr(self.solver, "mark_rejected", None)
+            if callable(mark_rejected):
+                mark_rejected()
+            self.emit(
+                UiEvent(
+                    "log",
+                    "Citizen CAPTCHA validation failed. Retrying with fresh credentials and CAPTCHA.",
+                )
+            )
         try:
             await self._wait_for_login_element("#otp")
             otp = await self._await_otp_watcher(citizen_otp_task)
@@ -231,6 +246,12 @@ class PortalAutomation:
                     stage=self.stage,
                     code="browser_closed",
                     retryable=False,
+                )
+            with suppress(PlaywrightError):
+                await self.page.goto(
+                    CITIZEN_WELCOME_URL,
+                    wait_until="domcontentloaded",
+                    timeout=15_000,
                 )
             with suppress(PlaywrightError):
                 await self.page.goto(ESTAMP_URL, wait_until="domcontentloaded", timeout=15_000)
@@ -349,22 +370,40 @@ class PortalAutomation:
         # waits for #txtOTP to appear before beginning the SMS poll, then fills
         # the field as soon as a code is available.
         egrass_otp_task = self._start_otp_watcher("egrass", "#txtOTP")
-        if credentials.egras_username and credentials.egras_password:
-            await username.fill(credentials.egras_username)
-            await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
-            login_captcha_entered_manually = await self._solve_captcha(
-                "img.imgcaptcha",
-                "#txtcaptcha",
-                expected_length=6,
-            )
-        else:
-            login_captcha_entered_manually = True
+        login_captcha_entered_manually = True
+        while True:
+            if credentials.egras_username and credentials.egras_password:
+                await username.fill(credentials.egras_username)
+                await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
+                login_captcha_entered_manually = await self._solve_captcha(
+                    "img.imgcaptcha",
+                    "#txtcaptcha",
+                    expected_length=6,
+                )
 
-        # Manual CAPTCHA entry also makes Proceed a manual action.
-        if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
-            proceed_btn = await first_visible(self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000)
-            if proceed_btn is not None:
-                await proceed_btn.click()
+            if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
+                proceed_btn = await first_visible(
+                    self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000
+                )
+                if proceed_btn is not None:
+                    await proceed_btn.click()
+
+            outcome = await self._wait_for_login_progress(
+                otp_selector="#txtOTP",
+                success_url_prefix="",
+                field_selectors=["#txtLoginId", "#txtPassword", "#txtcaptcha"],
+            )
+            if outcome != "captcha_failed":
+                break
+            mark_rejected = getattr(self.solver, "mark_rejected", None)
+            if callable(mark_rejected):
+                mark_rejected()
+            self.emit(
+                UiEvent(
+                    "log",
+                    "eGRAS CAPTCHA validation failed. Retrying with fresh credentials and CAPTCHA.",
+                )
+            )
         try:
             await self._wait_for_egras_otp_step()
 
@@ -836,7 +875,7 @@ class PortalAutomation:
     ) -> bool:
         """Fill with OCR when possible; return True when the user entered it manually."""
         await self.controls.checkpoint()
-        self._status(f"Reading {self.stage.value.replace('_', ' ')} CAPTCHA with Gemini…")
+        self._status(f"Reading {self.stage.value.replace('_', ' ')} CAPTCHA with OCR...")
         image = await first_visible(self.page, [image_selector], 10_000)
         field = await first_visible(self.page, [input_selector], 5_000)
         if image is None or field is None:
@@ -847,7 +886,7 @@ class PortalAutomation:
 
         solver = self.solver
         if solver is None:
-            self._status("Gemini OCR is inactive; enter the CAPTCHA manually…")
+            self._status("OCR is inactive; enter the CAPTCHA manually...")
             await self._wait_for_manual_captcha_input(field)
             return True
 
@@ -873,8 +912,8 @@ class PortalAutomation:
                 await self._manual_captcha_entered()
                 return True
             await field.fill(code)
-            self._status("CAPTCHA filled; continuing with the portal…")
-            self.emit(UiEvent("log", "CAPTCHA solved by Gemini."))
+            self._status("CAPTCHA filled; continuing with the portal...")
+            self.emit(UiEvent("log", "CAPTCHA solved by OCR."))
             return False
         except WorkflowStopped:
             raise
@@ -891,7 +930,7 @@ class PortalAutomation:
             self.emit(
                 UiEvent(
                     "notification",
-                    "Gemini could not read the CAPTCHA. Please enter it manually.",
+                    "OCR could not read the CAPTCHA. Please enter it manually.",
                     {"title": "CAPTCHA needs manual entry", "level": "warning", "error": str(error)},
                 )
             )
@@ -904,11 +943,11 @@ class PortalAutomation:
                 await solver.cancel_active_response()
 
     async def _manual_captcha_entered(self) -> None:
-        self._status("Manual CAPTCHA entered; waiting for the portal action…")
-        self.emit(UiEvent("log", "Manual CAPTCHA input detected; Gemini OCR was stopped."))
+        self._status("Manual CAPTCHA entered; waiting for the portal action...")
+        self.emit(UiEvent("log", "Manual CAPTCHA input detected; OCR was stopped."))
 
     async def _wait_for_manual_captcha_input(self, field: Locator) -> None:
-        self._status("Waiting for manual CAPTCHA input…")
+        self._status("Waiting for manual CAPTCHA input...")
         self.emit(UiEvent("log", "Waiting for manual CAPTCHA input while continuing to poll the portal."))
         while True:
             await self.controls.checkpoint()
@@ -940,6 +979,39 @@ class PortalAutomation:
             stage=self.stage,
             code="captcha_not_loaded",
         )
+
+    async def _prepare_citizen_login_attempt(self, credentials: Credentials) -> None:
+        if credentials.citizen_username and credentials.citizen_password:
+            await fill_first(self.page, ["#username"], credentials.citizen_username)
+            await fill_first(self.page, ["#password"], credentials.citizen_password)
+
+    async def _wait_for_login_progress(
+        self,
+        *,
+        otp_selector: str,
+        success_url_prefix: str,
+        field_selectors: list[str],
+    ) -> str:
+        while True:
+            await self.controls.checkpoint()
+            if self.page.is_closed():
+                raise AutomationError(
+                    "The portal browser was closed during login.",
+                    stage=self.stage,
+                    code="browser_closed",
+                    retryable=False,
+                )
+            if success_url_prefix and self.page.url.rstrip("/").startswith(success_url_prefix):
+                return "success"
+            if await visible(self.page, otp_selector, 250):
+                return "otp"
+            body_text = " ".join((await self.page.locator("body").inner_text()).casefold().split())
+            if CAPTCHA_FAILURE_TEXT in body_text:
+                return "captcha_failed"
+            if all([await visible(self.page, selector, 250) for selector in field_selectors]):
+                await self.page.wait_for_timeout(250)
+                continue
+            await self.page.wait_for_timeout(250)
 
     async def _copy_captcha_with_browser_menu(self, image: Locator) -> None:
         """Calculate desktop coordinates and use Chrome's native Copy image action."""

@@ -19,7 +19,7 @@ from core.models import (
     WorkflowStopped,
 )
 from services.csv_store import CsvBatchStore
-from services.gemini_ocr import GeminiCaptchaSolver
+from services.captcha_ocr import CaptchaSolver
 from services.sms_otp_client import SmsOtpClient
 
 
@@ -27,7 +27,7 @@ class WorkflowEngine:
     def __init__(
         self,
         page: Page,
-        solver: GeminiCaptchaSolver | None,
+        solver: CaptchaSolver | None,
         controls: RunControls,
         emit: Callable[[UiEvent], None],
     ) -> None:

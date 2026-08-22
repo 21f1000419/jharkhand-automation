@@ -17,6 +17,7 @@ from core.models import (
     BrowserEngine,
     CaptchaCopyMode,
     Credentials,
+    OcrEngine,
     PortalBrowser,
     RunMode,
     RunOptions,
@@ -91,6 +92,10 @@ class MainWindow:
             else CaptchaCopyMode.DIRECT
         )
         self.captcha_copy_mode_var = tk.StringVar(value=saved_captcha_copy_mode)
+        valid_ocr_engines = {engine.value for engine in OcrEngine}
+        self.ocr_engine_var = tk.StringVar(
+            value=config.ocr_engine if config.ocr_engine in valid_ocr_engines else OcrEngine.EASYOCR
+        )
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
         self.payment_trigger_url_var = tk.StringVar(value=config.payment_trigger_url)
@@ -114,15 +119,9 @@ class MainWindow:
         self.credentials_status_var = tk.StringVar(
             value="Saved securely in Windows Credential Manager." if self.credentials_saved else ""
         )
-        self.gemini_status_var = tk.StringVar(
-            value=(
-                "Browser profile: checking existing Google/Gemini login..."
-                if config.gemini_verified
-                else "Browser profile: checking Google/Gemini login..."
-            )
-        )
+        self.gemini_status_var = tk.StringVar(value="OCR: checking selected engine...")
         self.captcha_warning_var = tk.StringVar(
-            value="CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
+            value="CAPTCHA warning: OCR is inactive. CAPTCHAs must be entered manually."
         )
         self.run_status_var = tk.StringVar(value="Idle")
         self.session_log_lines: list[str] = []
@@ -190,6 +189,16 @@ class MainWindow:
 
         gemini_status = ttk.Frame(container)
         gemini_status.pack(fill="x", pady=(0, 8))
+        ttk.Label(gemini_status, text="OCR engine").pack(side="left")
+        self.ocr_engine_selector = ttk.Combobox(
+            gemini_status,
+            textvariable=self.ocr_engine_var,
+            values=[engine.value for engine in OcrEngine],
+            state="readonly",
+            width=18,
+        )
+        self.ocr_engine_selector.pack(side="left", padx=(5, 10))
+        self.ocr_engine_selector.bind("<<ComboboxSelected>>", self._on_ocr_engine_changed)
         ttk.Label(gemini_status, textvariable=self.gemini_status_var).pack(side="left")
         self.ocr_browser_button = ttk.Button(
             gemini_status, text="Start OCR browser", command=self._verify_gemini
@@ -206,7 +215,11 @@ class MainWindow:
             gemini_status,
             textvariable=self.captcha_copy_mode_var,
             values=[mode.value for mode in CaptchaCopyMode],
-            state="readonly",
+            state=(
+                "disabled"
+                if self.ocr_engine_var.get() == OcrEngine.EASYOCR
+                else "readonly"
+            ),
             width=14,
         )
         self.captcha_copy_mode_selector.pack(side="left")
@@ -667,6 +680,7 @@ class MainWindow:
         self.config.last_download_path = self.download_var.get().strip()
         self.config.last_mode = self.mode_var.get()
         self.config.captcha_copy_mode = self.captcha_copy_mode_var.get()
+        self.config.ocr_engine = self.ocr_engine_var.get()
         self.config.sms_user_id = self.sms_user_id_var.get().strip()
         self.config.sms_server_url = self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL
         self.config.payment_trigger_url = self.payment_trigger_url_var.get().strip()
@@ -780,15 +794,33 @@ class MainWindow:
 
     def _verify_gemini(self) -> None:
         self._record_ui_action("start_ocr_browser_clicked")
-        if not self._save_browser_settings(reconfigure=False):
+        engine = OcrEngine(self.ocr_engine_var.get())
+        if engine != OcrEngine.EASYOCR and not self._save_browser_settings(reconfigure=False):
             return
         self.gemini_checking = True
         self.gemini_ready = False
         # self.gemini_login_required = False
-        self.gemini_status_var.set("Gemini OCR: opening browser and checking...")
+        self.gemini_status_var.set(f"OCR: checking {engine.value}...")
         # self.gemini_status_var.set("Gemini OCR: checking headlessly...")  # Headless mode
         self._set_run_buttons()
         self.controller.verify_gemini()
+
+    def _on_ocr_engine_changed(self, _event: object | None = None) -> None:
+        engine = OcrEngine(self.ocr_engine_var.get())
+        if engine == OcrEngine.EASYOCR:
+            self.captcha_copy_mode_var.set(CaptchaCopyMode.DIRECT)
+        self.gemini_ready = False
+        self.config.gemini_verified = False
+        self._save_non_secret_settings()
+        self.gemini_status_var.set("OCR: selected engine is not verified")
+        self.captcha_warning_var.set(
+            "CAPTCHA warning: verify the selected OCR engine before starting."
+        )
+        self.controller.reconfigure_browser()
+        self.captcha_copy_mode_selector.configure(
+            state="disabled" if engine == OcrEngine.EASYOCR else "readonly"
+        )
+        self._set_run_buttons()
 
     def _test_gemini_ocr(self) -> None:
         self._record_ui_action("test_captcha_ocr_clicked")
@@ -799,10 +831,11 @@ class MainWindow:
                 parent=self.root,
             )
             return
-        if not self._save_browser_settings(reconfigure=False):
+        engine = OcrEngine(self.ocr_engine_var.get())
+        if engine != OcrEngine.EASYOCR and not self._save_browser_settings(reconfigure=False):
             return
         self.ocr_test_running = True
-        self.gemini_status_var.set("Gemini OCR: running clipboard-paste test...")
+        self.gemini_status_var.set(f"OCR: testing {engine.value}...")
         self._set_run_buttons()
         self.controller.test_gemini_ocr()
 
@@ -1055,6 +1088,7 @@ class MainWindow:
             mode=RunMode(self.mode_var.get()),
             credentials=self._entered_credentials(),
             ocr_enabled=self.gemini_ready,
+            ocr_engine=OcrEngine(self.ocr_engine_var.get()),
             sms_user_id=self.sms_user_id_var.get().strip(),
             sms_server_url=self.sms_server_url_var.get().strip() or DEFAULT_SMS_SERVER_URL,
             payment_trigger_url=self.payment_trigger_url_var.get().strip(),
@@ -1157,27 +1191,26 @@ class MainWindow:
             # self.gemini_login_browser_open = False
             self.config.gemini_verified = True
             self.config_store.save(self.config)
-            self.gemini_status_var.set("Gemini OCR: active")
+            self.gemini_status_var.set(f"OCR active: {self.ocr_engine_var.get()}")
             # self.gemini_status_var.set("Gemini OCR: active (headless)")  # Headless mode
             self.captcha_warning_var.set("")
         elif event.kind == "ocr_test_started":
             self.ocr_test_running = True
-            self.gemini_status_var.set("Gemini OCR: opening test CAPTCHA and pasting it into Gemini...")
+            self.gemini_status_var.set("OCR: running CAPTCHA test...")
         elif event.kind == "ocr_test_progress":
-            self.gemini_status_var.set(f"Gemini OCR: {event.message}")
+            self.gemini_status_var.set(f"OCR: {event.message}")
         elif event.kind == "ocr_test_succeeded":
             self.ocr_test_running = False
             code = event.data.get("code", "")
-            self.gemini_status_var.set(f"Gemini OCR: clipboard-paste test passed ({code})")
+            self.gemini_status_var.set(f"OCR test passed ({code})")
             messagebox.showinfo(
                 "CAPTCHA OCR test passed",
-                f"Gemini read the pasted test image as: {code}\n\n"
-                "The test page remains open with the recognized value filled in.",
+                f"The selected OCR engine read the test image as: {code}",
                 parent=self.root,
             )
         elif event.kind == "ocr_test_failed":
             self.ocr_test_running = False
-            self.gemini_status_var.set("Gemini OCR: clipboard-paste test failed")
+            self.gemini_status_var.set("OCR test failed")
             messagebox.showerror("CAPTCHA OCR test failed", event.message, parent=self.root)
         elif event.kind == "gemini_stopped":
             self.gemini_checking = False
@@ -1198,7 +1231,7 @@ class MainWindow:
                 # self.gemini_login_browser_open = False
                 self.config.gemini_verified = False
                 self.config_store.save(self.config)
-                self.gemini_status_var.set("Gemini OCR: sign-in required / not ready")
+                self.gemini_status_var.set("OCR: selected engine is not ready")
                 self.captcha_warning_var.set(
                     "CAPTCHA warning: Gemini OCR is inactive. CAPTCHAs must be entered manually."
                 )
@@ -1405,8 +1438,10 @@ class MainWindow:
         subprocess.Popen(["explorer.exe", str(directory)])
 
     def _set_run_buttons(self) -> None:
+        engine = OcrEngine(self.ocr_engine_var.get())
         if self.gemini_ready:
-            self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
+            close_text = "Disable OCR" if engine == OcrEngine.EASYOCR else "Close OCR browser"
+            self.ocr_browser_button.configure(text=close_text, command=self._close_ocr_browser)
         # elif self.gemini_login_browser_open:
         #     self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
         # elif self.gemini_login_required:
@@ -1414,7 +1449,8 @@ class MainWindow:
         #         text="Start OCR browser", command=self._open_ocr_login_browser
         #     )
         else:
-            self.ocr_browser_button.configure(text="Start OCR browser", command=self._verify_gemini)
+            start_text = "Enable EasyOCR" if engine == OcrEngine.EASYOCR else "Start OCR browser"
+            self.ocr_browser_button.configure(text=start_text, command=self._verify_gemini)
         self.ocr_test_button.configure(
             state=(
                 "disabled"

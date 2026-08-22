@@ -27,6 +27,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(normalize_captcha("answer: AB12"), "AB12")
         self.assertEqual(normalize_captcha("I cannot read it", 6), "")
 
+    def test_normalize_captcha_uppercases_alphanumeric_values(self) -> None:
+        self.assertEqual(normalize_captcha("ab12cd", 6), "AB12CD")
+
     def test_extract_download_reference(self) -> None:
         self.assertEqual(
             extract_reference("https://example.test/gras_estamp_download/7489afcddfd00e8d892a"),
@@ -486,6 +489,77 @@ class ServiceTests(unittest.TestCase):
         find.assert_not_awaited()
         otp_field.fill.assert_awaited_once_with("123456")
         click.assert_awaited_once_with(page, ["#btnSubmit", 'button:has-text("Login")'])
+
+    def test_citizen_captcha_failure_retries_credentials_and_captcha(self) -> None:
+        page = MagicMock()
+        controls = RunControls(lambda _event: None)
+        portal = PortalAutomation(
+            page,
+            None,
+            controls,
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._wait_for_login_element = AsyncMock()
+        portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(side_effect=["captcha_failed", "otp"])  # type: ignore[method-assign]
+        portal._wait_for_manual_citizen_login = AsyncMock()  # type: ignore[method-assign]
+        portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
+        portal._await_otp_watcher = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        portal._cancel_otp_watcher = AsyncMock()  # type: ignore[method-assign]
+        portal._start_otp_watcher = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+        async def is_visible(_page: object, selector: str, _timeout: int) -> bool:
+            return selector == "#username"
+
+        with (
+            patch("automation.portal.visible", side_effect=is_visible),
+            patch("automation.portal.fill_first", new=AsyncMock()) as fill,
+        ):
+            asyncio.run(portal.ensure_citizen_session(Credentials("user", "pass")))
+
+        self.assertEqual(fill.await_count, 4)
+        self.assertEqual(portal._solve_captcha.await_count, 2)
+
+    def test_egras_captcha_failure_retries_credentials_and_captcha(self) -> None:
+        page = MagicMock()
+        controls = RunControls(lambda _event: None)
+        portal = PortalAutomation(
+            page,
+            None,
+            controls,
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(side_effect=["captcha_failed", "otp"])  # type: ignore[method-assign]
+        portal._wait_for_egras_otp_step = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_manual_egras_otp = AsyncMock()  # type: ignore[method-assign]
+        portal._await_otp_watcher = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        portal._cancel_otp_watcher = AsyncMock()  # type: ignore[method-assign]
+        portal._start_otp_watcher = MagicMock(return_value=None)  # type: ignore[method-assign]
+        username = MagicMock()
+        username.fill = AsyncMock()
+
+        with (
+            patch("automation.portal.fill_first", new=AsyncMock()) as fill,
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=username)),
+        ):
+            asyncio.run(
+                portal.complete_egras_login(
+                    Credentials(egras_username="egras-user", egras_password="egras-pass")
+                )
+            )
+
+        self.assertEqual(username.fill.await_count, 2)
+        self.assertEqual(fill.await_count, 2)
+        self.assertEqual(portal._solve_captcha.await_count, 2)
 
     def test_automatic_egras_captcha_and_otp_submit_validation(self) -> None:
         page = MagicMock()

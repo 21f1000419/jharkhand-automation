@@ -2,3 +2,4 @@ playwright==1.61.0
 Pillow==11.3.0
 pyinstaller==6.15.0
 pywinauto==0.6.9
+easyocr==1.7.2

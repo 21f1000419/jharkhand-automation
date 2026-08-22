@@ -21,6 +21,12 @@ class CaptchaCopyMode(StrEnum):
     MOUSE_CURSOR = "mouse_cursor"
 
 
+class OcrEngine(StrEnum):
+    EASYOCR = "easyocr"
+    GEMINI = "gemini"
+    FALLBACK = "easyocr_gemini"
+
+
 @dataclass(frozen=True)
 class PortalBrowser:
     name: str
@@ -73,6 +79,7 @@ class RunOptions:
     mode: RunMode
     credentials: Credentials
     ocr_enabled: bool = False
+    ocr_engine: OcrEngine = OcrEngine.EASYOCR
     sms_user_id: str = ""
     sms_server_url: str = ""
     payment_trigger_url: str = ""

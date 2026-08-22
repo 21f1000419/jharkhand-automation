@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 
 playwright_datas, playwright_binaries, playwright_hiddenimports = collect_all("playwright")
+scipy_array_api_hiddenimports = collect_submodules("scipy._external.array_api_compat.numpy")
 test_assets = [
     ("test-gemini-ocr.html", "."),
     ("test-images", "test-images"),
@@ -13,7 +14,7 @@ a = Analysis(
     pathex=["src"],
     binaries=playwright_binaries,
     datas=playwright_datas + test_assets,
-    hiddenimports=playwright_hiddenimports,
+    hiddenimports=playwright_hiddenimports + scipy_array_api_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

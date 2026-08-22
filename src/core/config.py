@@ -24,6 +24,7 @@ class AppConfig:
     payment_trigger_url: str = ""
     payment_trigger_method: str = "GET"
     captcha_copy_mode: str = "direct_copy"
+    ocr_engine: str = "easyocr"
     gemini_verified: bool = False
     debug_port: int = 9347
     last_article: str = ""
