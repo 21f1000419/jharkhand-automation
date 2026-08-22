@@ -1,31 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_all
 
 
 playwright_datas, playwright_binaries, playwright_hiddenimports = collect_all("playwright")
-ddddocr_datas, ddddocr_binaries, ddddocr_hiddenimports = collect_all("ddddocr")
-onnxruntime_datas = collect_data_files("onnxruntime", include_py_files=False)
-onnxruntime_binaries = collect_dynamic_libs("onnxruntime")
-scipy_array_api_hiddenimports = collect_submodules("scipy._external.array_api_compat.numpy")
+paddle_datas, paddle_binaries, paddle_hiddenimports = collect_all("paddle")
+paddleocr_datas, paddleocr_binaries, paddleocr_hiddenimports = collect_all("paddleocr")
+paddlex_datas, paddlex_binaries, paddlex_hiddenimports = collect_all("paddlex")
+torch_datas, torch_binaries, torch_hiddenimports = collect_all("torch")
 test_assets = [
     ("test-gemini-ocr.html", "."),
     ("test-images", "test-images"),
+    ("assets/paddleocr", "assets/paddleocr"),
 ]
 
 a = Analysis(
     ["src/app.py"],
     pathex=["src"],
-    binaries=playwright_binaries + ddddocr_binaries + onnxruntime_binaries,
-    datas=playwright_datas + ddddocr_datas + onnxruntime_datas + test_assets,
+    binaries=(
+        playwright_binaries
+        + paddle_binaries
+        + paddleocr_binaries
+        + paddlex_binaries
+        + torch_binaries
+    ),
+    datas=playwright_datas + paddle_datas + paddleocr_datas + paddlex_datas + torch_datas + test_assets,
     hiddenimports=(
         playwright_hiddenimports
-        + ddddocr_hiddenimports
-        + scipy_array_api_hiddenimports
+        + paddle_hiddenimports
+        + paddleocr_hiddenimports
+        + paddlex_hiddenimports
+        + torch_hiddenimports
     ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["easyocr", "fastapi", "torch", "torchvision", "uvicorn"],
+    excludes=["easyocr", "torchvision", "fastapi", "uvicorn"],
     noarchive=False,
     optimize=1,
 )

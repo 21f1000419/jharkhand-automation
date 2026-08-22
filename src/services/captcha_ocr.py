@@ -13,7 +13,7 @@ class CaptchaSolver(Protocol):
 
 
 def normalize_captcha(value: str, expected_length: int | None = None) -> str:
-    candidates: list[str] = re.findall(r"[A-Za-z0-9]+", value.upper())
+    candidates: list[str] = re.findall(r"[A-Za-z0-9]+", value)
     common_words = {
         "ANSWER",
         "CANNOT",
@@ -28,7 +28,7 @@ def normalize_captcha(value: str, expected_length: int | None = None) -> str:
         "RETURN",
         "UNABLE",
     }
-    candidates = [candidate for candidate in candidates if candidate not in common_words]
+    candidates = [candidate for candidate in candidates if candidate.upper() not in common_words]
     if expected_length:
         exact = [candidate for candidate in candidates if len(candidate) == expected_length]
         if exact:
@@ -59,7 +59,7 @@ def join_ocr_fragments(results: Sequence[Sequence[object]], expected_length: int
         ]
         if not x_positions:
             continue
-        fragment = "".join(re.findall(r"[A-Za-z0-9]+", raw.upper()))
+        fragment = "".join(re.findall(r"[A-Za-z0-9]+", raw))
         if fragment:
             fragments.append((min(x_positions), fragment))
 

@@ -87,7 +87,7 @@ class EasyOcrCaptchaSolver:
                 np.asarray(variant),
                 detail=1,
                 paragraph=False,
-                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
                 decoder="beamsearch",
                 text_threshold=0.5,
                 low_text=0.2,

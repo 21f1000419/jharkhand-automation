@@ -94,9 +94,15 @@ class MainWindow:
         )
         available_engines = available_ocr_engines()
         valid_ocr_engines = {engine.value for engine in available_engines}
+        ocr_engine_migrated = config.ocr_engine not in valid_ocr_engines
         saved_ocr_engine = (
-            config.ocr_engine if config.ocr_engine in valid_ocr_engines else OcrEngine.DDDDOCR
+            config.ocr_engine if config.ocr_engine in valid_ocr_engines else OcrEngine.PADDLEOCR
         )
+        if ocr_engine_migrated:
+            # Keep the controller and persisted settings in sync when an old
+            # OCR engine has been removed from a newer application version.
+            config.ocr_engine = saved_ocr_engine.value
+            self.config_store.save(config)
         self.ocr_engine_var = tk.StringVar(value=saved_ocr_engine)
         self.captcha_copy_mode_var = tk.StringVar(
             value=saved_captcha_copy_mode

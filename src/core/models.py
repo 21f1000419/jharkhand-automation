@@ -23,14 +23,14 @@ class CaptchaCopyMode(StrEnum):
 
 
 class OcrEngine(StrEnum):
-    DDDDOCR = "ddddocr"
+    PADDLEOCR = "paddleocr"
     EASYOCR = "easyocr"
     GEMINI = "gemini"
 
 
 def available_ocr_engines() -> tuple[OcrEngine, ...]:
-    """Return engines whose optional dependencies are available in this build."""
-    engines = [OcrEngine.DDDDOCR, OcrEngine.GEMINI]
+    """Return the OCR engines included in this build."""
+    engines = [OcrEngine.PADDLEOCR, OcrEngine.GEMINI]
     if find_spec("easyocr") is not None:
         engines.insert(1, OcrEngine.EASYOCR)
     return tuple(engines)
@@ -88,7 +88,7 @@ class RunOptions:
     mode: RunMode
     credentials: Credentials
     ocr_enabled: bool = False
-    ocr_engine: OcrEngine = OcrEngine.DDDDOCR
+    ocr_engine: OcrEngine = OcrEngine.PADDLEOCR
     sms_user_id: str = ""
     sms_server_url: str = ""
     payment_trigger_url: str = ""
