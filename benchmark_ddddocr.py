@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def normalize(value: object) -> str:
-    candidates = re.findall(r"[A-Za-z0-9]+", str(value).upper())
+    candidates = re.findall(r"[A-Za-z0-9]+", str(value))
     return candidates[-1] if candidates else ""
 
 
@@ -41,7 +41,7 @@ def benchmark(image_paths: list[Path]) -> None:
     successes = 0
     durations: list[float] = []
     for image_path in image_paths:
-        expected = image_path.stem.upper()
+        expected = image_path.stem
         started = time.perf_counter()
         try:
             actual = normalize(ocr.classification(image_path.read_bytes()))

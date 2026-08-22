@@ -15,7 +15,9 @@ except ImportError as error:  # pragma: no cover - environment-dependent depende
 
 
 def normalize_ddddocr_captcha(value: str, expected_length: int | None = None) -> str:
-    candidates = re.findall(r"[A-Za-z0-9]+", value.upper())
+    # ddddocr's classifier can distinguish lowercase from uppercase. Preserve the
+    # model's result because CAPTCHA inputs may be case-sensitive.
+    candidates = re.findall(r"[A-Za-z0-9]+", value)
     if expected_length is not None:
         exact = [candidate for candidate in candidates if len(candidate) == expected_length]
         if exact:

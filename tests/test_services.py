@@ -32,8 +32,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(normalize_captcha("ab12cd", 6), "AB12CD")
 
     def test_normalize_ddddocr_captcha_prefers_expected_length(self) -> None:
-        self.assertEqual(normalize_ddddocr_captcha("captcha: ab12cd", 6), "AB12CD")
-        self.assertEqual(normalize_ddddocr_captcha("ab12"), "AB12")
+        self.assertEqual(normalize_ddddocr_captcha("captcha: ab12Cd", 6), "ab12Cd")
+        self.assertEqual(normalize_ddddocr_captcha("aB12"), "aB12")
 
     def test_join_ocr_fragments_uses_left_to_right_order(self) -> None:
         results = [
