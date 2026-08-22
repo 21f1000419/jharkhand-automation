@@ -25,7 +25,7 @@ from services.gemini_web_ocr import GeminiWebCaptchaSolver
 
 def _ocr_engine_label(engine: OcrEngine) -> str:
     return {
-        OcrEngine.PADDLEOCR: "PaddleOCR v6 small (local)",
+        OcrEngine.PADDLEOCR: "PaddleOCR v6 medium (local)",
         OcrEngine.EASYOCR: "EasyOCR (local)",
         OcrEngine.GEMINI: "Gemini (browser)",
     }[engine]
@@ -346,13 +346,12 @@ class AutomationController:
 
     async def _open_fresh_portal_page(self, choice: PortalBrowser) -> Page:
         await self._close_portal_browser()
-        self.portal_browser = PortalBrowserSession(
-            choice, self._on_portal_browser_disconnected
-        )
+        browser = PortalBrowserSession(choice, self._on_portal_browser_disconnected)
+        # Register this session before launching it so a genuine launch-time
+        # disconnect is attributed to the right browser instance.
+        self.portal_browser = browser
         self._portal_browser_closed = False
-        self.portal_page = await self.portal_browser.new_portal_page(
-            CITIZEN_LOGIN_URL, timeout_ms=0
-        )
+        self.portal_page = await browser.new_portal_page(CITIZEN_LOGIN_URL, timeout_ms=0)
         return self.portal_page
 
     async def _monitor_portal_browser(self) -> None:
@@ -360,9 +359,12 @@ class AutomationController:
         while True:
             browser = self.portal_browser
             page = self.portal_page
-            if not self._portal_browser_closed:
-                if browser is None or page is None or page.is_closed() or not browser.is_active:
-                    self._on_portal_browser_disconnected()
+            # With "New browser for each unit", the workflow opens the first
+            # portal page after this watchdog starts.  No session/page in that
+            # brief interval is expected, not a user-closed browser.
+            if browser is not None and page is not None and not self._portal_browser_closed:
+                if page.is_closed() or not browser.is_active:
+                    self._on_portal_browser_disconnected(browser)
                     return
             await asyncio.sleep(1)
 
@@ -392,11 +394,15 @@ class AutomationController:
         self.gemini_browser = None
         self.solver = None
 
-    def _on_portal_browser_disconnected(self) -> None:
+    def _on_portal_browser_disconnected(self, browser: PortalBrowserSession) -> None:
+        # Browser close events can arrive after a unit has already been closed
+        # and replaced. Only the active session is allowed to stop the batch.
+        if browser is not self.portal_browser:
+            return
         if self._portal_browser_closed or self.controls.stop_event.is_set():
             return
         self._portal_browser_closed = True
-        name = self.portal_browser.choice.name if self.portal_browser is not None else "Portal browser"
+        name = browser.choice.name
         self.emit(UiEvent("browser_closed", f"{name} was closed. The automation has stopped."))
         self.controls.stop(f"{name} was closed")
 

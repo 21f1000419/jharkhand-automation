@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 
 playwright_datas, playwright_binaries, playwright_hiddenimports = collect_all("playwright")
@@ -10,6 +10,9 @@ torch_datas, torch_binaries, torch_hiddenimports = collect_all("torch")
 torchvision_datas, torchvision_binaries, torchvision_hiddenimports = collect_all("torchvision")
 easyocr_datas, easyocr_binaries, easyocr_hiddenimports = collect_all("easyocr")
 backports_datas, backports_binaries, backports_hiddenimports = collect_all("backports")
+# PaddleX checks this dependency through importlib.metadata at runtime.  The
+# module is collected via EasyOCR, but its distribution metadata is not.
+python_bidi_metadata = copy_metadata("python-bidi")
 scipy_array_api_hiddenimports = collect_submodules("scipy._external.array_api_compat.numpy")
 test_assets = [
     ("test-gemini-ocr.html", "."),
@@ -39,6 +42,7 @@ a = Analysis(
         + torchvision_datas
         + easyocr_datas
         + backports_datas
+        + python_bidi_metadata
         + test_assets
     ),
     hiddenimports=(

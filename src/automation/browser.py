@@ -286,13 +286,21 @@ async def terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
 class PortalBrowserSession:
     """A visible fresh portal session in the browser selected by the user."""
 
-    def __init__(self, choice: PortalBrowser, on_disconnect: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        choice: PortalBrowser,
+        on_disconnect: Callable[["PortalBrowserSession"], None],
+    ) -> None:
         self.choice = choice
         self.on_disconnect = on_disconnect
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.closing = False
+        # A session is never reused after close(). Keep this set so a delayed
+        # Playwright "disconnected" event from an intentional close cannot be
+        # attributed to the browser opened for the following unit.
+        self.closed_by_owner = False
 
     @property
     def is_active(self) -> bool:
@@ -343,6 +351,7 @@ class PortalBrowserSession:
 
     async def close(self) -> None:
         self.closing = True
+        self.closed_by_owner = True
         browser, self.browser = self.browser, None
         self.context = None
         try:
@@ -356,8 +365,8 @@ class PortalBrowserSession:
     def _disconnected(self, _browser: Browser) -> None:
         self.browser = None
         self.context = None
-        if not self.closing:
-            self.on_disconnect()
+        if not self.closed_by_owner:
+            self.on_disconnect(self)
 
     async def _stop_playwright(self) -> None:
         playwright, self.playwright = self.playwright, None
