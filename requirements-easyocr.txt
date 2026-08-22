@@ -1,3 +1,0 @@
--r requirements.txt
-easyocr==1.7.2
-torchvision==0.28.0

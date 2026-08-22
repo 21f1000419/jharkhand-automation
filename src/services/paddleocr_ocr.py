@@ -11,12 +11,12 @@ from PIL import Image
 from core.resources import bundled_path
 from services.captcha_ocr import normalize_captcha
 
-MODEL_NAME = "PP-OCRv6_small_rec"
-MODEL_DIRECTORY = "assets/paddleocr/PP-OCRv6_small_rec"
+MODEL_NAME = "PP-OCRv6_medium_rec"
+MODEL_DIRECTORY = "assets/paddleocr/PP-OCRv6_medium_rec"
 
 
 class PaddleOcrCaptchaSolver:
-    """Offline CAPTCHA OCR using the bundled PP-OCRv6 small recognition model."""
+    """Offline CAPTCHA OCR using the bundled PP-OCRv6 medium recognition model."""
 
     _model: Any | None = None
     _model_lock = asyncio.Lock()

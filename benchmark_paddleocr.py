@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_IMAGES = Path(__file__).resolve().parent / "test-images"
-DEFAULT_MODEL = "PP-OCRv6_small_rec"
+MODEL_OPTIONS = {
+    "v6-small": ("PP-OCRv6_small_rec", "Fastest benchmark option; not bundled in the app."),
+    "v6-medium": ("PP-OCRv6_medium_rec", "Highest tested accuracy; bundled application model."),
+    "v5-server": ("PP-OCRv5_server_rec", "Largest tested model; slowest."),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,8 +21,37 @@ def parse_args() -> argparse.Namespace:
         description="Benchmark PaddleOCR's text recognition model against labeled CAPTCHA images."
     )
     parser.add_argument("--images", type=Path, default=DEFAULT_IMAGES)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--model",
+        choices=MODEL_OPTIONS,
+        help="PaddleOCR version to benchmark. Omitting this displays an interactive menu.",
+    )
+    parser.add_argument("--list-models", action="store_true", help="Print model choices and exit.")
     return parser.parse_args()
+
+
+def print_model_options() -> None:
+    print("Available PaddleOCR models:")
+    for index, (key, (model_name, description)) in enumerate(MODEL_OPTIONS.items(), start=1):
+        print(f"  {index}. {key:<10} {model_name:<28} {description}")
+
+
+def select_model(selected: str | None) -> str:
+    if selected is not None:
+        return MODEL_OPTIONS[selected][0]
+
+    print_model_options()
+    choices = tuple(MODEL_OPTIONS)
+    while True:
+        try:
+            choice = input("Select a model (1-3): ").strip().lower()
+        except EOFError:
+            raise SystemExit("Use --model with one of: " + ", ".join(choices))
+        if choice in MODEL_OPTIONS:
+            return MODEL_OPTIONS[choice][0]
+        if choice.isdigit() and 1 <= int(choice) <= len(choices):
+            return MODEL_OPTIONS[choices[int(choice) - 1]][0]
+        print(f"Invalid choice. Enter 1-{len(choices)} or one of: {', '.join(choices)}")
 
 
 def normalize(value: object) -> str:
@@ -70,6 +103,9 @@ def benchmark(image_paths: list[Path], model_name: str) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.list_models:
+        print_model_options()
+        return
     raw_paths = [
         *args.images.glob("*.png"),
         *args.images.glob("*.jpg"),
@@ -82,7 +118,7 @@ def main() -> None:
     )
     if not image_paths:
         raise SystemExit(f"No PNG or JPEG images found in {args.images}")
-    benchmark(image_paths, args.model)
+    benchmark(image_paths, select_model(args.model))
 
 
 if __name__ == "__main__":
