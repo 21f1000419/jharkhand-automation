@@ -9,6 +9,7 @@ from pathlib import Path
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
+from core.config import app_data_directory
 from core.controls import RunControls
 from core.models import (
     AutomationError,
@@ -28,6 +29,7 @@ from services.sms_otp_client import SmsOtpClient, SmsOtpServerError
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
 CITIZEN_WELCOME_URL = "https://jharnibandhan.gov.in/Citizenentry/welcome"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
+MAIN_HOME_URL = "https://jharnibandhan.gov.in"
 SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
 MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
 EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
@@ -65,6 +67,7 @@ class PortalAutomation:
         captcha_copy_mode: CaptchaCopyMode,
         payment_trigger_url: str = "",
         payment_trigger_method: str = "GET",
+        save_captcha_images: bool = True,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -78,6 +81,7 @@ class PortalAutomation:
         self.payment_trigger_method = (
             "POST" if payment_trigger_method.strip().upper() == "POST" else "GET"
         )
+        self.save_captcha_images = save_captcha_images
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: str | None = None
         self.stage = Stage.IDLE
@@ -91,44 +95,108 @@ class PortalAutomation:
         download_root: Path,
         row_number: int,
         sequence: int,
+        start_from_stage: Stage = Stage.CITIZEN_LOGIN,
     ) -> TransactionResult:
         try:
-            await self.ensure_citizen_session(credentials)
-            await self.fill_estamp_form(row, article)
-            await self.confirm_estamp()
-            await self.accept_egras_terms()
-            await self.complete_egras_login(credentials)
-            await self.choose_gateway()
-            await self.accept_gateway_terms()
-            await self.select_upi()
-            await self.select_upi_qr_and_pay()
-            await self.wait_for_upi_qr_and_trigger()
-            details = await self.find_result_details()
-            reference = (
-                details.get("Transaction ID")
-                or details.get("GRN")
-                or details.get("CIN")
-                or details.get("Token No / Depositor ID")
-                or f"unit-{sequence}"
+            stage_order = [
+                Stage.CITIZEN_LOGIN,
+                Stage.FILL_ESTAMP,
+                Stage.CONFIRM_ESTAMP,
+                Stage.EGRAS_TERMS,
+                Stage.EGRAS_LOGIN,
+                Stage.EGRAS_OTP,
+                Stage.GATEWAY_SELECT,
+                Stage.GATEWAY_TERMS,
+                Stage.UPI_SELECT,
+                Stage.PAYMENT,
+                Stage.RESULT,
+                Stage.DOWNLOAD,
+            ]
+
+            effective_start = (
+                Stage.FILL_ESTAMP if start_from_stage == Stage.OPEN_ESTAMP else start_from_stage
             )
-            try:
-                await self._stage(Stage.DOWNLOAD)
-                link = await first_visible(self.page, ['a[href*="gras_estamp_download"]'], 5_000)
-                if link is None:
-                    raise RuntimeError("The eStamp download button was not found.")
-                downloader = EstampDownloader()
-                destination, _download_reference = await downloader.download(
-                    self.page,
-                    link,
-                    download_root,
-                    row_number,
-                    sequence,
+
+            def should_run(stage: Stage) -> bool:
+                try:
+                    target_idx = stage_order.index(stage)
+                    start_idx = stage_order.index(effective_start)
+                    return target_idx >= start_idx
+                except ValueError:
+                    return True
+
+            if should_run(Stage.CITIZEN_LOGIN):
+                await self.ensure_citizen_session(credentials)
+            if should_run(Stage.FILL_ESTAMP):
+                await self.fill_estamp_form(row, article)
+            if should_run(Stage.CONFIRM_ESTAMP):
+                await self.confirm_estamp()
+            if should_run(Stage.EGRAS_TERMS):
+                await self.accept_egras_terms()
+            if should_run(Stage.EGRAS_LOGIN):
+                await self.complete_egras_login(credentials)
+            elif should_run(Stage.EGRAS_OTP):
+                await self.complete_egras_login(credentials, start_from_otp=True)
+            if should_run(Stage.GATEWAY_SELECT):
+                await self.choose_gateway()
+            if should_run(Stage.GATEWAY_TERMS):
+                await self.accept_gateway_terms()
+            if should_run(Stage.UPI_SELECT):
+                await self.select_upi()
+            if should_run(Stage.PAYMENT):
+                await self.select_upi_qr_and_pay()
+                await self.wait_for_upi_qr_and_trigger()
+
+            details: dict[str, str] = {}
+            if should_run(Stage.RESULT) or should_run(Stage.DOWNLOAD):
+                details = await self.find_result_details()
+                reference = (
+                    details.get("Transaction ID")
+                    or details.get("GRN")
+                    or details.get("CIN")
+                    or details.get("Token No / Depositor ID")
+                    or f"unit-{sequence}"
                 )
-            except Exception as download_error:
-                error = str(download_error)
-                self._report_nonfatal_download_error(error)
-                return TransactionResult(details, reference, download_error=error)
-            return TransactionResult(details, reference, destination)
+            else:
+                reference = f"unit-{sequence}"
+
+            if should_run(Stage.DOWNLOAD):
+                try:
+                    await self._stage(Stage.DOWNLOAD)
+                    self._status("Waiting for the eStamp download button…")
+                    link = None
+                    while True:
+                        await self.controls.checkpoint()
+                        if self.page.is_closed():
+                            raise AutomationError(
+                                "Chrome was closed while waiting for the eStamp download button.",
+                                stage=self.stage,
+                                code="browser_closed",
+                                retryable=False,
+                            )
+                        link = await first_visible(self.page, ['a[href*="gras_estamp_download"]'], 1_000)
+                        if link is not None:
+                            break
+                        await self.page.wait_for_timeout(500)
+
+                    downloader = EstampDownloader()
+                    destination, _download_reference = await downloader.download(
+                        self.page,
+                        link,
+                        download_root,
+                        row_number,
+                        sequence,
+                    )
+                except AutomationError:
+                    raise
+                except Exception as download_error:
+                    error = str(download_error)
+                    self._report_nonfatal_download_error(error)
+                    return TransactionResult(details, reference, download_error=error)
+                return TransactionResult(details, reference, destination)
+
+            return TransactionResult(details, reference)
+
         except AutomationError:
             raise
         except PlaywrightError as error:
@@ -154,15 +222,35 @@ class PortalAutomation:
         if not await visible(self.page, "#username", 1_000):
             await self._goto(CITIZEN_LOGIN_URL, timeout_ms=30_000)
         await self._wait_for_login_element("#username")
+        await self.page.wait_for_timeout(1_500)
         # Start watching before CAPTCHA handling.  The watcher does not poll the
         # SMS server until the portal exposes the OTP field, so a manually
         # entered CAPTCHA (and the user's later Get OTP click) cannot delay
         # automatic OTP handling.
         citizen_otp_task = self._start_otp_watcher("main", "#otp")
         captcha_entered_manually = True
+        form_reset_count = 0
         while True:
+            # Always auto-fill username and password regardless of reset count.
             await self._prepare_citizen_login_attempt(credentials)
-            if credentials.citizen_username and credentials.citizen_password:
+            if form_reset_count >= 3:
+                # Automatic CAPTCHA re-fill has failed 3 times due to repeated
+                # page reloads.  Credentials are still filled above; only the
+                # CAPTCHA is left to the user.
+                self._status(
+                    "Login form keeps resetting; please enter the CAPTCHA manually, then click Get OTP…"
+                )
+                self.emit(
+                    UiEvent(
+                        "notification",
+                        "The login form has been reset 3 times automatically. "
+                        "Your username and password have been filled. "
+                        "Please enter the CAPTCHA manually and click Get OTP.",
+                        {"title": "Manual CAPTCHA required", "level": "warning"},
+                    )
+                )
+                captcha_entered_manually = True  # prevent auto OTP-button click
+            elif credentials.citizen_username and credentials.citizen_password:
                 captcha_entered_manually = await self._solve_captcha(
                     "#captcha_image",
                     "#captcha",
@@ -180,14 +268,29 @@ class PortalAutomation:
                 success_url_prefix=CITIZEN_WELCOME_URL,
                 field_selectors=["#username", "#password", "#captcha"],
             )
-            if outcome != "captcha_failed":
+            if outcome not in ("captcha_failed", "form_reset"):
                 break
-            self.emit(
-                UiEvent(
-                    "log",
-                    "Citizen CAPTCHA validation failed. Retrying with fresh credentials and CAPTCHA.",
+            if outcome == "form_reset":
+                form_reset_count += 1
+                self.emit(
+                    UiEvent(
+                        "log",
+                        f"Citizen login form was reset by the portal after the OTP request "
+                        f"(page reload cleared the fields). "
+                        f"Auto-retry {form_reset_count}/3"
+                        + (" — switching to manual CAPTCHA entry." if form_reset_count >= 3 else ". Re-filling credentials and CAPTCHA…"),
+                    )
                 )
-            )
+                # Wait for the page to fully settle after every reload before
+                # attempting to re-fill.
+                await self.page.wait_for_timeout(2_000)
+            else:
+                self.emit(
+                    UiEvent(
+                        "log",
+                        "Citizen CAPTCHA validation failed. Retrying with fresh credentials and CAPTCHA.",
+                    )
+                )
         try:
             await self._wait_for_login_element("#otp")
             otp = await self._await_otp_watcher(citizen_otp_task)
@@ -230,12 +333,16 @@ class PortalAutomation:
                 return
             await self.page.wait_for_timeout(500)
 
-    async def _open_estamp_entry(self) -> None:
-        """Open eStamp directly after login or row reset."""
+    async def _open_estamp_entry(self) -> bool:
+        """Open eStamp directly after login or row reset.
+
+        Returns True when the session has expired and a full re-login is
+        required before the eStamp form can be reached.
+        """
         self._status("Opening the direct eStamp form…")
         self.emit(UiEvent("log", "Opening the direct eStamp form."))
         if await visible(self.page, "#payment_purpose_id", 1_000):
-            return
+            return False
 
         for _attempt in range(1, 4):
             await self.controls.checkpoint()
@@ -252,21 +359,73 @@ class PortalAutomation:
                     wait_until="domcontentloaded",
                     timeout=15_000,
                 )
+
+            # Detect session expiry: the portal may redirect to the home page
+            # or the login page instead of honouring the welcome/eStamp URL.
+            session_expired = await self._handle_session_expiry_redirect()
+            if session_expired:
+                return True
+
             with suppress(PlaywrightError):
                 await self.page.goto(ESTAMP_URL, wait_until="domcontentloaded", timeout=15_000)
 
+            session_expired = await self._handle_session_expiry_redirect()
+            if session_expired:
+                return True
+
             if await visible(self.page, "#payment_purpose_id", 8_000):
-                return
+                return False
             await self.page.wait_for_timeout(500)
 
         if await visible(self.page, "#payment_purpose_id", 5_000):
-            return
+            return False
 
         raise AutomationError(
             "The eStamp payment entry form (#payment_purpose_id) did not load in time.",
             stage=self.stage,
             code="estamp_form_load_timeout",
         )
+
+    async def _handle_session_expiry_redirect(self) -> bool:
+        """Check current URL for a session-expiry redirect to home or login page.
+
+        If on the main home page, clicks the Citizen login link first.
+        Returns True if the portal has landed on home/login, meaning the
+        caller must perform a full re-login before proceeding.
+        """
+        current_url = self.page.url.rstrip("/")
+        is_home = current_url == MAIN_HOME_URL.rstrip("/")
+        is_login = current_url.startswith(CITIZEN_LOGIN_URL)
+        if not is_home and not is_login:
+            return False
+
+        if is_home:
+            self.emit(
+                UiEvent(
+                    "log",
+                    "Session expired: portal redirected to the home page. "
+                    "Clicking the Citizen login link…",
+                )
+            )
+            citizen_link = await first_visible(
+                self.page,
+                ['a.login_link[href*="citizenlogin"]', 'a[href*="citizenlogin"]'],
+                5_000,
+            )
+            if citizen_link is not None:
+                with suppress(PlaywrightError):
+                    await citizen_link.click()
+                await self.page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        else:
+            self.emit(
+                UiEvent(
+                    "log",
+                    "Session expired: portal redirected to the login page. "
+                    "Re-login is required.",
+                )
+            )
+
+        return True
 
     async def _wait_for_login_element(self, selector: str) -> Locator:
         while True:
@@ -360,76 +519,160 @@ class PortalAutomation:
             )
         await click_first(self.page, ["button.close_model", 'button:has-text("OK")'])
 
-    async def complete_egras_login(self, credentials: Credentials) -> None:
-        await self._stage(Stage.EGRAS_LOGIN)
-        username = await first_visible(self.page, ["#txtLoginId"], 10_000)
-        if username is None:
-            return
+    async def complete_egras_login(
+        self, credentials: Credentials, *, start_from_otp: bool = False
+    ) -> None:
+        if not start_from_otp:
+            await self._stage(Stage.EGRAS_LOGIN)
+            username = await first_visible(self.page, ["#txtLoginId"], 10_000)
+            if username is None:
+                return
+            await self.page.wait_for_timeout(2_000)
         # This watcher remains independent of both eGRAS CAPTCHA steps.  It
         # waits for #txtOTP to appear before beginning the SMS poll, then fills
         # the field as soon as a code is available.
         egrass_otp_task = self._start_otp_watcher("egrass", "#txtOTP")
         login_captcha_entered_manually = True
-        while True:
-            if credentials.egras_username and credentials.egras_password:
-                await username.fill(credentials.egras_username)
-                await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
-                login_captcha_entered_manually = await self._solve_captcha(
-                    "img.imgcaptcha",
-                    "#txtcaptcha",
-                    expected_length=6,
-                    refresh_selector="#ImageButton1",
-                )
+        if not start_from_otp:
+            # ── Step 1: username + password + CAPTCHA → Proceed ─────────────────
+            # eGRAS does NOT clear the username field on page reload, so we use
+            # #txtPassword as the reset indicator instead of #txtLoginId.
+            login_reset_count = 0
+            while True:
+                # Always auto-fill username and password.
+                if credentials.egras_username and credentials.egras_password:
+                    await username.fill(credentials.egras_username)
+                    await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
 
-            if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
-                proceed_btn = await first_visible(
-                    self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000
-                )
-                if proceed_btn is not None:
-                    await proceed_btn.click()
+                if login_reset_count >= 3:
+                    self._status(
+                        "eGRAS login form keeps resetting; please enter the CAPTCHA manually, "
+                        "then click Proceed…"
+                    )
+                    self.emit(
+                        UiEvent(
+                            "notification",
+                            "The eGRAS login form has been reset 3 times automatically. "
+                            "Your username and password have been filled. "
+                            "Please enter the CAPTCHA manually and click Proceed.",
+                            {"title": "Manual CAPTCHA required", "level": "warning"},
+                        )
+                    )
+                    login_captcha_entered_manually = True  # prevent auto Proceed click
+                elif credentials.egras_username and credentials.egras_password:
+                    login_captcha_entered_manually = await self._solve_captcha(
+                        "img.imgcaptcha",
+                        "#txtcaptcha",
+                        expected_length=6,
+                        refresh_selector="#ImageButton1",
+                    )
 
-            outcome = await self._wait_for_login_progress(
-                otp_selector="#txtOTP",
-                success_url_prefix="",
-                field_selectors=["#txtLoginId", "#txtPassword", "#txtcaptcha"],
-            )
-            if outcome != "captcha_failed":
-                break
-            self.emit(
-                UiEvent(
-                    "log",
-                    "eGRAS CAPTCHA validation failed. Retrying with fresh credentials and CAPTCHA.",
+                if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
+                    proceed_btn = await first_visible(
+                        self.page, ["#btnproceed", 'input[value="Proceed"]'], 5_000
+                    )
+                    if proceed_btn is not None:
+                        await proceed_btn.click()
+
+                outcome = await self._wait_for_login_progress(
+                    otp_selector="#txtOTP",
+                    success_url_prefix="",
+                    field_selectors=["#txtLoginId", "#txtPassword", "#txtcaptcha"],
+                    reset_indicator_selector="#txtPassword",
                 )
-            )
+                if outcome not in ("captcha_failed", "form_reset"):
+                    break
+                if outcome == "form_reset":
+                    login_reset_count += 1
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            f"eGRAS login form was reset by the portal after the Proceed click "
+                            f"(page reload cleared the fields). "
+                            f"Auto-retry {login_reset_count}/3"
+                            + (" — switching to manual CAPTCHA entry." if login_reset_count >= 3 else ". Re-filling credentials and CAPTCHA…"),
+                        )
+                    )
+                    await self.page.wait_for_timeout(2_000)
+                else:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            "eGRAS CAPTCHA validation failed. Retrying with fresh credentials and CAPTCHA.",
+                        )
+                    )
+
+        # ── Step 2: OTP + validation CAPTCHA → Validate OTP ─────────────────
         try:
-            await self._wait_for_egras_otp_step()
-
             await self._stage(Stage.EGRAS_OTP)
-            # The watcher can now fill #txtOTP while Gemini or the user handles
-            # the validation CAPTCHA.
-            otp_captcha_entered_manually = await self._solve_captcha(
-                "div.tab-pane.active img.imgcaptcha",
-                "div.tab-pane.active #txtcaptcha",
-                expected_length=6,
-                refresh_selector="div.tab-pane.active #ImageButton1",
-            )
+            otp_reset_count = 0
+            otp_captcha_entered_manually = True
+            while True:
+                # Wait for the OTP step fields to appear.
+                otp_step_outcome = await self._wait_for_egras_otp_step()
 
-            otp = await self._await_otp_watcher(egrass_otp_task)
-            if otp is not None:
-                # eGRAS requires every input at this validation point to be
-                # automatic before clicking Validate OTP.  A manual CAPTCHA or
-                # manual OTP leaves that action to the user.
-                if not login_captcha_entered_manually and not otp_captcha_entered_manually:
-                    await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
-                    self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
-            else:
-                self.emit(
-                    UiEvent("otp_manual", "Use the manually entered eGRAS OTP, then click Validate OTP.")
+                if otp_step_outcome == "form_reset":
+                    otp_reset_count += 1
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            f"eGRAS OTP/CAPTCHA fields were cleared by a page reload. "
+                            f"Auto-retry {otp_reset_count}/3"
+                            + (" — switching to manual CAPTCHA entry." if otp_reset_count >= 3 else ". Re-filling…"),
+                        )
+                    )
+                    await self.page.wait_for_timeout(2_000)
+
+                    if otp_reset_count >= 3:
+                        self._status(
+                            "eGRAS OTP form keeps resetting; please enter the CAPTCHA manually, "
+                            "then click Validate OTP…"
+                        )
+                        self.emit(
+                            UiEvent(
+                                "notification",
+                                "The eGRAS OTP form has been reset 3 times automatically. "
+                                "Please enter the CAPTCHA manually and click Validate OTP.",
+                                {"title": "Manual CAPTCHA required", "level": "warning"},
+                            )
+                        )
+                        otp_captcha_entered_manually = True
+                    else:
+                        # Re-solve only the CAPTCHA; OTP watcher handles #txtOTP.
+                        otp_captcha_entered_manually = await self._solve_captcha(
+                            "div.tab-pane.active img.imgcaptcha",
+                            "div.tab-pane.active #txtcaptcha",
+                            expected_length=6,
+                            refresh_selector="div.tab-pane.active #ImageButton1",
+                        )
+                    continue
+
+                # otp_step_outcome == "ready" — fields present and not cleared.
+                # The watcher can now fill #txtOTP while the CAPTCHA is handled.
+                otp_captcha_entered_manually = await self._solve_captcha(
+                    "div.tab-pane.active img.imgcaptcha",
+                    "div.tab-pane.active #txtcaptcha",
+                    expected_length=6,
+                    refresh_selector="div.tab-pane.active #ImageButton1",
                 )
-            await self._wait_for_manual_egras_otp(
-                "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
-                "continue when the payment option appears."
-            )
+
+                otp = await self._await_otp_watcher(egrass_otp_task)
+                if otp is not None:
+                    # eGRAS requires every input at this validation point to be
+                    # automatic before clicking Validate OTP.  A manual CAPTCHA
+                    # or manual OTP leaves that action to the user.
+                    if not login_captcha_entered_manually and not otp_captcha_entered_manually:
+                        await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
+                        self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
+                else:
+                    self.emit(
+                        UiEvent("otp_manual", "Use the manually entered eGRAS OTP, then click Validate OTP.")
+                    )
+                await self._wait_for_manual_egras_otp(
+                    "Confirm the eGRAS CAPTCHA and OTP, then click Validate OTP in Chrome. The app will "
+                    "continue when the payment option appears."
+                )
+                break
         finally:
             await self._cancel_otp_watcher(egrass_otp_task)
         if self.egrass_otp_for_cleanup is not None:
@@ -568,10 +811,11 @@ class PortalAutomation:
         self.emit(UiEvent("log", message))
         self._status("Waiting for the eGRAS OTP page…")
         self.emit(UiEvent("log", "Waiting for the eGRAS OTP page and second CAPTCHA."))
-        await self._wait_for_egras_otp_step()
+        while await self._wait_for_egras_otp_step() != "ready":
+            pass
         self.emit(UiEvent("log", "eGRAS OTP page detected; solving the second CAPTCHA."))
 
-    async def _wait_for_egras_otp_step(self) -> None:
+    async def _wait_for_egras_otp_step(self) -> str:
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
@@ -585,7 +829,20 @@ class PortalAutomation:
             captcha = await first_visible(self.page, ["div.tab-pane.active img.imgcaptcha"], 500)
             captcha_input = await first_visible(self.page, ["div.tab-pane.active #txtcaptcha"], 500)
             if otp is not None and captcha is not None and captcha_input is not None:
-                return
+                # Detect a page reload that cleared the filled OTP or CAPTCHA
+                # fields — at least one will be empty if the form was reset.
+                otp_value = ""
+                captcha_value = ""
+                with suppress(PlaywrightError):
+                    otp_value = await otp.input_value()
+                with suppress(PlaywrightError):
+                    captcha_value = await captcha_input.input_value()
+                # Give the page 1.5 s to fully settle after every (re)load
+                # before the caller starts filling CAPTCHA / OTP.
+                await self.page.wait_for_timeout(1_500)
+                if not otp_value.strip() or not captcha_value.strip():
+                    return "form_reset"
+                return "ready"
             await self.page.wait_for_timeout(500)
 
     async def _wait_for_manual_egras_otp(self, message: str) -> None:
@@ -807,39 +1064,62 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
-            content = (await self.page.locator("body").inner_text()).lower()
-            if "transaction failed" in content:
-                raise AutomationError(
-                    "The payment gateway reported: Transaction Failed.",
-                    stage=self.stage,
-                    code="transaction_failed",
-                )
-            details = await self._read_transaction_details()
-            if details:
-                self.emit(
-                    UiEvent(
-                        "log",
-                        "Transaction confirmed: "
-                        f"ID {details.get('Transaction ID', 'N/A')}, "
-                        f"GRN {details.get('GRN', 'N/A')}, CIN {details.get('CIN', 'N/A')}.",
+            try:
+                body = self.page.locator("body")
+                content = (await body.inner_text(timeout=2_000)).lower()
+                if "transaction failed" in content:
+                    raise AutomationError(
+                        "The payment gateway reported: Transaction Failed.",
+                        stage=self.stage,
+                        code="transaction_failed",
                     )
+            except AutomationError:
+                raise
+            except PlaywrightError:
+                await self.page.wait_for_timeout(500)
+                continue
+
+            try:
+                details = await self._read_transaction_details()
+                if details:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            "Transaction confirmed: "
+                            f"ID {details.get('Transaction ID', 'N/A')}, "
+                            f"GRN {details.get('GRN', 'N/A')}, CIN {details.get('CIN', 'N/A')}.",
+                        )
+                    )
+                    return details
+
+                # If the download link is already visible, return whatever details are present.
+                download_link = await first_visible(
+                    self.page, ['a[href*="gras_estamp_download"]'], 500
                 )
-                return details
+                if download_link is not None:
+                    details = await self._read_transaction_details()
+                    return details
+            except PlaywrightError:
+                pass
+
             await self.page.wait_for_timeout(500)
 
     async def _read_transaction_details(self) -> dict[str, str]:
-        tables = self.page.locator("table.table-bordred")
-        for table_index in range(await tables.count()):
-            table = tables.nth(table_index)
-            if not await table.is_visible():
-                continue
-            cell_rows: list[list[str]] = []
-            rows = table.locator("tr")
-            for row_index in range(await rows.count()):
-                cell_rows.append(await rows.nth(row_index).locator("td").all_inner_texts())
-            details = transaction_details_from_rows(cell_rows)
-            if any(details.get(key) for key in ("Transaction ID", "GRN", "CIN")):
-                return details
+        try:
+            tables = self.page.locator("table.table-bordred")
+            for table_index in range(await tables.count()):
+                table = tables.nth(table_index)
+                if not await table.is_visible():
+                    continue
+                cell_rows: list[list[str]] = []
+                rows = table.locator("tr")
+                for row_index in range(await rows.count()):
+                    cell_rows.append(await rows.nth(row_index).locator("td").all_inner_texts())
+                details = transaction_details_from_rows(cell_rows)
+                if any(details.get(key) for key in ("Transaction ID", "GRN", "CIN")):
+                    return details
+        except PlaywrightError:
+            pass
         return {}
 
     def _report_nonfatal_download_error(self, error: str) -> None:
@@ -856,14 +1136,68 @@ class PortalAutomation:
             )
         )
 
-    async def reset_to_start(self, *, record_stage: bool = True) -> None:
+    async def reset_to_start(
+        self,
+        *,
+        record_stage: bool = True,
+        credentials: Credentials | None = None,
+    ) -> None:
         if record_stage:
             await self._stage(Stage.RESET)
         else:
             self.stage = Stage.RESET
             await self.controls.checkpoint()
         if not self.page.is_closed():
-            await self._open_estamp_entry()
+            needs_relogin = await self._open_estamp_entry()
+            if needs_relogin:
+                if credentials is not None:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            "Session expired after stamp download. "
+                            "Re-logging in from the beginning…",
+                        )
+                    )
+                    await self.ensure_citizen_session(credentials)
+                else:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            "Session expired after stamp download but no credentials were "
+                            "provided for automatic re-login. Please log in manually.",
+                            {"level": "warning"},
+                        )
+                    )
+
+    def _save_captcha_image(self, image_bytes: bytes) -> Path | None:
+        if not self.save_captcha_images or not image_bytes:
+            return None
+        try:
+            folder = app_data_directory() / "captchas"
+            folder.mkdir(parents=True, exist_ok=True)
+            existing: list[int] = []
+            for entry in folder.glob("*.png"):
+                if entry.stem.isdigit():
+                    existing.append(int(entry.stem))
+            next_idx = max(existing, default=0) + 1
+            target_file = folder / f"{next_idx}.png"
+            target_file.write_bytes(image_bytes)
+            self.emit(
+                UiEvent(
+                    "log",
+                    f"Saved CAPTCHA image #{next_idx} to {target_file}",
+                )
+            )
+            return target_file
+        except Exception as error:
+            self.emit(
+                UiEvent(
+                    "log",
+                    f"Failed to save CAPTCHA image: {error}",
+                    {"level": "warning"},
+                )
+            )
+            return None
 
     async def _solve_captcha(
         self,
@@ -894,8 +1228,13 @@ class PortalAutomation:
             for attempt in range(1, MAX_CAPTCHA_OCR_ATTEMPTS + 1):
                 if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
                     image_png = await self._capture_captcha_directly(image)
+                    self._save_captcha_image(image_png)
                     ocr_task = asyncio.create_task(solver.solve_image(image_png, expected_length))
                 else:
+                    if self.save_captcha_images:
+                        with suppress(Exception):
+                            image_png = await self._capture_captcha_directly(image)
+                            self._save_captcha_image(image_png)
                     await self._copy_captcha_with_browser_menu(image)
                     ocr_task = asyncio.create_task(solver.solve(expected_length))
                 while not ocr_task.done():
@@ -1029,6 +1368,7 @@ class PortalAutomation:
         otp_selector: str,
         success_url_prefix: str,
         field_selectors: list[str],
+        reset_indicator_selector: str | None = None,
     ) -> str:
         while True:
             await self.controls.checkpoint()
@@ -1047,6 +1387,14 @@ class PortalAutomation:
             if CAPTCHA_FAILURE_TEXT in body_text:
                 return "captcha_failed"
             if all([await visible(self.page, selector, 250) for selector in field_selectors]):
+                # Detect a page reload that cleared the filled values.  Use the
+                # caller-supplied indicator field, or fall back to the first
+                # field in field_selectors.
+                indicator = reset_indicator_selector or (field_selectors[0] if field_selectors else None)
+                if indicator:
+                    with suppress(PlaywrightError):
+                        if not (await self.page.locator(indicator).first.input_value()).strip():
+                            return "form_reset"
                 await self.page.wait_for_timeout(250)
                 continue
             await self.page.wait_for_timeout(250)

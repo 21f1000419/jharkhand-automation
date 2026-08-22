@@ -297,20 +297,31 @@ class AutomationController:
             else:
                 self.emit(UiEvent("ocr_manual_mode", "OCR is inactive; CAPTCHAs require manual entry."))
             self.emit(UiEvent("run_started", "Automation started."))
-            if not self._can_reuse_portal(options.portal_browser):
+
+            async def open_portal_page() -> Page:
+                return await self._open_fresh_portal_page(options.portal_browser)
+
+            async def close_portal_page() -> None:
                 await self._close_portal_browser()
-                self.portal_browser = PortalBrowserSession(
-                    options.portal_browser, self._on_portal_browser_disconnected
-                )
-                self._portal_browser_closed = False
-                self.portal_page = await self.portal_browser.new_portal_page(
-                    CITIZEN_LOGIN_URL, timeout_ms=0
-                )
-            page = self.portal_page
-            if page is None:
-                raise RuntimeError("The portal browser did not provide a page.")
-            portal_watchdog = asyncio.create_task(self._monitor_portal_browser(page))
-            engine = WorkflowEngine(page, solver, self.controls, self.emit)
+
+            page: Page | None = None
+            if not options.fresh_browser_per_unit:
+                if not self._can_reuse_portal(options.portal_browser):
+                    page = await open_portal_page()
+                else:
+                    page = self.portal_page
+                if page is None:
+                    raise RuntimeError("The portal browser did not provide a page.")
+
+            portal_watchdog = asyncio.create_task(self._monitor_portal_browser())
+            engine = WorkflowEngine(
+                page,
+                solver,
+                self.controls,
+                self.emit,
+                open_portal_page=open_portal_page,
+                close_portal_page=close_portal_page,
+            )
             completed = await engine.run(options)
         except asyncio.CancelledError:
             self.emit(UiEvent("run_stopped", "Automation stopped."))
@@ -333,13 +344,26 @@ class AutomationController:
             and self.portal_browser.choice == choice
         )
 
-    async def _monitor_portal_browser(self, page: Page) -> None:
+    async def _open_fresh_portal_page(self, choice: PortalBrowser) -> Page:
+        await self._close_portal_browser()
+        self.portal_browser = PortalBrowserSession(
+            choice, self._on_portal_browser_disconnected
+        )
+        self._portal_browser_closed = False
+        self.portal_page = await self.portal_browser.new_portal_page(
+            CITIZEN_LOGIN_URL, timeout_ms=0
+        )
+        return self.portal_page
+
+    async def _monitor_portal_browser(self) -> None:
         """Keep checking browser health while the workflow is paused for user input."""
         while True:
             browser = self.portal_browser
-            if browser is None or page.is_closed() or not browser.is_active:
-                self._on_portal_browser_disconnected()
-                return
+            page = self.portal_page
+            if not self._portal_browser_closed:
+                if browser is None or page is None or page.is_closed() or not browser.is_active:
+                    self._on_portal_browser_disconnected()
+                    return
             await asyncio.sleep(1)
 
     def _cancel_run(self) -> None:
@@ -384,6 +408,7 @@ class AutomationController:
                 await browser.close()
 
     async def _close_portal_browser(self) -> None:
+        self._portal_browser_closed = True
         browser, self.portal_browser = self.portal_browser, None
         self.portal_page = None
         if browser is not None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from playwright.async_api import Page
@@ -11,10 +11,12 @@ from automation.portal import PortalAutomation
 from core.controls import RunControls
 from core.models import (
     AutomationError,
+    Credentials,
     PersistenceError,
     RunMode,
     RunOptions,
     Stage,
+    STAGE_CHECKPOINTS,
     UiEvent,
     WorkflowStopped,
 )
@@ -26,19 +28,38 @@ from services.sms_otp_client import SmsOtpClient
 class WorkflowEngine:
     def __init__(
         self,
-        page: Page,
+        page: Page | None,
         solver: CaptchaSolver | None,
         controls: RunControls,
         emit: Callable[[UiEvent], None],
+        open_portal_page: Callable[[], Awaitable[Page]] | None = None,
+        close_portal_page: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.page = page
         self.solver = solver
         self.controls = controls
         self.emit = emit
+        self.open_portal_page = open_portal_page
+        self.close_portal_page = close_portal_page
         self.store: CsvBatchStore | None = None
         self.current_row: dict[str, str] | None = None
         self.current_stage = Stage.IDLE
         self.browser_interrupted = False
+
+    def _create_portal(self, page: Page, options: RunOptions) -> PortalAutomation:
+        return PortalAutomation(
+            page,
+            self.solver,
+            self.controls,
+            self._on_stage,
+            self.emit,
+            SmsOtpClient(options.sms_server_url),
+            options.sms_user_id,
+            options.captcha_copy_mode,
+            options.payment_trigger_url,
+            options.payment_trigger_method,
+            options.save_captcha_images,
+        )
 
     async def run(self, options: RunOptions) -> bool:
         self.store = CsvBatchStore(options.csv_path)
@@ -51,22 +72,20 @@ class WorkflowEngine:
             return False
 
         download_root = options.download_root or Path.home() / "Downloads"
-        portal = PortalAutomation(
-            self.page,
-            self.solver,
-            self.controls,
-            self._on_stage,
-            self.emit,
-            SmsOtpClient(options.sms_server_url),
-            options.sms_user_id,
-            options.captcha_copy_mode,
-            options.payment_trigger_url,
-            options.payment_trigger_method,
-        )
+        portal: PortalAutomation | None = None
+        if not options.fresh_browser_per_unit:
+            if self.page is None or self.page.is_closed():
+                if self.open_portal_page is not None:
+                    self.page = await self.open_portal_page()
+            if self.page is None:
+                raise RuntimeError("No portal browser page available.")
+            portal = self._create_portal(self.page, options)
+
         try:
             pending = list(self.store.pending_rows())
             if not pending:
-                await portal.reset_to_start()
+                if portal is not None:
+                    await portal.reset_to_start(credentials=options.credentials)
                 self.emit(UiEvent("run_completed", "All CSV rows are already complete."))
                 return True
             # Highlight the first work item immediately.  Citizen login may
@@ -77,7 +96,8 @@ class WorkflowEngine:
             # Sign in before validating individual CSV rows. This makes the
             # visible Citizen login/CAPTCHA flow available at batch start even
             # when a later row needs CSV corrections.
-            await portal.ensure_citizen_session(options.credentials)
+            if not options.fresh_browser_per_unit and portal is not None:
+                await portal.ensure_citizen_session(options.credentials)
 
             for row_number, row in pending:
                 self.current_row = row
@@ -89,7 +109,15 @@ class WorkflowEngine:
                         stage=Stage.VALIDATING,
                         code="invalid_csv_row",
                     )
-                    action = await self._handle_error(portal, row_number, row, error, options.mode)
+                    action = await self._handle_error(
+                        portal,
+                        row_number,
+                        row,
+                        error,
+                        options.mode,
+                        options.credentials,
+                        options.fresh_browser_per_unit,
+                    )
                     if action == "retry":
                         # Validate again in case the in-memory row is updated by a future editor.
                         validation = self.store.validate_row(row)
@@ -97,12 +125,33 @@ class WorkflowEngine:
                             continue
                     continue
 
+                start_from_stage = Stage.CITIZEN_LOGIN
                 while int(row["processed_quantity"]) < int(row["quantity"]):
-                    self.current_stage = Stage.CITIZEN_LOGIN
+                    self.current_stage = start_from_stage
                     self.store.set_running(row, self.current_stage)
                     await self._persist()
                     self._publish_progress(row_number, row)
                     sequence = int(row["processed_quantity"]) + 1
+
+                    if options.fresh_browser_per_unit:
+                        if (
+                            self.page is None
+                            or self.page.is_closed()
+                            or start_from_stage == Stage.CITIZEN_LOGIN
+                        ):
+                            if self.open_portal_page is not None:
+                                self.page = await self.open_portal_page()
+                            if self.page is None:
+                                raise RuntimeError("No portal browser page available.")
+                            portal = self._create_portal(self.page, options)
+                    else:
+                        if self.page is None or self.page.is_closed():
+                            if self.open_portal_page is not None:
+                                self.page = await self.open_portal_page()
+                            if self.page is None:
+                                raise RuntimeError("No portal browser page available.")
+                            portal = self._create_portal(self.page, options)
+
                     try:
                         result = await portal.process_unit(
                             row,
@@ -111,7 +160,9 @@ class WorkflowEngine:
                             download_root,
                             row_number + 1,
                             sequence,
+                            start_from_stage=start_from_stage,
                         )
+                        start_from_stage = Stage.CITIZEN_LOGIN
                         relative_path = (
                             os.path.relpath(result.destination, options.csv_path.parent)
                             if result.destination is not None
@@ -135,27 +186,53 @@ class WorkflowEngine:
                                 f"Row {row_number + 1}, quantity {sequence} completed: {outcome}",
                             )
                         )
-                        try:
-                            await portal.reset_to_start()
-                        except AutomationError as reset_error:
-                            self.emit(
-                                UiEvent(
-                                    "log",
-                                    "Transaction was recorded, but the portal could not reset: "
-                                    f"{reset_error}",
-                                    {"level": "error"},
+                        if options.fresh_browser_per_unit:
+                            if self.close_portal_page is not None:
+                                await self.close_portal_page()
+                            self.page = None
+                            portal = None
+                        else:
+                            try:
+                                await portal.reset_to_start(credentials=options.credentials)
+                            except AutomationError as reset_error:
+                                self.emit(
+                                    UiEvent(
+                                        "log",
+                                        "Transaction was recorded, but the portal could not reset: "
+                                        f"{reset_error}",
+                                        {"level": "error"},
+                                    )
                                 )
-                            )
-                            if reset_error.code == "browser_closed":
-                                raise WorkflowStopped from reset_error
+                                if reset_error.code == "browser_closed":
+                                    raise WorkflowStopped from reset_error
                     except WorkflowStopped:
                         raise
                     except AutomationError as error:
-                        action = await self._handle_error(portal, row_number, row, error, options.mode)
+                        action = await self._handle_error(
+                            portal,
+                            row_number,
+                            row,
+                            error,
+                            options.mode,
+                            options.credentials,
+                            options.fresh_browser_per_unit,
+                        )
                         if error.code == "browser_closed":
                             raise WorkflowStopped from error
                         if action == "retry":
+                            start_from_stage = Stage.CITIZEN_LOGIN
                             continue
+                        if action == "continue":
+                            checkpoint_info = STAGE_CHECKPOINTS.get(error.stage)
+                            start_from_stage = checkpoint_info[0] if checkpoint_info else Stage.CITIZEN_LOGIN
+                            self.emit(
+                                UiEvent(
+                                    "log",
+                                    f"Resuming automation from next checkpoint: {start_from_stage.value}",
+                                )
+                            )
+                            continue
+                        start_from_stage = Stage.CITIZEN_LOGIN
                         self.store.mark_skipped_quantity(
                             row,
                             sequence,
@@ -175,9 +252,12 @@ class WorkflowEngine:
 
             self.current_row = None
             self.current_stage = Stage.IDLE
-            # Keep the visible session ready for the next CSV rather than
-            # leaving it on a payment/result page after the final row.
-            await portal.reset_to_start()
+            if options.fresh_browser_per_unit:
+                if self.close_portal_page is not None:
+                    await self.close_portal_page()
+                self.page = None
+            elif portal is not None:
+                await portal.reset_to_start(credentials=options.credentials)
             self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
             self.emit(
                 UiEvent(
@@ -214,11 +294,13 @@ class WorkflowEngine:
 
     async def _handle_error(
         self,
-        portal: PortalAutomation,
+        portal: PortalAutomation | None,
         row_number: int,
         row: dict[str, str],
         error: AutomationError,
         mode: RunMode,
+        credentials: Credentials | None = None,
+        fresh_browser_per_unit: bool = False,
     ) -> str:
         self.current_stage = error.stage
         self.store_or_raise().mark_error(row, error.stage, str(error))
@@ -242,13 +324,21 @@ class WorkflowEngine:
             self.browser_interrupted = True
             return "next"
 
-        try:
-            await portal.reset_to_start(record_stage=False)
-        except Exception as reset_error:
-            self.emit(UiEvent("log", f"Could not reset the portal: {reset_error}", {"level": "error"}))
-
         if mode == RunMode.CONTINUOUS:
+            if fresh_browser_per_unit:
+                if self.close_portal_page is not None:
+                    await self.close_portal_page()
+                self.page = None
+            elif portal is not None:
+                try:
+                    await portal.reset_to_start(record_stage=False, credentials=credentials)
+                except Exception as reset_error:
+                    self.emit(UiEvent("log", f"Could not reset the portal: {reset_error}", {"level": "error"}))
             return "next"
+
+        checkpoint_info = STAGE_CHECKPOINTS.get(error.stage)
+        can_continue = checkpoint_info is not None and error.stage != Stage.VALIDATING
+
         self.emit(
             UiEvent(
                 "error_prompt",
@@ -259,10 +349,26 @@ class WorkflowEngine:
                     "stage": error.stage.value,
                     "quantity_action": error.stage != Stage.VALIDATING,
                     "post_payment_warning": error.stage in {Stage.PAYMENT, Stage.RESULT, Stage.DOWNLOAD},
+                    "can_continue": can_continue,
+                    "next_checkpoint_stage": checkpoint_info[0].value if checkpoint_info else "",
+                    "next_checkpoint_title": checkpoint_info[1] if checkpoint_info else "",
+                    "next_checkpoint_instruction": checkpoint_info[2] if checkpoint_info else "",
                 },
             )
         )
-        return await self.controls.wait_for_decision()
+        decision = await self.controls.wait_for_decision()
+        if decision in ("retry", "next"):
+            if fresh_browser_per_unit:
+                if self.close_portal_page is not None:
+                    await self.close_portal_page()
+                self.page = None
+            elif portal is not None:
+                try:
+                    await portal.reset_to_start(record_stage=False, credentials=credentials)
+                except Exception as reset_error:
+                    self.emit(UiEvent("log", f"Could not reset the portal: {reset_error}", {"level": "error"}))
+
+        return decision
 
     async def _on_stage(self, stage: Stage) -> None:
         self.current_stage = stage

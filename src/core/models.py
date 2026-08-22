@@ -62,6 +62,75 @@ class Stage(StrEnum):
     RESET = "reset"
 
 
+STAGE_CHECKPOINTS: dict[Stage, tuple[Stage, str, str]] = {
+    Stage.CITIZEN_LOGIN: (
+        Stage.FILL_ESTAMP,
+        "eStamp Payment Entry Form",
+        "Complete Citizen login and leave the browser on the eStamp payment entry form.",
+    ),
+    Stage.OPEN_ESTAMP: (
+        Stage.FILL_ESTAMP,
+        "eStamp Payment Entry Form",
+        "Navigate and leave the browser on the eStamp payment entry form.",
+    ),
+    Stage.FILL_ESTAMP: (
+        Stage.CONFIRM_ESTAMP,
+        "Pay Now Confirmation Modal",
+        "Fill required form fields, click 'Proceed to Pay', and leave the browser on the 'Pay Now' confirmation modal.",
+    ),
+    Stage.CONFIRM_ESTAMP: (
+        Stage.EGRAS_TERMS,
+        "eGRAS Disclaimer / Terms",
+        "Click 'Pay Now' in the modal and leave the browser on the eGRAS Terms and Conditions checkbox page.",
+    ),
+    Stage.EGRAS_TERMS: (
+        Stage.EGRAS_LOGIN,
+        "eGRAS User Login",
+        "Check the terms checkbox, click OK, and leave the browser on the eGRAS Login page.",
+    ),
+    Stage.EGRAS_LOGIN: (
+        Stage.EGRAS_OTP,
+        "eGRAS OTP & Validation CAPTCHA",
+        "Enter eGRAS login credentials and CAPTCHA, click Proceed, and leave the browser on the eGRAS OTP page.",
+    ),
+    Stage.EGRAS_OTP: (
+        Stage.GATEWAY_SELECT,
+        "Payment Gateway Selection (SBIePay)",
+        "Enter OTP and validation CAPTCHA, click Validate OTP, and leave the browser on the Payment Gateway (SBIePay) selection page.",
+    ),
+    Stage.GATEWAY_SELECT: (
+        Stage.GATEWAY_TERMS,
+        "Gateway Terms & Conditions",
+        "Select SBIePay radio button, click Pay, and leave the browser on the Terms Agreement page.",
+    ),
+    Stage.GATEWAY_TERMS: (
+        Stage.UPI_SELECT,
+        "SBI Hosted Payment Page (UPI Option)",
+        "Agree to terms, click Proceed For Payment, and leave the browser on the SBI Payment page.",
+    ),
+    Stage.UPI_SELECT: (
+        Stage.PAYMENT,
+        "UPI QR Payment Screen",
+        "Select UPI, select UPI QR option, click Pay Now, and leave the browser on the UPI QR code screen.",
+    ),
+    Stage.PAYMENT: (
+        Stage.RESULT,
+        "Transaction Confirmation Details",
+        "Complete the UPI payment in your banking app and leave the browser on the Transaction Details confirmation page.",
+    ),
+    Stage.RESULT: (
+        Stage.DOWNLOAD,
+        "eStamp Download Page",
+        "Leave the browser on the page with the 'Download eStamp Certificate' button.",
+    ),
+    Stage.DOWNLOAD: (
+        Stage.DOWNLOAD,
+        "eStamp Download Page",
+        "Leave the browser on the page with the 'Download eStamp Certificate' button.",
+    ),
+}
+
+
 class RowStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -94,6 +163,8 @@ class RunOptions:
     payment_trigger_url: str = ""
     payment_trigger_method: str = "GET"
     captcha_copy_mode: CaptchaCopyMode = CaptchaCopyMode.DIRECT
+    save_captcha_images: bool = True
+    fresh_browser_per_unit: bool = False
 
 
 @dataclass(frozen=True)

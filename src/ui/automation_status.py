@@ -32,6 +32,8 @@ class AutomationStatusWindow:
         self.progress_var = tk.StringVar(value="Row —")
         self.error_var = tk.StringVar()
         self.warning_var = tk.StringVar()
+        self.checkpoint_title_var = tk.StringVar()
+        self.checkpoint_instruction_var = tk.StringVar()
         self._on_error_decision = on_error_decision
 
         frame = ttk.Frame(self.window, padding=12)
@@ -58,6 +60,24 @@ class AutomationStatusWindow:
             wraplength=430,
             justify="left",
         ).pack(anchor="w", pady=(3, 0))
+
+        self.checkpoint_frame = ttk.Frame(self.error_frame)
+        ttk.Label(
+            self.checkpoint_frame,
+            textvariable=self.checkpoint_title_var,
+            font=("Segoe UI", 9, "bold"),
+            foreground="#0b57d0",
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Label(
+            self.checkpoint_frame,
+            textvariable=self.checkpoint_instruction_var,
+            foreground="#333333",
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 0))
+
         ttk.Label(
             self.error_frame,
             textvariable=self.warning_var,
@@ -66,13 +86,19 @@ class AutomationStatusWindow:
             justify="left",
         ).pack(anchor="w", pady=(3, 0))
         self.error_buttons = ttk.Frame(self.error_frame)
+        self.continue_button = ttk.Button(
+            self.error_buttons,
+            text="Fixed error and continue",
+            command=lambda: self._choose_error_action("continue"),
+        )
         self.retry_button = ttk.Button(
             self.error_buttons, text="Retry", command=lambda: self._choose_error_action("retry")
         )
         self.next_button = ttk.Button(
             self.error_buttons, text="Move to next", command=lambda: self._choose_error_action("next")
         )
-        self.retry_button.pack(side="left")
+        self.continue_button.pack(side="left")
+        self.retry_button.pack(side="left", padx=(8, 0))
         self.next_button.pack(side="left", padx=(8, 0))
         self.error_buttons.pack(anchor="w", pady=(8, 0))
 
@@ -129,6 +155,9 @@ class AutomationStatusWindow:
         stage: str,
         quantity_action: bool,
         post_payment_warning: bool,
+        can_continue: bool = False,
+        next_checkpoint_title: str = "",
+        next_checkpoint_instruction: str = "",
     ) -> None:
         self.set_status("Action needed", f"{stage.replace('_', ' ').title()} could not finish.")
         self.set_progress(row, quantity if quantity_action else None)
@@ -136,6 +165,20 @@ class AutomationStatusWindow:
         self.warning_var.set(
             "Retrying after payment began can create a duplicate charge." if post_payment_warning else ""
         )
+        if can_continue and next_checkpoint_title:
+            self.checkpoint_title_var.set(f"Next checkpoint: {next_checkpoint_title}")
+            self.checkpoint_instruction_var.set(
+                f"{next_checkpoint_instruction}\nOnce at the checkpoint page, click 'Fixed error and continue'."
+            )
+            self.checkpoint_frame.pack(fill="x", pady=(4, 0))
+            self.continue_button.pack(side="left", before=self.retry_button)
+            self.continue_button.configure(state="normal")
+        else:
+            self.checkpoint_title_var.set("")
+            self.checkpoint_instruction_var.set("")
+            self.checkpoint_frame.pack_forget()
+            self.continue_button.pack_forget()
+
         self.retry_button.configure(
             text="Retry quantity" if quantity_action else "Retry row", state="normal"
         )
@@ -152,12 +195,16 @@ class AutomationStatusWindow:
         self.error_frame.grid_remove()
         self.error_var.set("")
         self.warning_var.set("")
+        self.checkpoint_title_var.set("")
+        self.checkpoint_instruction_var.set("")
         self.window.after_idle(self._place_window)
 
     def _choose_error_action(self, action: str) -> None:
+        self.continue_button.configure(state="disabled")
         self.retry_button.configure(state="disabled")
         self.next_button.configure(state="disabled")
         self._on_error_decision(action)
+
 
     def _place_window(self) -> None:
         self.parent.update_idletasks()

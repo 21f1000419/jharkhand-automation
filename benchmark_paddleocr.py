@@ -70,8 +70,15 @@ def benchmark(image_paths: list[Path], model_name: str) -> None:
 
 def main() -> None:
     args = parse_args()
+    raw_paths = [
+        *args.images.glob("*.png"),
+        *args.images.glob("*.jpg"),
+        *args.images.glob("*.jpeg"),
+    ]
     image_paths = sorted(
-        [*args.images.glob("*.png"), *args.images.glob("*.jpg"), *args.images.glob("*.jpeg")]
+        raw_paths,
+        key=lambda path: getattr(path.stat(), "st_birthtime", path.stat().st_ctime),
+        reverse=True,
     )
     if not image_paths:
         raise SystemExit(f"No PNG or JPEG images found in {args.images}")

@@ -109,6 +109,8 @@ class MainWindow:
             if saved_ocr_engine == OcrEngine.GEMINI
             else CaptchaCopyMode.DIRECT
         )
+        self.save_captcha_images_var = tk.BooleanVar(value=config.save_captcha_images)
+        self.fresh_browser_var = tk.BooleanVar(value=config.fresh_browser_per_unit)
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
         self.payment_trigger_url_var = tk.StringVar(value=config.payment_trigger_url)
@@ -235,6 +237,13 @@ class MainWindow:
         )
         self.captcha_copy_mode_selector.pack(side="left")
         self.captcha_copy_mode_selector.bind("<<ComboboxSelected>>", self._save_non_secret_settings)
+        self.save_captcha_images_checkbox = ttk.Checkbutton(
+            gemini_status,
+            text="Save CAPTCHAs",
+            variable=self.save_captcha_images_var,
+            command=self._save_non_secret_settings,
+        )
+        self.save_captcha_images_checkbox.pack(side="left", padx=(12, 0))
         ttk.Label(
             gemini_status,
             textvariable=self.captcha_warning_var,
@@ -391,6 +400,13 @@ class MainWindow:
             value=RunMode.CONTINUOUS,
             command=self._save_non_secret_settings,
         ).pack(side="left", padx=12)
+        self.fresh_browser_checkbox = ttk.Checkbutton(
+            modes,
+            text="New browser for each unit",
+            variable=self.fresh_browser_var,
+            command=self._save_non_secret_settings,
+        )
+        self.fresh_browser_checkbox.pack(side="left", padx=(8, 0))
 
         controls = ttk.Frame(container)
         controls.pack(fill="x", pady=(0, 8))
@@ -490,6 +506,7 @@ class MainWindow:
         activity_menu = tk.Menu(menu, tearoff=False)
         activity_menu.add_command(label="Current Session…", command=self._show_session_log)
         activity_menu.add_command(label="Open Daily Log Folder", command=self._open_log_folder)
+        activity_menu.add_command(label="Open Stored CAPTCHAs Folder", command=self._open_captcha_folder)
         menu.add_cascade(label="Activity", menu=activity_menu)
 
         self.root.configure(menu=menu)
@@ -698,6 +715,8 @@ class MainWindow:
         self.config.payment_trigger_method = self.payment_trigger_method_var.get().strip().upper()
         self.config.last_article = self.article_var.get().strip()
         self.config.last_csv_path = self.csv_var.get().strip()
+        self.config.save_captcha_images = self.save_captcha_images_var.get()
+        self.config.fresh_browser_per_unit = self.fresh_browser_var.get()
         browser = self.portal_browsers.get(self.portal_browser_var.get())
         if browser is not None:
             self.config.last_portal_browser_path = str(browser.executable)
@@ -1105,6 +1124,8 @@ class MainWindow:
             payment_trigger_url=self.payment_trigger_url_var.get().strip(),
             payment_trigger_method=self.payment_trigger_method_var.get().strip().upper(),
             captcha_copy_mode=CaptchaCopyMode(self.captcha_copy_mode_var.get()),
+            save_captcha_images=self.save_captcha_images_var.get(),
+            fresh_browser_per_unit=self.fresh_browser_var.get(),
         )
         self.starting = True
         self.run_status_var.set(f"Opening {portal_browser.name}...")
@@ -1362,6 +1383,9 @@ class MainWindow:
             stage=str(event.data.get("stage", "unknown")),
             quantity_action=quantity_action,
             post_payment_warning=bool(event.data.get("post_payment_warning")),
+            can_continue=bool(event.data.get("can_continue", False)),
+            next_checkpoint_title=str(event.data.get("next_checkpoint_title", "")),
+            next_checkpoint_instruction=str(event.data.get("next_checkpoint_instruction", "")),
         )
 
     def _load_preview(self, path: Path, quiet: bool = False) -> None:
@@ -1445,6 +1469,12 @@ class MainWindow:
     def _open_log_folder(self) -> None:
         self._record_ui_action("open_daily_log_folder_clicked")
         directory = self.controller.activity_log.directory
+        directory.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(["explorer.exe", str(directory)])
+
+    def _open_captcha_folder(self) -> None:
+        self._record_ui_action("open_captcha_folder_clicked")
+        directory = app_data_directory() / "captchas"
         directory.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer.exe", str(directory)])
 

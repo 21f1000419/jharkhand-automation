@@ -29,6 +29,8 @@ class AppConfig:
     debug_port: int = 9347
     last_article: str = ""
     last_csv_path: str = ""
+    save_captcha_images: bool = True
+    fresh_browser_per_unit: bool = False
 
     @property
     def profile_path(self) -> Path:
