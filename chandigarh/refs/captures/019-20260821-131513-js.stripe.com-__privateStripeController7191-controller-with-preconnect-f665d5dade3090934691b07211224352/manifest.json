@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-08-21T13:15:15+05:30",
+  "frame_name": "__privateStripeController7191",
+  "url": "https://js.stripe.com/v3/controller-with-preconnect-f665d5dade3090934691b07211224352.html#__shared_params__[version]=v3&__shared_params__[light_experiment_assignments]=%7B%22token%22%3A%228341a7f1-a1f8-430c-895a-4f3fdad0a9cf%22%2C%22assignments%22%3A%7B%22api_fastpath_habanero_v1%22%3A%22control%22%7D%7D&apiKey=pk_live_51TEUe0H2XZ8dfO2Alxvxqs30mAHQ2LNfDgdAyAAphuIpllC68rcBLEBHQhb5SqHpuJIJ78nANCVABkN14vmujyhb00kPQBMvHP&stripeJsId=8341a7f1-a1f8-430c-895a-4f3fdad0a9cf&stripeObjId=sobj-6d6fdb7e-9fa8-4e6a-bf4b-9e1716b1f4c5&firstStripeInstanceCreatedLatency=43&topOriginForCrossOriginFrame=https%3A%2F%2Fwww.shcilestamp.com&controllerCount=1&isCheckout=false&stripeJsLoadTime=1787298312924.6&manualBrowserDeprecationRollout=false&mids[guid]=NA&mids[muid]=NA&mids[sid]=NA&referrer=https%3A%2F%2Fapi.razorpay.com%2Fv1%2Fcheckout%2Fpublic%3Ftraffic_env%3Dproduction%26build%3Df2a87944a74d285bbcfcd7b1ed60b65170e9c398%26build_v1%3Dda4ee3f43a28ad81dba8ed06daf899a4520c691f%26checkout_v2%3D1%26new_session%3D1%26rzp_device_id%3D1.b4c0627f5be58b517edf7241b621660fa5fe8521.1787298308657.67428241%26unified_session_id%3DTSLGELZnQsSHDe%26session_token%3DD0E5C85031035EFC33EEB19907235D56D3FC42A6C7958C6BE8F657CFAB167BCBF61E74CC4FC0A579C86E4C26ADDB41E57DC907AD696D69E6C59A031DB386381034CAA4DAA0815BCC88E98687DB3279396DE7B80A807093FA666CF74DD9D5F911F2CA8FA38BFFB30D&controllerId=__privateStripeController7191",
+  "asset_count": 3,
+  "assets": [
+    {
+      "url": "https://js.stripe.com/v3/fingerprinted/js/controller-with-preconnect-37469b70af644093cd2291558a678c2a.js",
+      "file": "assets/002-controller-with-preconnect-37469b70af644093cd2291558a678c2a.js"
+    },
+    {
+      "url": "https://js.stripe.com/v3/fingerprinted/js/shared-5a3b938f0e781db95cf6d944407a13d8.js",
+      "file": "assets/003-shared-5a3b938f0e781db95cf6d944407a13d8.js"
+    },
+    {
+      "url": "https://merchant-ui-api.stripe.com",
+      "file": "assets/004-resource"
+    }
+  ]
+}

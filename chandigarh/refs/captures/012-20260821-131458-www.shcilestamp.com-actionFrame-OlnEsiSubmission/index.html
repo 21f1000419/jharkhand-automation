@@ -1,0 +1,1592 @@
+<!DOCTYPE html><html><head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>India Online Stampduty Payment System</title>
+        <link rel="stylesheet" type="text/css" href="/OnlineStamping/libs/OlnCss.css">
+        <link rel="stylesheet" type="text/css" href="/OnlineStamping/libs/redmond/jquery-ui-1.10.2.custom.min.css">
+        <script type="text/javascript" src="/OnlineStamping/libs/jquery.js"></script>
+        <script type="text/javascript" src="/OnlineStamping/libs/jquery.validate.js"></script>
+        <script src="/OnlineStamping/libs/jquery-ui.js" type="text/javascript"></script>
+        <script src="/OnlineStamping/libs/jsencrypt.js" type="text/javascript"></script>
+        <script src="/OnlineStamping/libs/jsencrypt.min.js" type="text/javascript"></script>
+        <script src="/OnlineStamping/libs/commonValidation.js" type="text/javascript"></script>
+        <script language="javascript" type="text/javascript">
+
+            var vConfirmationFlag = false;
+            var isSdAmtBlur= false;
+            var tmpSDAmt= 0;
+            $(document).ready(function()
+            {
+                $('#btnConfirm').hide();
+                $('#btnModify').hide();
+               
+                $("#iPybAmt").val(0);
+                $('#trloader').hide();
+                $(".pmtNBDC").hide();
+                $(".pmtRTGSNEFT").hide();
+                
+            
+                
+                $('input[id="iRegDocOptYes"]').attr('checked', true);
+                $("#iRegDoc").val($("input[name='iRegDocOpt']:checked").val());
+                
+                /* OnClick of Payment Type */
+                $("#iPmtMode").change(function()
+                {
+                    var vPmtMode = $(this).val();
+                    if (vPmtMode == "RTGS" || vPmtMode == "NEFT")
+                    {
+                        $(".pmtNBDC").hide();
+                        $(".pmtRTGSNEFT").show();
+                    }
+                    //else if (vPmtMode == "NETBANK" || vPmtMode == "DEBITCARD" || vPmtMode == "CRCARD" || vPmtMode == "DRCARD" || vPmtMode == "IMPS")
+                    else if (vPmtMode == "ATOM" || vPmtMode == "RAZORPAY" || vPmtMode == "HDFC")
+                    {
+                        $(".pmtNBDC").show();
+                        $(".pmtRTGSNEFT").hide();
+                    }
+                    else
+                    {
+                        $(".pmtNBDC").hide();
+                        $(".pmtRTGSNEFT").hide();
+                    }
+                    $("#iStampAmt").valid();
+                });
+                
+                $(".floatNumberField2").change(function() {
+                    $(this).val(parseFloat($(this).val()).toFixed(2));
+                });                
+                
+                $("#iPropArea").change(function()
+                {
+                    var vPropAreaVal = $(this).val();
+                    $("#iPAAcre").val("");
+                    $("#iPAKanal").val("");
+                    $("#iPAMarla").val("");
+                    $("#iPASarsahi").val("");
+                    $("#iPABigha").val("");
+                    $("#iPABishwa").val("");
+                    $("#iPABiswasi").val("");
+                    $("#iPASquareFeet").val("");
+                    $("#iPASquareYard").val("");
+                    $("#iPASquareMeters").val("");
+                    
+                    if (vPropAreaVal == "Acre-Kanal-Marla-Sarsahi")
+                    {
+                        $("#divPA_AKMS").show();
+                        $("#divPA_BBB").hide();
+                        $("#divPA_SF").hide();
+                        $("#divPA_SY").hide();
+                        $("#divPA_SM").hide();
+                    }
+                    else if (vPropAreaVal == "Bigha-Bishwa-Biswasi")
+                    {
+                        $("#divPA_AKMS").hide();
+                        $("#divPA_BBB").show();
+                        $("#divPA_SF").hide();
+                        $("#divPA_SY").hide();
+                        $("#divPA_SM").hide();
+                    }
+                    else if (vPropAreaVal == "Square Feet")
+                    {
+                        $("#divPA_AKMS").hide();
+                        $("#divPA_BBB").hide();
+                        $("#divPA_SF").show();
+                        $("#divPA_SY").hide();
+                        $("#divPA_SM").hide();
+                    }
+                    else if (vPropAreaVal == "Square Yard")
+                    {
+                        $("#divPA_AKMS").hide();
+                        $("#divPA_BBB").hide();
+                        $("#divPA_SF").hide();
+                        $("#divPA_SY").show();
+                        $("#divPA_SM").hide();
+                    }
+                    else if (vPropAreaVal == "Square Meters")
+                    {
+                        $("#divPA_AKMS").hide();
+                        $("#divPA_BBB").hide();
+                        $("#divPA_SF").hide();
+                        $("#divPA_SY").hide();
+                        $("#divPA_SM").show();
+                    }
+                    else
+                    {
+                        $("#divPA_AKMS").hide();
+                        $("#divPA_BBB").hide();
+                        $("#divPA_SF").hide();
+                        $("#divPA_SY").hide();
+                        $("#divPA_SM").hide();                        
+                    }                   
+                });//iPropArea Change
+                
+                
+                /* Capitalize pan number and Name */
+                $('input[name="iPmtInstNo"],input[name="iPmtInstBank"],input[name="iPmtInstBankBrn"]').blur(function(e)
+                {
+                    var code = (e.keyCode ? e.keyCode : e.which);
+                    if (code == 37 || code == 38 || code == 39 || code == 40)
+                    {
+                        return false;
+                    }
+                    else
+                    {
+                        var vCapPan = $(this).val();
+                        $(this).val(vCapPan.toUpperCase());
+                    }
+                });
+                
+                $('select[name="iPmtMode"]').on('change', PayModeSelect);
+                
+                /* Jquery Validation */
+                $("#iPmtInstDt").datepicker({
+                    changeMonth: true,
+                    changeYear: true,
+                    showOn: "button",
+                    buttonImage: "/OnlineStamping/images/cal.gif",
+                    buttonText: "Click to Select Date",
+                    buttonImageOnly: true,
+                    dateFormat: "dd-M-yy",
+                    yearRange: '-1:c',
+                    maxDate:'0d',
+                    onClose: function() {
+                        $(this).focus();
+                    }
+                });
+
+                $('div.ui-datepicker').css("font-size", "12px");
+
+                /* Capitalize pan number and Name */
+                $('textarea[name="iPropDesc"],input[name="iParty1Nm"],input[name="iParty1Pan"],input[name="iParty2Nm"],input[name="iParty2Pan"],input[name="iStampPdBy"]').blur(function(e)
+                {
+                    var code = (e.keyCode ? e.keyCode : e.which);
+                    if (code == 37 || code == 38 || code == 39 || code == 40)
+                    {
+                        return false;
+                    }
+                    else
+                    {
+                        var vCapPan = $(this).val();
+                        $(this).val(vCapPan.toUpperCase());
+                    }
+                });
+
+                $("#frmSubmisson").validate({
+                    errorClass: 'err',
+                    rules: {
+      
+                        iSPDistCd: {required: false},
+                        iSPSROLoc: {required: false},
+                
+                        iPropArea: {required: false},
+                        iPropDesc: {required: true, chkPropDesc: true, maxlength: 100, chkPropDescLength: true},
+                        iConPrice: {required: true, digits: true, validateAmount: true, chkConsPrice: true},
+                        iParty1Nm: {required: true, maxlength: 50, chkName: true, checkPartyName1 : true},
+                        iParty1Add1: {maxlength: 100, chkAddress: true},
+                        iParty1Add2: {maxlength: 100, chkAddress: true},
+                        iParty1Add3: {maxlength: 50, chkAddress: true},
+                        iParty1Pin: {pincode: true, minlength: 6},
+                        iParty1Pan: {PAN: true,required:depends=function(){if (parseInt($("#iStampAmt").val()) >= 200000){return true;}return false;}},
+                        iParty2Nm: {required: true, maxlength: 50, chkName: true, checkPartyName2 : true},
+                        iParty2Add1: {maxlength: 100, chkAddress: true},
+                        iParty2Add2: {maxlength: 100, chkAddress: true},
+                        iParty2Add3: {maxlength: 50, chkAddress: true},
+                        iParty2Pin: {pincode: true, minlength: 6},
+                        iParty2Pan: {PAN: true,required:depends=function(){if (parseInt($("#iStampAmt").val()) >= 200000){return true;}return false;}},
+                        iStampPdBy: {required: true, maxlength: 50,vrifyPdBy: true, chkName: true},
+                        iPdByGen: {chkGender: true},
+                        iStampAmt: {required: true, digits: true, validateAmount: true,checkAmtLimit:true},
+                        iSICessAmt: {required: false, digits: true, validateAmount: true, checkCessAmtLimit : true},
+                        iPinCd: {pincode: true, minlength: 6,required: depends = function() {
+                                var PinCdAvlb = "N";
+                                var minLimit = 0;
+                                var vStampAmt = document.getElementById("iStampAmt").value;
+                                return (PinCdAvlb === "Y" && (vStampAmt >= minLimit));
+                            }},
+                        iPmtMode: {required: true},
+                        iPmtInstNo: {required: true, chkInstNumber: true},
+                        iPmtInstDt: {required: true,chkSysDate: true,checkDateFormat: true},
+                        iPmtInstBank: {required: true, chkName: true},
+                        iPmtInstBankBrn: {required: true, chkName: true},
+                        iPmtInstAcntNo: {required: true, digits: true}
+                    },onkeyup: false,
+                    messages: {
+                        iSPDistCd: {required: " * Please Select District Code."},
+                        iSPSROLoc: {required: " * Please Select SRO Code."},
+                        iPropArea: {required: " * Please Select Area of Propery."},
+                        iPropDesc: {required: " * Please enter Property Description.",
+                            maxlength: " * Please enter up to 100 characters only."},
+                        iConPrice: {required: " * Please enter consideration Price .",
+                            digits: " Please enter valid amount without paise."},
+                        iParty1Nm: {required: " * Please enter Party Name.",
+                            maxlength: " * Please enter up to 50 characters only."},
+                        iParty1Add1: {maxlength: " * Please enter up to 100 characters only."},
+                        iParty1Add2: {maxlength: " * Please enter up to 100 characters only."},
+                        iParty1Add3: {maxlength: " * Please enter up to 50 characters only."},
+                        iParty1Pin: {minlength: " * Pin number must be 6 digits."},
+                        iParty1Pan: {pan: " * Please enter a valid PAN number.",
+                                    required:" * For trnasactions above 200000 PAN is required."},
+                        iParty2Nm: {required: " * Please enter Party2 Name.",
+                            maxlength: " * Please enter up to 50 characters only."},
+                        iParty2Add1: {maxlength: " * Please enter up to 100 characters only."},
+                        iParty2Add2: {maxlength: " * Please enter up to 100 characters only."},
+                        iParty2Add3: {maxlength: " * Please enter up to 50 characters only."},
+                        iParty2Pin: {minlength: " * Pin number must be 6 digits."},
+                        iParty2Pan: {pan: " * Please enter a valid PAN number.",
+                                    required:" * For trnasactions above 200000 PAN is required."},
+                        iStampPdBy: {required: " * Please enter a name for Stamp duty paid by .",
+                                    maxlength: " * Please enter up to 50 characters only."},
+                        iStampAmt: {required: " * Please enter Stamp duty Amount .",
+                            digits: " Please enter valid Stampduty amount without paise."},
+                        iSICessAmt: {required: " * Please enter Social Infrastructure Cess Amount .",
+                            digits: " Please enter valid Social Infrastructure Cess Amount without paise."},
+                        iPinCd: {required: " * Please enter pin code.",
+                            minlength: " * Pin number must be 6 digits."},
+                        iPmtMode: {required: " * Please enter mode for payment ."},
+                        iPmtInstNo: {required: " * Please insert Payment Reference No."},
+                        iPmtInstDt: {required: " * Please insert Payment Transaction Date."},
+                        iPmtInstBank: {required: " * Please insert Payment Bank Name."},
+                        iPmtInstBankBrn: {required: " * Please insert Payment Bank Branch Name."},
+                        iPmtInstAcntNo: {required: " * Please insert Payment Bank Account No."}
+                    },
+                    //------- new ---------------
+                    submitHandler: function(form) 
+                    {
+                        $('.errBox').html('');
+                        //-----pincd
+
+                        //-----PropertyArea
+
+                        PayModeSelect();
+                        
+                        if ($('#iPmtMode').val() == "ATOM" || $('#iPmtMode').val() == "RAZORPAY" || $('#iPmtMode').val() == "HDFC")
+                        {
+                            calcChargAmt()
+                        };
+
+                        if ( parseInt($("#iTotAmt").val()) <= 0 && ($('#iPmtMode').val() == "ATOM" || $('#iPmtMode').val() == "RAZORPAY" || $('#iPmtMode').val() == "HDFC"))
+                        {   
+                            alert("Please Check Total Amount. It should be Greater than Zero.");
+                            $("#iStampAmt").focus();
+                            enableButtons();
+                            return false;
+                        }
+
+                        $('#btnConfirm').hide();
+                        $('#btnModify').hide();
+                            
+                        //if (confirm("Are you Sure you want to Save these Details ?"))
+                        if (confirm("I hereby declare that all entered details have been verified and found to be correct."))
+                        {
+                            vConfirmationFlag = true;
+                        }
+                        else
+                        {
+                            vConfirmationFlag = false;
+                            enableButtons();
+                            return false;
+                        }
+
+                        $('.errBox').html('').fadeOut();
+                        if (vConfirmationFlag)
+                        {
+                            enableButtons();
+                            $("#formWrapper").addClass("form-wrapper");
+                            $('.wrap-message-box').show();
+                            $('#trloader').show();
+                            $('#trBtnCntl').hide();
+                            form.submit();
+                        }
+                        else
+                        {
+                            enableButtons();
+                            return false;
+                        }
+
+                    }//submitHandler
+                    //-------- new end ------------
+                });
+                /*End Jquery Validation*/
+                /* End of validate*/
+
+                //$("#iPropDesc").focus();
+                
+                $.validator.addMethod("chkSysDate", function(value) {
+                    var CDate = new Date();
+                    if (Date.parse(formatDate(value)) > CDate)
+                    {
+                        return false;
+                    }
+                    return true;
+                }, "Selected date cannot be greater than current Date , Please select a valid date.");
+                
+                $.validator.addMethod("checkDateFormat", function(value, element) {
+                    return this.optional(element) || /^\d\d?-\w\w\w-\d\d\d\d/.test(value);
+                }, "Please specify the date in DD-MMM-YYYY format");
+                
+
+                $.validator.addMethod("chkConsPrice", function(value) {
+                    var vConPrice = $('#iConPrice').val();
+
+    
+                    return true;
+                }, "Consideration Price for this Article Cannot be 0(Zero).");
+
+                $.validator.addMethod("chkGender", function(value) {
+                    var vStampAmt = $('#iStampAmt').val();
+    
+                    return true;
+                }, "Gender is mandatory if the Stamp Duty amount is Rs. 501 and above, Please select Gender.");
+
+
+            $.validator.addMethod("checkAmtLimit", function(value)
+            {
+                var vPayMode = $('#iPmtMode').val();
+                var vStampAmt = $('#iStampAmt').val();
+                var vMinSDAmt = $('#iMinSDAmt').val();
+               
+                var vMinAutoSDAmt = $('#iCalcSDAmt').text();
+                
+
+                    vPayMode = "SELF";
+
+                if (parseInt(vStampAmt) <= 0 )
+                {
+                    $.validator.messages.checkAmtLimit = "Stampduty Amount can not be less or equal to 0 (zero) . Please Enter Amount Accordingly.";
+                    return false;                    
+                }
+                
+                if(vMinAutoSDAmt > 0  && "CH" == "PB" && (parseInt(vStampAmt) < parseInt(vMinAutoSDAmt)) ){  //added by apoorva on 06-Mar-2025
+                   $.validator.messages.checkAmtLimit = "Stampduty Amount can not be less than minimum auto calculated allowed limit "+vMinAutoSDAmt+" . Please Enter Amount Accordingly.";
+                    return false;       
+                }
+              
+                //alert(vStampAmt + " : vStampAmt - vMinSDAmt : " + vMinSDAmt)
+                if (parseInt(vStampAmt) < parseInt(vMinSDAmt))
+                {
+                    $.validator.messages.checkAmtLimit = "Stampduty Amount can not be less than minimum allowed limit "+vMinSDAmt+" . Please Enter Amount Accordingly.";
+                    return false;                    
+                }
+
+                
+                
+               
+                var outMsg = "";
+                var milliseconds = new Date().getTime();
+                $.ajax({async: false, url: "/OnlineStamping/JSP/OlnGetSttModePmtLimit.jsp?iUsr=compitcom&iSttCd=CH&iMode="+vPayMode+"&iPID=ESI&iAmt=" + vStampAmt,data: {'time': milliseconds.toString()}}).done(function(result)
+                {
+                    outMsg = $.trim(result).toString();
+                });
+
+                if (outMsg != "DONE")
+                {
+                    $.validator.messages.checkAmtLimit = outMsg;
+                    return false;
+                }
+                else
+                {
+                    $.validator.messages.checkAmtLimit = "";
+                    return true;
+                }
+            }, $.validator.messages.checkAmtLimit);
+
+
+            $.validator.addMethod("checkCessAmtLimit", function(value)
+            {
+                var vStampAmt = $('#iStampAmt').val();
+                var vSICessAmt = $('#iSICessAmt').val();
+                var vPayMode = $('#iPmtMode').val();
+                var vPybAmt = 0;
+
+                if ((vStampAmt === "") || (parseInt(vStampAmt) <= 0 ))
+                {
+                    $.validator.messages.checkCessAmtLimit = "StampDuty Amount can not be 0. Please Enter Stamp Duty Amount First.";
+                    return false;                    
+                }
+                
+                /* Commented by Bhushan on 18May2023 Mail by Rufina on 18May2023
+                 * 
+                 * if (parseInt(vStampAmt) < parseInt(vSICessAmt))
+                {
+                    $.validator.messages.checkCessAmtLimit = "Social Infrastructure Cess Amount can not be more than Stamp Duty Amount. Please Enter Amount Accordingly.";
+                    return false;                    
+                }
+                */
+               
+                var vPybAmt = parseFloat(vStampAmt) + parseFloat(vSICessAmt);
+                $("#iPybAmt").val(vPybAmt);
+        
+                var outMsg = "";
+                var milliseconds = new Date().getTime();
+                $.ajax({async: false, url: "/OnlineStamping/JSP/OlnGetSttModePmtLimit.jsp?iUsr=compitcom&iSttCd=CH&iMode="+vPayMode+"&iPID=ESI&iAmt=" + vPybAmt,data: {'time': milliseconds.toString()}}).done(function(result)
+                {
+                    outMsg = $.trim(result).toString();
+                });
+
+                if (outMsg != "DONE")
+                {
+                    outMsg = "Total Payable Amount is Not as per Limit. " + outMsg;
+                    //$.validator.messages.checkCessAmtLimit = outMsg;
+                    $.validator.messages.checkCessAmtLimit = "";
+                    $("#SICessPybErr").html(outMsg);
+                    return false;
+                }
+                else
+                {
+                    $.validator.messages.checkCessAmtLimit = "";
+                    $("#SICessPybErr").html("");
+                    return true;
+                }
+            }, $.validator.messages.checkCessAmtLimit);
+
+
+
+            $.validator.addMethod("chkInstDate", function(value) {
+
+                var xDate = value;
+                var l3Date = new Date();
+                l3Date.setMonth(new Date().getMonth() - 3);
+                if (Date.parse(formatDate(xDate)) < l3Date)
+                {
+                    return false;
+                }
+
+                var N1Date = new Date();
+                N1Date.setMonth(new Date().getMonth() + 1);
+                if (Date.parse(formatDate(value)) > N1Date)
+                {
+                    return false;
+                }
+                return true;
+            }, "Instrument date cannot be less than last three months and greater than next one month. Please enter a valid Instrument date.");
+
+            jQuery.validator.addMethod("alphaNum", function(value, element) {
+                return this.optional(element) || /^[a-z0-9_ \-]+$/i.test(value);
+            }, "Only Alphanumerics, spaces, underscores & dashes are allowed.");
+            /* End validator function */
+
+            var instFlag = '';
+            $.validator.addMethod("chkInstNumber", function(value) {
+
+                var x = value;
+                var vInstType = $('#iPmtMode').val();
+                var vPmtAmt = $('#iCInsAmt').val();
+
+                if (vInstType === "RTGS" || vInstType === "NEFT" || vInstType === "TRANSFER")
+                {
+                    var valid = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                    var nums = "0123456789";
+                    var onlyNum = "yes"
+                    var temp;
+                    for (var i = 0; i < value.length; i++)
+                    {
+                        temp = "" + value.substring(i, i + 1);
+                        if (valid.indexOf(temp) == "-1")
+                        {
+                            value = value.substring(0, i);
+                            instFlag = 1;
+                            return false;
+                        }
+                    }
+                    value = x;
+                    for (var i = 0; i < value.length; i++)
+                    {
+                        temp = "" + value.substring(i, i + 1);
+                        if (nums.indexOf(temp) == "-1")
+                        {
+                            onlyNum = "no";
+                            break;
+                        }
+                    }
+                    if (vInstType === "NEFT")
+                    {
+                        onlyNum = "no";
+                    }
+
+                    /*if (onlyNum === "yes") {
+                        instFlag = 2;
+                        return false;
+                    }*/
+
+                    //if (vInstType === "RTGS" && (parseInt(x.length) > 22 || parseInt(x.length) < 16)) {
+                    //if (vInstType === "RTGS" && (parseInt(x.length) != 22)) {
+                    if (vInstType === "RTGS" && (parseInt(x.length) > 24 || parseInt(x.length) < 12)) {
+                        instFlag = 3;
+                        return false;
+                    }
+                    if (vInstType === "RTGS" && (parseInt(vPmtAmt) < 200000))
+                    {
+                        instFlag = 8;
+                        return false;
+                    }
+
+                    //if (vInstType === "NEFT" && (parseInt(x.length) > 22 || parseInt(x.length) < 1)) {
+                    //if (vInstType === "NEFT" && (parseInt(x.length) != 16)) {
+                    if (vInstType === "NEFT" && (parseInt(x.length) > 22 || parseInt(x.length) < 8)) { //Max limit changed from 16 to 22 by apoorva 18Jun24
+                        instFlag = 4;
+                        return false;
+                    }
+                    if (vInstType === "TRANSFER" && (parseInt(x.length) > 30 || parseInt(x.length) < 6)) {
+                        instFlag = 7;
+                        return false;
+                    }
+
+                    return true;
+                }
+                // for Instrument Type CHEQUE and DD
+                else
+                {
+                    if (x != null && x != "")
+                    {
+                        if (parseInt(value.length) > 6 || parseInt(value.length) < 2)
+                        {
+                            instFlag = 5;
+                            return false;
+                        }
+
+                        var anum = "";
+                        if (x.indexOf(".") != -1 && x.indexOf(".") != 0)
+                            anum = /(^\d+$)|(^\d+\.\d+$)/
+                        else if (x.indexOf(".") == 0)
+                        {
+                            x = "0" + x;
+                            anum = /(^\d+$)|(^\d+\.\d+$)/
+                        }
+                        else
+                            anum = /(^\d+$)/
+
+                        if (anum.test(x))
+                            return true;
+                        else
+                        {
+                            instFlag = 6;
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            }, dispInstError);
+
+            function dispInstError()
+            {
+                switch (instFlag)
+                {
+                    case 1:
+                        return "Please type valid  alphnumeric characters only.";
+                        break;
+                    case 2:
+                        return "You have only numbers. Only Numbers are not allowed.";
+                        break;
+                    case 3:
+                        return "UTR Number length should be upto 24 Characters, Minimum 12 Characters. Please enter again.";
+                        break;
+                    case 4:
+                        return "Instrument Number length should be upto 22 Characters, Minimum 8 Characters. Please enter again."; //apoorva changes 18Jun24
+                        break;
+                    case 5:
+                        return "Instrument Number length should be upto 6 Characters, Minimum 2 characters. Please enter again.";
+                        break;
+                    case 6:
+                        return "Please type numeric data.";
+                        break;
+                    case 7:
+                        return "Instrument Number length should be upto 24 Characters, Minimum 6 characters. Please enter again.";
+                        break;
+                }
+            }//dispInstError
+
+            /* Custom validator function */
+                                  
+            $.validator.addMethod("checkPartyName1", function(value)
+            {     
+                var outMsg = "";
+                var milliseconds = new Date().getTime();
+                
+                var vPar = window.btoa("compitcom|CH|1ST|"+value+"|"+milliseconds);
+                
+                $.ajax({async: false, url: "/OnlineStamping/JSP/OlnEsiChkPartyName.jsp?iPar=" + vPar, data: {'time': milliseconds.toString()}}).done(function(result)
+                {
+                    outMsg = $.trim(result).toString();
+                });
+
+                if (outMsg.includes("BLOCK|"))
+                {
+                    alert(outMsg.replace("BLOCK|",""));
+                    this.value = "";
+                    $.validator.messages.checkPartyName1 = "Please Enter Valid Party Name.";
+                    return false;
+                }
+                else if (outMsg.includes("ALERT|"))
+                {
+                    alert(outMsg.replace("ALERT|",""));
+                    $.validator.messages.checkPartyName1 = "";
+                    return true;     
+                }
+                else
+                {
+                    $.validator.messages.checkPartyName1 = "";
+                    return true;
+                }
+            }, $.validator.messages.checkPartyName1);
+
+            $.validator.addMethod("checkPartyName2", function(value)
+            {     
+                var outMsg = "";
+                var milliseconds = new Date().getTime();
+                var vPar = window.btoa("compitcom|CH|2ND|"+value+"|"+milliseconds);
+                
+                $.ajax({async: false, url: "/OnlineStamping/JSP/OlnEsiChkPartyName.jsp?iPar=" + vPar, data: {'time': milliseconds.toString()}}).done(function(result)
+                {
+                    outMsg = $.trim(result).toString();
+                });
+
+                if (outMsg.includes("BLOCK|"))
+                {
+                    alert(outMsg.replace("BLOCK|",""));
+                    this.value = "";
+                    $.validator.messages.checkPartyName2 = "Please Enter Valid Party Name.";
+                    return false;
+                }
+                else if (outMsg.includes("ALERT|"))
+                {
+                    alert(outMsg.replace("ALERT|",""));
+                    $.validator.messages.checkPartyName2 = "";
+                    return true;     
+                }
+                else
+                {
+                    $.validator.messages.checkPartyName2 = "";
+                    return true;
+                }
+            }, $.validator.messages.checkPartyName2);
+
+            $.validator.addMethod("alphaNumeric", function(value, element) {
+                return this.optional(element) || /^[a-z0-9\s]+$/i.test(value);
+            }, " * Only alpha numeric characters are allowed.");
+
+            $.validator.addMethod("chkPropDesc", function(value, element) {
+                return this.optional(element) || /^[a-zA-Z0-9.,?:;!@#$()+*-/ ]+$/i.test(value);
+            }, " * Only alpha numeric characters and special characters .,?:;!@#$()+*-/ are allowed.");
+
+            $.validator.addMethod("chkPropDescLength", function(value) {
+
+                    if (value.length < 30 || value.length > 100 )  {
+                        return false;
+                    }
+                    else
+                    {
+                        return true;
+                    }
+                                        
+                                        
+                return true;
+
+                }, " * Please enter more than 30 characters.");
+
+
+            $.validator.addMethod("chkName", function(value, element) {
+                return this.optional(element) || /^[a-zA-Z0-9 ]+$/i.test(value);
+            }, " * Only alpha numeric characters are allowed.");
+
+
+            $.validator.addMethod("chkAddress", function(value, element) {
+                return this.optional(element) || /^[a-zA-Z0-9.,:/ -]+$/i.test(value);
+            }, " * Only alpha numeric characters and special characters .:/- are allowed.");
+
+            $.validator.addMethod("pincode", function(value, element) {
+                return this.optional(element) || /^[1-9][0-9]+$/.test(value);
+            }, " * Please enter valid pincode.");
+
+            $.validator.addMethod("onlyDigits", function(value, element) {
+                return this.optional(element) || /^[0-9\s]+$/.test(value);
+            }, " * Only digits are not allowed.");
+
+            $.validator.addMethod("alpha", function(value, element) {
+                return this.optional(element) || /^[a-z]+$/i.test(value);
+            }, " * Only alphabets are allowed.");
+
+            $.validator.addMethod("alphaNum", function(value) {
+
+                var valid = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+                var nums = "0123456789";
+                var temp;
+                var ok = "yes";
+                var onlyNum = "yes"
+                for (var i = 0; i < value.length; i++) {
+                    temp = "" + value.substring(i, i + 1);
+                    if (valid.indexOf(temp) == "-1")
+                    {
+                        ok = "no";
+                        value = value.substring(0, i);
+                        break;
+                    }
+                }
+                for (var i = 0; i < value.length; i++) {
+                    temp = "" + value.substring(i, i + 1);
+                    if (nums.indexOf(temp) == "-1")
+                    {
+                        onlyNum = "no";
+                        //field.value = field.value.substring(0, i);
+                        break;
+                    }
+                }
+                if (ok == "no") {
+                    return false;
+                }
+                else if (onlyNum == "yes") {
+                    return false;
+                }
+                return true;
+            }, " * Only alpha-numeric characters are allowed.");
+
+            $.validator.addMethod("PAN", function(value) {
+                var pan = /^([A-Za-z]{3})+([CcPpHhFfAaTtBbLlJjGg]{1})+([A-Za-z]{1})+([0-9]{4})+([A-Za-z]{1})$/;
+                if (value != "")
+                {
+                    if (!(value.match(pan)))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }, " * PAN no. should be in correct format.");
+
+            /* End validator function */
+            $.validator.addMethod("validateAmount", function(value) {
+                var errFlag = true;
+                var errDigitFlag = true;
+                var vValue = value;
+                if ($.trim(vValue).length < 1)
+                {
+                    errFlag = false;
+                    $(this).addClass('errLbl');
+                    $(this).focus();
+                }
+                else
+                {
+                    $(this).removeClass('errLbl');
+                }
+
+                if (isNaN($.trim(vValue)) || $.trim(vValue) < 0 || (vValue % 1 != 0))
+                {
+                    errDigitFlag = false;
+                    $(this).addClass('errLbl');
+                    $(this).focus();
+                }
+                else
+                {
+                    $(this).removeClass('errLbl');
+                }
+
+                if (!errFlag)
+                {
+                    //$('.errBox').append('* Amount is required.<br />').show();
+                    return false;
+                }
+                if (!errDigitFlag)
+                {
+                    //$('.errBox').append('* Amount must be non zero digit.<br />').show();
+                    return false;
+                }
+                return errFlag || errDigitFlag;
+            }, "Amount must be a valid digit.");//validateAmount
+
+            $.validator.addMethod("vrifyPdBy", function(value)
+            {
+                var fParty1 = $('#iParty1Nm').val();
+                var fParty2 = $('#iParty2Nm').val();
+
+                if (value.toUpperCase() === fParty1.toUpperCase() || value.toUpperCase() === fParty2.toUpperCase())
+                {
+                    return true;
+                }
+                return false;
+            }, "Paid By user must be either First Party or Second Party.");//vrifyPdBy
+
+            $('input[name="iConPrice"]').on('blur', function() {
+                var vStmpAmt = document.getElementById("iConPrice");
+
+                var vValue = vStmpAmt.value;
+                if ($.trim(vValue).length < 1)
+                {
+                    return false;
+                }
+
+                if (isNaN($.trim(vValue)) || $.trim(vValue) < 1 || (vValue % 1 != 0))
+                {
+                    return false;
+                }
+                var result = Math.round(vValue * Math.pow(10, 2)) / Math.pow(10, 2);
+                vValue = result;
+                convertNumberToWords(vStmpAmt);
+                return true;
+            });
+
+            $('input[name="iStampAmt"]').on('blur', function() {
+                var vStmpAmt = document.getElementById("iStampAmt");
+                var vValue = vStmpAmt.value;
+                if ($.trim(vValue).length < 1)
+                {
+                    return false;
+                }
+
+                if (isNaN($.trim(vValue)) || $.trim(vValue) < 1 || (vValue % 1 != 0))
+                {
+                    return false;
+                }
+                var result = Math.round(vValue * Math.pow(10, 2)) / Math.pow(10, 2);
+                vValue = result;
+                
+                if (tmpSDAmt == 0 && tmpSDAmt != vValue)
+                {
+                    tmpSDAmt = vValue;
+                    convertNumberToWords(vStmpAmt);
+                }
+
+                var vCurChg = "0";
+                var vServChg = "0";
+
+                var vPybAmt = parseFloat($("#iStampAmt").val()) + parseFloat(vCurChg) + parseFloat(vServChg);;
+                $("#iPybAmt").val(vPybAmt);
+                PayModeSelect();
+
+
+                return true;
+            });
+
+            //pincode : ajax -------------------------
+
+            $('input[name="iPinCd"]').on('keyup change', function() {  //To Remove err msg
+                $('#pincderr').html("");
+            });
+
+            $('input[name="iPinCd"]').on('blur', function() {
+                /*if (!PinCdValidation())
+                {
+                    return false;
+                }*/
+
+                $('#pincderr').html("");
+                var vPinCdInput = document.getElementById("iPinCd").value;
+
+                if (vPinCdInput.length === 6)
+                {
+
+                    var milliseconds = new Date().getTime();
+                    $.ajax({async: false, url: "/OnlineStamping/JSP/OlnEsiGetSttPinCdRange.jsp?iUsr=compitcom&iSttCd=CH&iPinCdVal="+vPinCdInput,data: {'time': milliseconds.toString()}}).done(function(result)
+                    {
+                        if ($.trim(result).toString() === "Y")
+                        {
+                            return true;
+                            $('#pincderr').html("");
+                        }
+                        else
+                        {
+                            $('#pincderr').html("Please enter valid Pin Code Range.");
+                            return false;
+                        }
+                    });
+                 }
+                });
+        });// Document Ready
+
+        function changeSPDist()
+        {
+            var vspDistCd = document.getElementById("iSPDistCd").value;
+            var vEsiAcntCd = document.getElementById("iEsiAcntCd").value;
+            var milliseconds = new Date().getTime();
+            $.ajax({async: false, url: "/OnlineStamping/JSP/OlnEsiGetSPSROList.jsp?iUsr=compitcom&iSttCd=CH&iDistCd="+vspDistCd+"&iAcntCd="+vEsiAcntCd,data: {'time': milliseconds.toString()}}).done(function(result)
+            {
+                if ($.trim(result).toString().length > 1)
+                {
+                    $('#divSPDistSROLst').html($.trim(result));
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            });        
+            return true;
+        }//changeSPDist;
+
+            function PinCdValidation()
+            {
+                $('#pincderr').html(""); // 2014_08_21
+                $("#iAstric").prop("disabled", false); //To Remove Astric sign
+                var PinCdAvlb = document.getElementById("iPinCd");
+                if (PinCdAvlb.value == null) {
+                    $("#iAstric").prop("disabled", true);
+                    return true;
+                }
+
+                var vMinLimtAmt = 0;
+                var vStampAmtInput = document.getElementById("iStampAmt");
+                var vStampAmtVal = vStampAmtInput.value;
+
+                if (vStampAmtVal < vMinLimtAmt)
+                {
+                    $("#iAstric").prop("disabled", true);
+                    return true;
+                }
+                else
+                {
+                    var vPinCdInput = document.getElementById("iPinCd");
+                    var vPinCdVal = vPinCdInput.value;
+                    if ($.trim(vPinCdVal).length < 6)
+                    {
+                        return false;
+                    }
+                    if (isNaN($.trim(vPinCdVal)) || $.trim(vPinCdVal) < 1 || (vPinCdVal % 1 != 0))
+                    {
+                        return false;
+                    }
+                    //Un Wanted CODE
+                    /*
+                    if ($.trim(vPinCdVal).length == 6) {
+                        //ajax-----------
+                        var vLimitChk = true;
+                        var milliseconds = new Date().getTime();
+
+                        var flag = 1;
+                        $.ajax({async: false, url: "<!--%=request.getContextPath()%-->/JSP/OlnEsiGetSttPinCdRange.jsp?iUsr=<!--%=vUsr%-->&iSttCd=<!--%=vSttCd%-->&iPinCdVal=" + vPinCdVal, data: {'time': milliseconds.toString()}}).done(function(result)
+                        {
+                            if ($.trim(result).toString() === 'Y')
+                            {
+                                //$('#pincderr').html("valid pin code.");
+                                flag = 1;
+                            }
+                            else {
+                                $('#pincderr').html("Please enter valid Pin Code Range.");
+                                flag = 0;
+                            }
+
+                        });
+                        //-----------ajax
+                        if (flag == 0)
+                        {
+                            return false;
+                        } else {
+                            return true;
+                        }
+                    }//if
+                    */
+                    //Un Wanted CODE
+                }//else
+            }//PinCdValidation
+            //------------------------- pincode : ajax
+
+            function PropAreaValidation()
+            {
+                var vPropAreaVal = $("#iPorpArea").val();
+                
+                if (vPropAreaVal == "0")
+                {
+                    $("#propAreaErro").html("Please Select Area of Property.");
+                    return false;
+                }
+                else if (vPropAreaVal == "Acre-Kanal-Marla-Sarsahi")
+                {
+                    if ( $("#iPAAcre").val() === "" && $("#iPAKanal").val() === "" && $("#iPAMarla").val() === "" && $("#iPASarsahi").val() === ""  )
+                    {
+                        $("#propAreaErro").html("Please Enter values for Acre-Kanal-Marla-Sarsahi.");
+                        return false;
+                    }                        
+                }
+                else if (vPropAreaVal == "Bigha-Bishwa-Biswasi")
+                {
+                    if ( $("#iPABigha").val() === "" && $("#iPABishwa").val() === "" && $("#iPABiswasi").val() === "" )
+                    {
+                        $("#propAreaErro").html("Please Enter values for Bigha-Bishwa-Biswasi.");
+                        return false;
+                    }                                            
+                }
+                else if (vPropAreaVal == "Square Feet")
+                {
+                    if ( $("#iPASquareFeet").val() === "")
+                    {
+                        $("#propAreaErro").html("Please Enter values for Square Feet.");
+                        return false;
+                    }                   
+                }
+                else if (vPropAreaVal == "Square Yard")
+                {
+                    if ( $("#iPASquareYard").val() === "")
+                    {
+                        $("#propAreaErro").html("Please Enter values for Square Yard.");
+                        return false;
+                    }                                       
+                }
+                else if (vPropAreaVal == "Square Meters")
+                {
+                    if ( $("#iPASquareMeters").val() === "")
+                    {
+                        $("#propAreaErro").html("Please Enter values for Square Meters.");
+                        return false;
+                    }                                                           
+                }
+                else
+                {
+                    return true;
+                }
+                return false;
+            }//PropAreaValidation()
+
+            function calcChargAmt()
+            {
+                var vUsrTmp = "compitcom";
+                //var vPayValue = $("#iStampAmt").val();
+                var vPayValue = $("#iPybAmt").val();
+                var ObjPayMode = document.getElementById("iPmtMode");
+                var vPayMode = document.getElementById("iPmtMode").value;
+
+                if ((parseInt(vPayValue) < 0) || parseInt(vPayValue) != vPayValue)
+                {
+                    vPayValue = 0;
+                }
+
+                var vTotAmt = 0;
+                document.getElementById("iChg").value = "";
+                document.getElementById("iTotAmt").value = "";
+
+                var milliseconds = new Date().getTime();
+
+                //if (vPayMode == "NETBANK" ||vPayMode == "DEBITCARD" ||vPayMode == "CRCARD" ||vPayMode == "DRCARD" ||vPayMode == "IMPS")
+                if (vPayMode == "ATOM" || vPayMode == "RAZORPAY" || vPayMode == "HDFC")
+                {
+                    if ($.trim(vPayMode) !== "" || vPayValue > 0)
+                    {
+                        $.ajax({url: "/OnlineStamping/JSP/OlnGetChgAmt.jsp?iUsr=" + vUsrTmp + "&iChgType=" + vPayMode + "&iAmt=" + vPayValue, async: false, data: {'time': milliseconds.toString()}}).done(function(result)
+                        {
+
+                            document.getElementById("iChg").value = $.trim(result);
+                            vTotAmt = parseInt(vPayValue) + parseFloat($.trim(result));
+                            document.getElementById("iTotAmt").value = vTotAmt;
+                            $('#iTotAmt').addClass('InfoLbl');
+                            $('#iChg').addClass('InfoLbl');
+                        });
+                    }
+                }
+                if ($("#iChg").val()=="0")
+                {
+                    $("#iChgMsg").html("Slabwise Charges will be deducted by Payment Gateway,Please check above note for Charges.");
+                }
+                else
+                {
+                    $("#iChgMsg").html("");
+                }
+
+                //------
+                var vPmtMode = document.getElementById("iPmtMode").value;
+                if (vPmtMode == "CASH")
+                {
+                    document.getElementById("tr_stmpType").style.visibility = "hidden";
+                }
+                else
+                {
+                    document.getElementById("tr_stmpType").style.visibility = "visible";
+                }
+                //-------
+                return false;
+            }//calcChargAmt
+
+            function PayModeSelect()
+            {
+
+                var vPmtMode = document.getElementById("iPmtMode").value;
+
+                if (vPmtMode == "CASH")
+                {
+                    document.getElementById("tr_stmpType").style.visibility = "hidden";
+                }
+                else if (vPmtMode == "NEFT" || vPmtMode == "RTGS")
+                {
+                    document.getElementById("tr_stmpType").style.visibility = "visible";
+                }
+                else
+                {
+                    document.getElementById("tr_stmpType").style.visibility = "visible";
+                    calcChargAmt();
+                }
+                return false;
+
+            }//PayModeSelect
+            
+            
+            function makeNonEdit()
+            {
+                var validator = $( "#frmSubmisson" ).validate();
+                if (validator.form())
+                {
+                    $(':input').prop('disabled', true);
+                    $('#btn_sub').hide();
+                    $('#btnClear').hide();
+                    $('#btnBack').hide();
+                    $('#btnConfirm').show();
+                    $('#btnConfirm').prop('disabled', false);
+                    $('#btnModify').show();
+                    $('#btnModify').prop('disabled', false);               
+                }
+                else
+                {
+                    return false;
+                }
+            }//makeNonEdit
+
+
+            function enableButtons()
+            {
+                $('#btnConfirm').hide();
+                $('#btnModify').hide();
+
+                $(':input').prop('disabled', false);
+                $('#btn_sub').show();
+                $('#btn_sub').prop('disabled', false);
+                $('#btnClear').show();
+                $('#btnClear').prop('disabled', false);
+                $('#btnBack').show();
+                $('#btnBack').prop('disabled', false);
+                
+            }//enablebtn
+
+
+            function confirmBtn()
+            {
+                $('#btnConfirm').hide();
+                $('#btnModify').hide();
+                $("#frmSubmisson").submit();
+            }//confirmBtn
+
+            function changeRadioRegDoc()
+            {
+                $("#iRegDoc").val($("input[name='iRegDocOpt']:checked").val());
+            }//changeRadioRegDoc
+
+
+            function changeRadio1ST()
+            {
+
+                $('#iParty1Nm').val($('#iPurchNm').val());
+                $('#iParty1Add1').val($('#iUsrAdd1').val());
+                $('#iParty1Add2').val($('#iUsrAdd2').val());
+                $('#iParty1Add3').val($('#iUsrAdd3').val());
+                $('#iParty1Pin').val($('#iUsrPin').val());
+                
+                $('#iParty1Nm').prop('readonly', true);
+                //alert("ADHAR");
+                if("ADHAR" !== "PANCR" ){ 
+                
+                $('#iParty1Add1').prop('readonly', true);
+                $('#iParty1Add2').prop('readonly', true);
+                $('#iParty1Add3').prop('readonly', true);
+                }
+                    
+                if("ADHAR" == "ADHAR" )
+                {
+                $('#iParty1Pin').prop('readonly', true);
+                } 
+                
+                    
+                $('#iParty2Nm').val('');
+                $('#iParty2Add1').val('');
+                $('#iParty2Add2').val('');
+                $('#iParty2Add3').val('');
+                $('#iParty2Pin').val('');
+                
+                $('#iParty2Nm').prop('readonly', false);
+                $('#iParty2Add1').prop('readonly', false);
+                $('#iParty2Add2').prop('readonly', false);
+                $('#iParty2Add3').prop('readonly', false);
+                $('#iParty2Pin').prop('readonly', false);
+                
+            }//changeRadio1ST
+            
+            function changeRadio2ND()
+            {
+                $('#iParty2Nm').val($('#iPurchNm').val());
+                $('#iParty2Add1').val($('#iUsrAdd1').val());
+                $('#iParty2Add2').val($('#iUsrAdd2').val());
+                $('#iParty2Add3').val($('#iUsrAdd3').val());
+                $('#iParty2Pin').val($('#iUsrPin').val());
+                
+                $('#iParty2Nm').prop('readonly', true);
+                
+                if("ADHAR" !== "PANCR"){ 
+                $('#iParty2Add1').prop('readonly', true);
+                $('#iParty2Add2').prop('readonly', true);
+                $('#iParty2Add3').prop('readonly', true);
+                }
+                
+                if("ADHAR" == "ADHAR" ){
+                $('#iParty2Pin').prop('readonly', true);
+                } 
+                
+                $('#iParty1Nm').val('');
+                $('#iParty1Add1').val('');
+                $('#iParty1Add2').val('');
+                $('#iParty1Add3').val('');
+                $('#iParty1Pin').val('');
+                
+                $('#iParty1Nm').prop('readonly', false);
+                $('#iParty1Add1').prop('readonly', false);
+                $('#iParty1Add2').prop('readonly', false);
+                $('#iParty1Add3').prop('readonly', false);
+                $('#iParty1Pin').prop('readonly', false);
+
+            }//changeRadio2ND
+            
+            
+        </script>
+    </head>
+    <body>
+        <div id="formWrapper">
+            <div class="wrap-message-box"><span class="wrap-message">Please wait , Processing....</span></div>
+            <form name="frmSubmisson" id="frmSubmisson" action="/OnlineStamping/sOlnSubmission" method="post">
+                <table width="95%" align="center" style="margin-bottom: 5px;">
+                    <tbody><tr>
+                        <td colspan="2" class="fHeader">:: Create Online Submission </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" align="center"><hr style=" margin-bottom: 15px;"></td>
+                    </tr>
+
+                    <tr>
+                        <td style="width:40%" class="fItemText">Purchased By<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" name="iPurchNm" id="iPurchNm" readonly="readonly" class="fItemInputBox" value="DARSHAN JAIN">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Purchaser Mobile<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iPurchMob" name="iPurchMob" readonly="readonly" class="fItemInputBox" value="8209427002">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Purchaser Mail<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iPurchMail" name="iPurchMail" readonly="readonly" class="fItemInputBox" value="admin@compitcom.in">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Article Description<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left"><span class="fItemInputLab">5 - Agreement or Memorandum of an agreement</span>
+                            <input type="hidden" style="width:60%;" id="iArticleDesc" name="iArticleDesc" value="5 - Agreement or Memorandum of an agreement">
+                            <input type="hidden" name="iArticleCd" class="fItemInputBox" value="CH-RG-5">
+                        </td>
+                    </tr>
+
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"></td></tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Option for e-Stamp Certificate Collection : </td>
+                        <td style="width:60%" align="left">
+
+                        <span class="fItemInputLab"><b>Self Printing of e-Stamping Certificate</b></span>
+
+
+                        </td>
+                    </tr>
+
+
+               
+
+
+                    
+
+
+                    
+
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"></td></tr>                    
+                    <tr>
+                        <td style="width:40%" class="fItemText">Description of Document <span style="color: #ff0000"> *</span>
+
+                            <br><span class="fInfoText">Minimum 30 Characters <br> Maximum up to 100 Characters.</span>
+                            
+                        </td>
+                        <td style="width:60%" align="left">
+                            <textarea name="iPropDesc" id="iPropDesc" class="fItemInputBox" rows="3" maxlength="100" style="width: 40%;text-transform: uppercase;"></textarea>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" class="err"><b>Note :</b> Please do not write any article name in description, enter correct details.</td>
+                    </tr>                      
+
+                    
+                        
+                    
+                        
+                    <tr>
+                        <td style="width:40%" class="fItemText">Consideration Price (Rs.)<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iConPrice" name="iConPrice" maxlength="12" value="0" class="fItemInputBox">
+                            <br>
+                            <label for="iConPrice" class="err"></label>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" class="err"><b>Note :</b> Please enter <b><i>0</i></b> (zero), if there is no consideration price.</td>
+                    </tr>
+                    
+                    
+                    
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"></td></tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">First Party Name<span style="color: #ff0000"> *</span>
+                        </td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%;text-transform: uppercase;" id="iParty1Nm" name="iParty1Nm" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" class="err"><b>Note :</b> Please enter Actual Name. Note that entering generic names like Borrower/ NA / Not applicable/ Not Available/ As per list attached / etc. will make this e-Stamp invalid.</td>
+                    </tr>                    
+                    <tr>
+                        <td style="width:40%" class="fItemText">Address line1</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%;" id="iParty1Add1" name="iParty1Add1" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Address line2</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty1Add2" name="iParty1Add2" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Address line3</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty1Add3" name="iParty1Add3" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Pin Code</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty1Pin" name="iParty1Pin" maxlength="6" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">PAN No</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%;text-transform: uppercase;" id="iParty1Pan" name="iParty1Pan" maxlength="10" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"></td></tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Second Party Name<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%;text-transform: uppercase;" id="iParty2Nm" name="iParty2Nm" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" class="err"><b>Note :</b> Please enter Actual Name. Note that entering generic names like Borrower/ NA / Not applicable/ Not Available/ As per list attached / etc. will make this e-Stamp invalid.</td>
+                    </tr>                      
+                    <tr>
+                        <td style="width:40%" class="fItemText">Address line1</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty2Add1" name="iParty2Add1" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Address line2</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty2Add2" name="iParty2Add2" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Address line3</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty2Add3" name="iParty2Add3" maxlength="50" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Pin Code</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iParty2Pin" name="iParty2Pin" maxlength="6" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">PAN No</td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%;text-transform: uppercase;" id="iParty2Pan" name="iParty2Pan" maxlength="10" class="fItemInputBox">
+                        </td>
+                    </tr>
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"></td></tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Stamp Duty Paid By <span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%;text-transform: uppercase;" id="iStampPdBy" name="iStampPdBy" maxlength="50" class="fItemInputBox" value="">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Gender of Paid By Person</td>
+                        <td style="width:60%" align="left">
+                            <select name="iPdByGen" id="iPdByGen" style="width:40%" class="fItemInputBox">
+                                <option selected="selected" label="---- Select Gender ----" value="">---- Select Gender ----</option>
+                                <option label="Male" value="GDR01">Male</option>
+                                <option label="Female" value="GDR02">Female</option>
+                                <option label="Jointly paid by male and female" value="GDR03">Jointly paid by male and female</option>
+                                <option label="Others" value="GDR04">Others</option>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" class="fItemText">Stamp Duty Amount(Rs.) <span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <input type="text" style="width:40%" id="iStampAmt" name="iStampAmt" maxlength="10" value="0" class="fItemInputBox" onblur="if (checkNumber1(this))
+                    roundNumber(this);">
+                        </td>
+                    </tr>
+                    
+                    <tr>
+                        <td colspan="2"><input type="hidden" id="iPybAmt" name="iPybAmt"></td>
+                    </tr>
+
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"></td></tr>
+                    <tr><td colspan="2" align="left" class="fHeaderSub">Payment Details</td></tr>
+                    <tr>
+                        <td style="width:30%" class="fItemText">Payment Mode Of Stamp Duty<span style="color: #ff0000"> *</span></td>
+                        <td style="width:60%" align="left">
+                            <select name="iPmtMode" id="iPmtMode" style="width:60%" class="fItemInputBox">
+
+                                <option selected="selected" label="Select Payment Mode" value="">Select Payment Mode</option>
+
+                            <option label="RAZORPAY Netbanking, Debit Cards (VISA / MASTER / Maestro / RuPay) and UPI" value="RAZORPAY">RAZORPAY Netbanking, Debit Cards (VISA / MASTER / Maestro / RuPay) and UPI</option>
+
+                            <option label="ATOM Netbanking, Debit Cards (VISA / MASTER / Maestro / RuPay) and UPI" value="ATOM">ATOM Netbanking, Debit Cards (VISA / MASTER / Maestro / RuPay) and UPI</option>
+
+                            </select>
+                        </td>
+                    </tr>
+                    <tr id="tr_stmpType" style="visibility: hidden"><td colspan="2" align="left">
+                            <table align="left" width="100%">
+                                <tbody><tr class="pmtRTGSNEFT">
+                                    <td style="width:30%" class="fItemText">
+                                        Payment Unique Reference <span style="color: #ff0000"> *</span></td>
+                                    <td style="width:60%" align="left">
+                                        <input type="text" style="width:40%;text-transform: uppercase" id="iPmtInstNo" name="iPmtInstNo" maxlength="30" class="fItemInputBox">
+                                        <br>
+                                        <label for="iPmtInstNo" class="err"></label>
+                                    </td>
+                                </tr>
+                                <tr class="pmtRTGSNEFT">
+                                    <td style="width:30%" class="fItemText">
+                                        Payment Date<span style="color: #ff0000"> *</span></td>
+                                    <td style="width:60%" align="left">
+                                        <input type="text" style="width:40%" id="iPmtInstDt" name="iPmtInstDt" maxlength="20" readonly="readonly" class="fItemInputBox">
+                                        <br>
+                                        <label for="iPmtInstDt" class="err"></label>
+                                    </td>
+                                </tr>
+                                <tr class="pmtRTGSNEFT">
+                                    <td style="width:30%" class="fItemText">
+                                        Paid By Bank <span style="color: #ff0000"> *</span></td>
+                                    <td style="width:60%" align="left">
+                                        <input type="text" style="width:40%;text-transform: uppercase" id="iPmtInstBank" name="iPmtInstBank" maxlength="60" class="fItemInputBox">
+                                        <br>
+                                        <label for="iPmtInstBank" class="err"></label>
+                                    </td>
+                                </tr>
+                                <tr class="pmtRTGSNEFT">
+                                    <td style="width:30%" class="fItemText">
+                                        Paid By Bank Branch <span style="color: #ff0000"> *</span></td>
+                                    <td style="width:60%" align="left">
+                                        <input type="text" style="width:40%;text-transform: uppercase" id="iPmtInstBankBrn" name="iPmtInstBankBrn" maxlength="60" class="fItemInputBox">
+                                        <br>
+                                        <label for="iPmtInstBankBrn" class="err"></label>
+                                    </td>
+                                </tr>
+                                <tr class="pmtRTGSNEFT">
+                                    <td style="width:30%" class="fItemText">
+                                        Paid By Bank Account No <span style="color: #ff0000"> *</span></td>
+                                    <td style="width:60%" align="left">
+                                        <input type="text" style="width:40%;text-transform: uppercase" id="iPmtInstAcntNo" name="iPmtInstAcntNo" maxlength="60" class="fItemInputBox">
+                                        <br>
+                                        <label for="iPmtInstAcntNo" class="err"></label>
+                                    </td>
+                                </tr>
+                                <tr class="pmtNBDC">
+                                    <td colspan="2" align="left">
+                                        <!-- div class="NoteBox">
+                                            Charges applicable for Net Banking is Rs.6/- per transaction and For Debit Card is Rs. 20/- per transaction
+                                            <br>Charges applicable are, Service tax: 12%, Edu cess: 0.24%, Higher edu cess: 0.12%, Gross Service tax:12.36%.
+                                            <br>Charges may change subject to State Government directives.
+                                        </div -->
+                                        <div class="NoteBox"><table width="99%" border="1px" style="border-collapse:collapse;"><tbody><tr><td colspan="3" text-align="left">PGSP Charges</td></tr><tr align="center" style="font-size:bold;"><td width="20%">Payment Mode</td><td width="40%">RAZORPAY</td><td width="40%">ATOM</td></tr><tr><td>UPI</td><td>NIL</td><td>Payment mode not available.</td></tr><tr><td>NetBanking</td><td>Rs..5/- per transaction except for HDFC Bank, <br>HDFC&nbsp;Bank Rs.11/-&nbsp;per transaction </td><td>Rs.5 per transaction</td></tr><tr><td>Debit Cards</td><td>For Rupay Debit Card NIL charges and other debit cards(Visa, Master and Maestro) Rs. 20/- for above Rs.2000 and 0.40% charges up to Rs.2000 are applicable on payable amount per transaction</td><td>For Rupay Debit Card NIL charges and other debit cards(Visa, Master and Maestro) 0 to INR 1006 Rs. 5/-, INR 1006.01 to INR 1992 Rs. 8/- and &gt; INR 1992 Rs. 18/- are applicable on payable amount per transaction.</td></tr><tr><td>Credit Cards</td><td>0.85% are applicable on payable amount per transaction.</td><td>Payment mode not available.</td></tr><tr><td>Credit Cards on UPI</td><td>2.15% are applicable on payable amount per transaction.</td><td>NA</td></tr></tbody></table><br><br>Applicable taxes as per the latest Government notification.<br>Taxes may change subject to Government directives.<br>Best viewed in Internet Explorer 9+,Mozilla Firefox 20+,Google Chrome 30+.</div>
+                                    </td>
+                                </tr>
+                                <tr class="pmtNBDC">
+                                    <!--td style="width: 30%; text-align: left" class="fItemText" >Charges Applicable </td --> 
+                                    <td style="width: 60%; text-align: left" colspan="2">
+                                        <input type="hidden" name="iChg" id="iChg" class="fItemInputBox" value="0">
+                                        <br><span id="iChgMsg" class="mand"></span>
+                                    </td>
+                                </tr>
+                                <tr class="pmtNBDC">
+                                    <!-- td style="width: 30%; text-align: left" class="fItemText" >Total Amount to Pay</td -->
+                                    <td style="width: 60%; text-align: left" colspan="2"> <input type="hidden" name="iTotAmt" id="iTotAmt" class="fItemInputBox" value="0"> </td>
+                                </tr>
+                            </tbody></table>
+                        </td></tr>
+                    <tr><td colspan="2" align="center"><hr style=" margin-top: 15px;"><hr></td></tr>
+                    <tr valign="center" align="center" id="trBtnCntl">
+                        <td colspan="2" align="center">
+                            <input type="button" value="Save" name="btn_sub" id="btn_sub" class="fSubmit" onclick="makeNonEdit();">
+                            <input type="reset" value="Clear" name="btnClear" id="btnClear" class="fSubmit">
+                            <input type="button" value="Back" name="btnBack" id="btnBack" class="fSubmit" onclick="window.location.replace('https://www.shcilestamp.com/OnlineStamping/JSP/OlnEsiCrtSubm.jsp?isid=110235219140_21081314202630108358');">
+                            <input id="btnModify" name="btnModify" type="button" value="Modify" class="fSubmit dn" onclick="enableButtons();">
+                            <input id="btnConfirm" name="btnConfirm" type="submit" value="Confirm" class="fSubmit dn">
+                            
+                        </td>
+                    </tr>
+                    <!--for spin animation-->
+                    <tr valign="center" align="center" id="trloader">
+                        <td colspan="2" style="align-content: center">
+                            <div class="loader" style="text-align:center;vertical-align:central;width:64px;height:50px;background:url('/OnlineStamping/images/loading1.gif') 50% 50% no-repeat transparent ;opacity: 0.8;">
+                            </div>
+                        </td>
+                    </tr>
+                </tbody></table>
+                <input type="hidden" name="iSttCd" value="CH">
+                <input type="hidden" name="iUsr" value="compitcom">
+                <input type="hidden" name="isid" value="110235219140_21081314202630108358">
+                <input type="hidden" name="iPid" value="ESI">
+                <input type="hidden" name="iSroAuth" value="">
+                <input type="hidden" name="iSroLocCd" value="">
+                <input type="hidden" name="iCollOpt" value="SELF">
+                <input type="hidden" name="iMultiOpt" value="N">
+                <input type="hidden" name="iCashEnb" value="N">
+                <input type="hidden" name="iEsiCurEnb" value="N">
+                <input type="hidden" name="iCurAdd1" value="">
+                <input type="hidden" name="iCurAdd2" value="">
+                <input type="hidden" name="iCurLm" value="">
+                <input type="hidden" name="iCurCity" value="">
+                <input type="hidden" name="iCurPin" value="">
+                <input type="hidden" name="iEsiServChgEnb" id="iEsiServChgEnb" value="N">
+                <input type="hidden" name="iEsiSelfPrintEnb" id="iEsiSelfPrintEnb" value="Y">
+                <input type="hidden" name="iEsiSPDistSroEnb" id="iEsiSPDistSroEnb" value="N">
+                
+                <input type="hidden" name="iEsiNrAccLocEnb" id="iEsiNrAccLocEnb" value="N">
+                <input type="hidden" name="iEsiNrBrnLocEnb" id="iEsiNrBrnLocEnb" value="N">
+                                
+                <input type="hidden" name="iEsiSPAcntCd" id="iEsiSPAcntCd" value="ch-self">
+                <input type="hidden" name="iEsiNrBrnAcntCd" id="iEsiNrBrnAcntCd" value="-">
+                <input type="hidden" name="iEsiNrACCAcntCd" id="iEsiNrACCAcntCd" value="-">
+                <input type="hidden" name="iEsiAcntCd" id="iEsiAcntCd" value="ch-self">
+                
+                <input type="hidden" id="iMinSDAmt" name="iMinSDAmt" value="1">
+                <input type="hidden" id="iPropAreaReq" name="iPropAreaReq" value="false">
+                <input type="hidden" id="iSICessReq" name="iSICessReq" value="false">
+                <input type="hidden" id="iRegDoc" name="iRegDoc" value="-">
+                <input type="hidden" id="iUsrAdd1" name="iUsrAdd1" value=",ram krishana colony">
+                <input type="hidden" id="iUsrAdd2" name="iUsrAdd2" value="mandawer">
+                <input type="hidden" id="iUsrAdd3" name="iUsrAdd3" value="Mahwa">
+                <input type="hidden" id="iUsrPin" name="iUsrPin" value="321609">
+                <input type="hidden" name="ipars" id="ipars" value="110235219140210826131458">
+                <input type="hidden" name="ipare" id="ipare" value="f053754a35cfc8ae61b44fc89cb30afb167f5d437f637adfc07194409ec49f4fbf8c0d98745fbfe163b72c8f9b1a4bfe5ab825e80d7030b520f04ae64db43e18">
+                
+            </form>
+            <br><br>
+        </div>
+    
+
+</body></html>

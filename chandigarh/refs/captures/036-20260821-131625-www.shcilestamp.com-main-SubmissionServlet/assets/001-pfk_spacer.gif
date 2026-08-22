@@ -1,0 +1,468 @@
+
+
+
+
+
+
+
+
+
+<html>
+<head>
+
+<title>India e-Stamping System</title>
+<!--<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">-->
+
+<meta HTTP-EQUIV="Cache-control" content="no-cache, no-store, must-revalidate">
+<meta HTTP-EQUIV="Pragma" content="no-cache">
+<meta HTTP-EQUIV="Expires" content="0">
+
+
+
+
+
+<style type="text/css">
+<!--
+body {
+	margin-left: 0px;
+	margin-top: 0px;
+	margin-right: 0px;
+	margin-bottom: 0px;
+}
+
+.style1 {
+	color: #FFFFFF
+}
+-->
+<!-- CR09_10042015_Password Reset - added below code  -->
+body {
+
+	margin: 0px;
+	font-family:Verdana, Arial, Helvetica, sans-serif;
+	font-size: 13px;
+}
+
+.style1 {
+	color: #FFFFFF
+}
+
+.txt-link {
+	color : #FFFFFF;
+	font-family : Verdana, Arial, Helvetica, sans-serif;
+	font-size : 9px;
+}
+</style>
+<!-- CR09_10042015_Password Reset - end -->
+
+<script src="/trade/esi/html/js/popcalendar.js"></script>
+<script src="/trade/esi/html/js/commonvalidation.js"></script>
+<script src="/trade/esi/html/js/clas1.js"></script>
+
+<script language="javascript" type="text/javascript"> 
+
+
+
+var saltVal = "0593734c47891c352e632db8a06157d7";	
+	
+	function submitLoginForm(first_call)
+	{
+
+		if(checkEmptyFields())
+		{
+	
+	    var userUniqueId = document.loginForm.userId.value;
+	
+	    var pwd = document.loginForm.userPwd.value;
+	    
+	    if ( first_call &&  !g_key )
+
+   		 {
+
+		  var salt = hexToByteArray(saltVal);
+	      deriveKey(userUniqueId, salt); // Derive key
+		  setTimeout("submitLoginForm(false)",100);
+		  return;
+   	    }
+   		
+   	    if (!first_call && !g_key)
+   	    {
+   	    	
+   		   setTimeout("submitLoginForm(false)",100); // Wait for key
+   		   return;
+   	    }
+	
+    
+    
+
+	  
+	  
+	    var enc_pwd = byteArrayToHex(aesEncrypt(pwd, g_key)); // AES Encryption
+	  
+	    document.loginForm.refreshTab.value = saltVal;
+	    document.loginForm.userPwd.value = enc_pwd;
+		//document.loginForm.action = "/eStampIndia/useradmin/UserAdminLoginServlet?rDoAction=ValidateLogin"
+		// Use the server-built, URL-encoded action (may contain ;jsessionid)
+        document.loginForm.action = document.getElementById('loginActionUrl').value;
+	    document.loginForm.submit();
+
+		}
+	 
+		
+	}
+	
+	
+
+</script>
+<!--  CR09_10042015_Password Reset - Added for captcha implementation in Login page -->
+<script language="javascript" type="text/javascript">
+
+	function reloadImg(id) {
+ 
+		if(id == 'cap')
+		{
+		   var obj1 = document.getElementById(id);
+		
+		   var obj2 = document.getElementById('cap');
+	
+		}
+		if(id == 'cap1')
+				{
+					var obj1 = document.getElementById('cap');
+				   var obj2 = document.getElementById(id);
+				}	
+				
+		 var src1 = obj1.src;
+		
+		 var src2 = obj2.src;
+		 var pos1 = src1.indexOf('?');
+		 var pos2 = src2.indexOf('?');
+		   
+		   if (pos1 >= 0) {
+		      src1 = src1.substr(0, pos1);
+		   }
+		   if (pos2 >= 0) {
+			      src2 = src2.substr(0, pos2);
+			   }
+			
+		   var date = new Date();
+		   obj1.src = src1 + '?v=' + date.getTime()+'&action=ajax';
+		   obj2.src = src2 + '?v=' + date.getTime()+'&action=ajax';
+			
+		   return false;
+		} 
+	
+<!-- CR09_10042015_Password Reset - end -->	
+
+function refreshCaptcha() {
+    var img = document.getElementById('cap');
+    var base = img.getAttribute('data-base'); // this is the encoded base URL from the server
+    var sep = (base.indexOf('?') >= 0) ? '&' : '?';
+    img.src = base + sep + "action=refresh&_ts=" + Date.now();
+    return false;
+}
+	</script>
+
+<script language="javascript" type="text/javascript">
+
+function checkEmptyFields()
+{
+	
+	if(checkEmpty(document.loginForm.userId))
+	{
+		alert("Please enter a valid User ID!");
+		return false;
+	}
+	if(checkEmpty(document.loginForm.userPwd))
+	{
+		alert("Please enter a valid password!");
+		return false;
+	}
+	<!-- CR09_10042015_Password Reset , added if confition / Deepthi - changed Message-->
+	// Commented for enable and disable feature of Captcha
+	/* if(checkEmpty(document.loginForm.searchjcaptcha))
+	{
+		alert("Enter the text as displayed in captcha");
+		return false;
+	} */
+	return true;
+}
+/*
+Added enterSubmit(event)Modiified by Avinash for Firefox 
+*/
+function enterSubmit(e) {
+  if ((window.event && window.event.keyCode == 13)|| e.which == 13)
+  {
+	
+    submitLoginForm(true);
+
+  }
+  else
+  {
+	 
+    return true;
+  }
+}
+
+var termsWindow_width="500", termsWindow_height="300";
+var termsWindow_left =(screen.width/2) - termsWindow_width/2;
+var termsWindow_top = (screen.height/2) - termsWindow_height/2;
+var styleStr_termsWindow ='toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=yes,resizable=yes,copyhistory=yes,width='+termsWindow_width+',height='+termsWindow_height+',left='+termsWindow_left+',top='+termsWindow_top+',screenX='+termsWindow_left+',screenY='+termsWindow_top;
+var termsWindowHandler = null;
+function openPopUpTerms(url)
+{
+   if(termsWindowHandler != null)
+   {
+	   termsWindowHandler.close();
+   }
+   termsWindowHandler = window.open(url,"termsWindow", styleStr_termsWindow);     
+   if (!termsWindowHandler.opener)
+   {
+		termsWindowHandler.opener = self;
+   }
+}
+
+function setWindowName(){
+	window.name = "eStamp";
+	document.getElementById("windowName").value = "eStamp";
+}
+
+</script>
+
+
+<link href="/trade/esi/css/newstyle.css" rel="stylesheet" type="text/css">
+</head>
+<!-- Edited by Satya for CR36 dormant user -->
+
+
+
+<meta name="ESIVersion" CONTENT="Version: Rel1_0_200607062100_V01">
+
+<body
+	onLoad="javascript:document.loginForm.userId.focus();setWindowName();">
+<!-- JavaScript to clear localStorage -->
+<script>
+    if (typeof(Storage) !== "undefined") {
+        localStorage.clear();
+        console.log("localStorage has been cleared.");
+    } else {
+        console.log("localStorage is not supported by this browser.");
+    }
+</script>
+<!-- CR09_10042015_Password Reset removed autocomplete = "off" -->
+<form name="loginForm" method="POST" ><input
+	type="hidden" id="windowName" name="windowName" /> <input
+	type="hidden" id="refreshTab" name="refreshTab" />
+	<!-- Keep the URL-encoded login action (may include ;jsessionid) -->
+    <input type="hidden" id="loginActionUrl" value="/eStampIndia/useradmin/UserAdminLoginServlet?rDoAction=ValidateLogin"/>
+<table width="100%" border="0" cellpadding="0" cellspacing="0">
+	<tr>
+		<td align="center" valign="top">
+		<table width="100%" border="0" cellspacing="0" cellpadding="0">
+			<tr>
+				<td width="40%" align="right" valign="bottom"><img
+					src="/trade/esi/images/logo.gif" width="318" height="43"></td>
+				<td width="60%" align="center" valign="top">
+				<table width="100%" height="43" border="0" cellpadding="0"
+					cellspacing="0">
+					<tr>
+						<td width="98%" align="right" valign="middle"
+							background="/trade/esi/images/bg_toplinks.gif" class="lnk-sort-again">
+							
+							<a href="/eStampIndia/VerifyCertificate.es?rDoAction=VerifyCert"
+							class="link2">Verify Stamp Certificate</a><span class="style1">
+						|</span>
+						<!-- CR45_Odisha_Requirement Added Verify Registration Receipt Start -->
+						
+						<!-- CR45_Odisha_Requirement Added Verify Registration Receipt End --> 
+						 <a href="http://www.shcilestamp.com/" class="link2">About
+						India e-Stamping System</a></td>
+						<td width="2%" align="right" valign="middle"
+							background="/trade/esi/images/bg_toplinks.gif" class="lnk-sort-again">&nbsp;</td>
+					</tr>
+				</table>
+				</td>
+			</tr>
+		</table>
+		<table width="100%" border="0" cellspacing="0" cellpadding="0">
+			<tr>
+			        <!-- CR09_10042015_Password Reset - added style="z-index: -101;" -->
+				<td align="center" valign="top"
+					background="/trade/esi/images/bg_header.jpg" style="z-index: -101;"><img
+					src="/trade/esi/images/header_login.jpg" width="531" height="145"></td>
+			</tr>
+		</table>
+		<table width="531" border="0" cellspacing="0" cellpadding="0" style=""> <!-- CR09_10042015_Password Reset - added style="" -->
+			<tr>
+				<td height="280" align="center" valign="top"
+					background="/trade/esi/images/belowheader_login.jpg">
+				<table width="500" border="0" cellspacing="0" cellpadding="3">
+					<tr>
+						<td width="100%" colspan="2" align="right" valign="middle" class="lnk-sort-td">
+							<!-- SECURITY FIX: CWE-1021 - Input sanitization for reflected output -->
+							<font class="txt-error"></font>
+							<font class="txt-description"></font>
+							<font class="txt-error"></font> 
+ 	 
+										</td>
+					</tr>
+					<tr>
+						<td></td>
+					</tr>
+					<!-- <tr>
+						<td width="221" align="right" valign="middle" class="lnk-sort-td">User
+						ID:</td>
+						<td width="214" align="left" valign="middle"><input
+							type="text" onKeyPress="enterSubmit(event)" name="userId"
+							class='input' autocomplete="off"></td>
+					</tr> -->
+					<!--  CR09_10042015_Password Reset - commented above code and added below code for IE allignment issue  -->
+					<tr>
+						<td align="right" valign="middle" class="lnk-sort-td">User ID:
+						</td>
+						<!-- maxlength added for login validation by deepthi -->
+						<td align="left" valign="middle"><input type="text"
+							onKeyPress="enterSubmit(event)" name="userId" class='input' maxlength="50"
+							autocomplete="off"></td>
+					</tr>
+					<tr>
+						<td align="right" valign="middle" class="lnk-sort-td">Password:
+						</td>
+						<!-- maxlength added for login validation by deepthi -->
+						<td align="left" valign="middle"><input type="password"
+							onKeyPress="enterSubmit(event)" name="userPwd" class='input' maxlength="80" 
+							autocomplete="off"></td>
+					</tr>
+					<!-- Task 410458: Disable the language selection field in Login page. -->
+					<tr style="display : none">
+						<td align="right" valign="middle" class="lnk-sort-td">Select
+						Language:</td>
+						<td align="left" valign="middle"><select
+							class=txt-body-medium size=1 onKeyPress="enterSubmit(event)"
+							name="languageId">
+							
+							<option value="en_US" selected>English</option>
+							
+						</select></td>
+					</tr>
+					<!-- CR09_10042015_Password Reset : START -->
+					<tr>
+						<td align="right" valign="middle" class="lnk-sort-td">Captcha :</td>
+					
+						<td><input class="input" id="searchjcaptcha" maxlength="7" size="6"
+								name="searchjcaptcha" onKeyPress="enterSubmit(event)">
+						</td>
+					</tr>
+				
+					<tr>
+						<td align="center" colspan=""></td>
+										<td height="36" width="10%">
+											<div>
+												<img id="cap" data-base="/eStampIndia/esi/captcha.png" src="/eStampIndia/esi/captcha.png?_ts=1787298386704" border="1"	height="30" width="112"> <img style="cursor: hand; cursor: pointer; " src="/trade/esi/images/change.png" onclick="return refreshCaptcha();">
+											</div>
+										</td>
+										<!-- 	<td height="36" width="10%">
+							<img id="cap" src="/eStampIndia/esi/captcha.png" border="1">
+						</td>
+						<td style="vertical-align: middle">
+							<img style="cursor: hand; cursor: pointer; vertical-align: middle;" onclick="return reloadImg('cap');" src="/trade/esi/images/change.png" complete="complete"/>
+						</td> -->
+					</tr>
+					<tr>
+					    <td align="center" colspan=""></td>
+						<td><font style="color: #FFFFFF;display: block;text-align: left;font-size:9px;font-weight : bold;font-family : Verdana, Arial, Helvetica, sans-serif;">Captcha is Case Sensitive</font></td>
+					</tr>
+			        <!-- CR09_10042015_Password Reset : END -->
+					<tr>
+						<td></td>
+						<td align="left" valign="middle"><span id="NR"
+							style='display: none'> <input type="button" name="ClickMe"
+							onKeyPress="enterSubmit(event)"
+							onclick='javascript:submitLoginForm(true)' value="Not Visible"
+							border="0"> </span> <a tabindex="1" href="#"
+							onclick='javascript:submitLoginForm(true)'> <img
+							src="/trade/esi/images/but_login_mo.jpg" name="Image3" width="53"
+							height="20" border="0"> </a> 
+					    </td>
+					</tr>
+					<!-- CR09_10042015_Password Reset : START -->
+					<tr>
+						<td></td>
+						<td class="txt-link" style = "font-size: 9px; color : #FFFFFF ">
+						<a class="txt-link" href="/eStampIndia/forgotpassword/ForgotPasswordServlet?rDoAction=ForgotPassword" id="link1" ><font color="#FFFFFF">
+								<b>Forgot Password</b></font></a>
+			            </td>
+					</tr>
+					<!-- CR09_10042015_Password Reset : END -->
+				</table>
+				</td>
+			</tr>
+		</table>
+		<blockquote>&nbsp;</blockquote>
+		</td>
+	</tr>
+	<div style="clear:both"></div> <!-- CR09_10042015_Password Reset - added div -->
+	<tr>
+		<td height="20" align="center" valign="top"
+			background="/trade/esi/images/bg_footerdos.jpg">&nbsp;</td>
+	</tr>
+	
+	<tr>
+		<td height="20" align="center" valign="top">
+
+<html>
+<head> 
+<title>ESI Version</title>
+</head>
+<!-- EFSversion.jsp -->
+<body topmargin="0">
+<div align="center">
+<center>
+<table border="0" cellpadding="0" cellspacing="0">
+	<tr>
+		<td align="center"><font face="Verdana" size="1">Release Production.REL1.8.0.260019.20260814</font></td>
+	</tr>
+</table>
+</center>
+</div>
+</body>
+</html>
+</td>
+	</tr>
+	<tr>
+		<td align="center" valign="top" class="pfk-copyright">		
+
+								
+            				</td>
+            			</tr>
+            			<tr>
+							<td>&nbsp;</td>
+							<td>&nbsp;</td>
+						</tr>
+						<tr>
+							<td height="20" align="center" valign="top"
+								background="/trade/esi/images/bg_footerdos.jpg">&nbsp;</td>
+						</tr>
+					</table>
+				</td>
+			</tr>
+			<tr>
+				&nbsp;
+			</tr>
+		</table>
+	</body>
+</html></td>
+	</tr>
+</table>
+</form>
+</body>
+</html>
+
+ 
+
+	
+
+
+<!DOCTYPE html>
+<html>
+  
+</html> <!-- Task 226768: Message to be displayed for all the users in login window starts here -->

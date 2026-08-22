@@ -1,0 +1,36 @@
+{
+  "captured_at": "2026-08-21T13:14:23+05:30",
+  "frame_name": "loginFrame",
+  "url": "https://www.shcilestamp.com/OnlineStamping/JSP/OlnLoginPg.jsp?iLogin=S&iprodcd=ESI",
+  "asset_count": 7,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/OlnCss.css",
+      "file": "assets/001-OlnCss.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/commonValidation.js",
+      "file": "assets/002-commonValidation.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.js",
+      "file": "assets/003-jquery.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.keypad.alt.css",
+      "file": "assets/004-jquery.keypad.alt.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.realperson.css",
+      "file": "assets/005-jquery.realperson.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.validate.js",
+      "file": "assets/006-jquery.validate.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/redmond/jquery-ui-1.10.2.custom.min.css",
+      "file": "assets/007-jquery-ui-1.10.2.custom.min.css"
+    }
+  ]
+}

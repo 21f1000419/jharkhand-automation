@@ -1,0 +1,37 @@
+<!DOCTYPE html><html><head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <link rel="stylesheet" type="text/css" href="/OnlineStamping/libs/OlnCss.css">
+    <link rel="stylesheet" type="text/css" href="/OnlineStamping/libs/redmond/jquery-ui-1.10.2.custom.min.css">
+    <script type="text/javascript" src="/OnlineStamping/libs/jquery.js"></script>
+    <script type="text/javascript" src="/OnlineStamping/libs/jquery.validate.js"></script>
+    <script src="/OnlineStamping/libs/jquery-ui.js" type="text/javascript"></script>
+    <script src="/OnlineStamping/libs/commonValidation.js" type="text/javascript"></script>
+    <script language="javascript" type="text/javascript">
+    function urlReplace()
+    {
+            //window.top.location.href("< %=vURL%>" );
+            // commeneted by bhushan 01-MAR-2014 , not working on Chrome and Mozilla.
+            window.top.location.href = "../sOlnProcPayment?ipar=dmhGWh%2FPmrqz4DyD6p7q6kVz2Q0LS2YtS6XDcoMXSG5BkhzMtCKOWq72cSk7v0YNf17CMbPLad68%0ADIt6%2B48z%2FGAazuoc%2FDwbySkH%2FvX7ucC3bxD2j08cLgIe8G2chLpJ";
+            //$("#frmTransPgsp").submit();
+    }//urlReplace
+    </script>
+</head>
+<body onload="urlReplace()">
+    <span class="fItemText">
+        Please do not press Refresh (F5), Back , Home buttons.
+        This will take some time and redirects you to payment gateway.
+    </span>
+    <form name="frmTransPgsp" id="frmTransPgsp" method="post" action="../sOlnProcPayment">
+    <input type="hidden" name="isid" id="isid" value="110235219140_21081314202630108358">
+    <input type="hidden" name="iOlnRefNo" id="iOlnRefNo" value="SPCH380210826131500">
+    <input type="hidden" name="iTotAmtPay" id="iTotAmtPay" value="10">
+    <input type="hidden" name="iImpAmt" id="iImpAmt" value="10">
+    <input type="hidden" name="iSttCode" id="iSttCode" value="CH">
+    <input type="hidden" name="iPayMode" id="iPayMode" value="RAZORPAY">
+    <input type="hidden" name="iChgAmt" id="iChgAmt" value="0">
+    <input type="hidden" name="ipar" id="ipar" value="dmhGWh/Pmrqz4DyD6p7q6kVz2Q0LS2YtS6XDcoMXSG5BkhzMtCKOWq72cSk7v0YNf17CMbPLad68
+DIt6+48z/GAazuoc/DwbySkH/vX7ucC3bxD2j08cLgIe8G2chLpJ">
+    </form>
+
+
+</body></html>

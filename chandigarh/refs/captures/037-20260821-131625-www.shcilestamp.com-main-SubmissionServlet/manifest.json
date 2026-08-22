@@ -1,0 +1,52 @@
+{
+  "captured_at": "2026-08-21T13:16:27+05:30",
+  "frame_name": "main",
+  "url": "https://www.shcilestamp.com/eStampIndia/submission/SubmissionServlet?rDoAction=PrintCompleted&ptype=PCP&type=SP",
+  "asset_count": 11,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/eStampIndia/submission/India e-Stamping SystemFORGOT_files/pfk_spacer.gif",
+      "file": "assets/001-pfk_spacer.gif"
+    },
+    {
+      "url": "https://www.shcilestamp.com/favicon.ico",
+      "file": "assets/002-favicon.ico"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/html/js/jquery-3.7.1.min.js",
+      "file": "assets/003-jquery-3.7.1.min.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/html/js/jquery-ajaxTransport-XDomainRequest-1.0.4.min.js",
+      "file": "assets/004-jquery-ajaxTransport-XDomainRequest-1.0.4.min.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/html/js/json2.min.js",
+      "file": "assets/005-json2.min.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/html/js/nifty.js",
+      "file": "assets/006-nifty.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/html/js/printService_v3.js",
+      "file": "assets/007-printService_v3.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/images/bg_subpageheader.jpg",
+      "file": "assets/008-bg_subpageheader.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/images/bg_toplinks.gif",
+      "file": "assets/009-bg_toplinks.gif"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/images/header_subpage2.jpg",
+      "file": "assets/010-header_subpage2.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/trade/esi/images/logo.gif",
+      "file": "assets/011-logo.gif"
+    }
+  ]
+}
