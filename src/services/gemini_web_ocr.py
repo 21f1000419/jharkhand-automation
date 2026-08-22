@@ -22,6 +22,14 @@ SEND_SELECTORS = [
     'button[aria-label*="Send message" i]',
     '[data-test-id="send-button"]',
 ]
+UPLOAD_BUTTON_SELECTORS = [
+    # Gemini currently uses "Upload & tools". Older variants used "and",
+    # so retain both labels rather than tying OCR to one UI wording.
+    'button[aria-label*="Upload & tools" i]',
+    'button[aria-label*="Upload and tools" i]',
+    'button[aria-label*="Upload files" i]',
+    'button[aria-label*="Upload" i]',
+]
 RESPONSE_SELECTORS = [
     'model-response message-content',
     'model-response .model-response-text',
@@ -74,11 +82,9 @@ class GeminiWebCaptchaSolver:
                 raise RuntimeError("Gemini is not signed in or its prompt box was not found.")
             await _clear_composer(page, composer)
             baseline = await _responses(page)
-            upload_button = await _first_visible(
-                page, ['button[aria-label*="Upload and tools" i]'], 10_000
-            )
+            upload_button = await _first_visible(page, UPLOAD_BUTTON_SELECTORS, 10_000)
             if upload_button is None:
-                raise RuntimeError("Gemini's upload button was not found.")
+                raise RuntimeError("Gemini's Upload & tools button was not found.")
             await upload_button.click()
             upload = page.locator('input[type="file"]').first
             await upload.wait_for(state="attached", timeout=10_000)
