@@ -13,6 +13,10 @@ backports_datas, backports_binaries, backports_hiddenimports = collect_all("back
 # PaddleX checks this dependency through importlib.metadata at runtime.  The
 # module is collected via EasyOCR, but its distribution metadata is not.
 python_bidi_metadata = copy_metadata("python-bidi")
+# PaddleX tests this optional OCR dependency using importlib.metadata rather
+# than by importing ``cv2``.  The OpenCV module is bundled, but its metadata
+# is not discovered automatically by PyInstaller.
+opencv_contrib_metadata = copy_metadata("opencv-contrib-python")
 scipy_array_api_hiddenimports = collect_submodules("scipy._external.array_api_compat.numpy")
 test_assets = [
     ("test-gemini-ocr.html", "."),
@@ -43,6 +47,7 @@ a = Analysis(
         + easyocr_datas
         + backports_datas
         + python_bidi_metadata
+        + opencv_contrib_metadata
         + test_assets
     ),
     hiddenimports=(

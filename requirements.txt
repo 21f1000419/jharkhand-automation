@@ -9,3 +9,4 @@ easyocr==1.7.2
 torchvision==0.28.0
 backports.tarfile==1.2.0
 python-bidi==0.6.11
+opencv-contrib-python==4.10.0.84

@@ -59,12 +59,22 @@ class PaddleOcrCaptchaSolver:
         except ImportError as error:  # pragma: no cover - environment-dependent dependency
             raise RuntimeError(f"PaddleOCR could not be imported: {error}") from error
 
-        return TextRecognition(
-            model_name=MODEL_NAME,
-            model_dir=str(model_path),
-            device="cpu",
-            engine="paddle_static",
-        )
+        try:
+            return TextRecognition(
+                model_name=MODEL_NAME,
+                model_dir=str(model_path),
+                device="cpu",
+                engine="paddle_static",
+            )
+        except RuntimeError as error:
+            # PaddleOCR replaces PaddleX's useful DependencyError with a
+            # generic message. Preserve the underlying detail in our log/UI
+            # so a future packaging omission can be diagnosed directly.
+            if error.__cause__ is not None:
+                raise RuntimeError(
+                    f"PaddleOCR predictor setup failed: {error.__cause__}"
+                ) from error
+            raise
 
     @staticmethod
     def _solve_image_sync(model: Any, image_bytes: bytes, expected_length: int | None) -> str:
