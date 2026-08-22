@@ -31,6 +31,7 @@ class AppConfig:
     last_csv_path: str = ""
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
+    retry_egras_otp_once: bool = True
 
     @property
     def profile_path(self) -> Path:

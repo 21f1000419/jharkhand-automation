@@ -33,6 +33,7 @@ MAIN_HOME_URL = "https://jharnibandhan.gov.in"
 SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
 MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
 EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
+EGRASS_OTP_RECOVERY_WAIT_SECONDS = 15
 TRANSACTION_FIELD_NAMES = {
     "name": "Name",
     "token no / depositor id": "Token No / Depositor ID",
@@ -68,6 +69,7 @@ class PortalAutomation:
         payment_trigger_url: str = "",
         payment_trigger_method: str = "GET",
         save_captcha_images: bool = True,
+        retry_egras_otp_once: bool = True,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -82,6 +84,7 @@ class PortalAutomation:
             "POST" if payment_trigger_method.strip().upper() == "POST" else "GET"
         )
         self.save_captcha_images = save_captcha_images
+        self.retry_egras_otp_once = retry_egras_otp_once
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: str | None = None
         self.stage = Stage.IDLE
@@ -605,49 +608,11 @@ class PortalAutomation:
         # ── Step 2: OTP + validation CAPTCHA → Validate OTP ─────────────────
         try:
             await self._stage(Stage.EGRAS_OTP)
-            otp_reset_count = 0
             otp_captcha_entered_manually = True
             while True:
                 # Wait for the OTP step fields to appear.
-                otp_step_outcome = await self._wait_for_egras_otp_step()
+                await self._wait_for_egras_otp_step()
 
-                if otp_step_outcome == "form_reset":
-                    otp_reset_count += 1
-                    self.emit(
-                        UiEvent(
-                            "log",
-                            f"eGRAS OTP/CAPTCHA fields were cleared by a page reload. "
-                            f"Auto-retry {otp_reset_count}/3"
-                            + (" — switching to manual CAPTCHA entry." if otp_reset_count >= 3 else ". Re-filling…"),
-                        )
-                    )
-                    await self.page.wait_for_timeout(2_000)
-
-                    if otp_reset_count >= 3:
-                        self._status(
-                            "eGRAS OTP form keeps resetting; please enter the CAPTCHA manually, "
-                            "then click Validate OTP…"
-                        )
-                        self.emit(
-                            UiEvent(
-                                "notification",
-                                "The eGRAS OTP form has been reset 3 times automatically. "
-                                "Please enter the CAPTCHA manually and click Validate OTP.",
-                                {"title": "Manual CAPTCHA required", "level": "warning"},
-                            )
-                        )
-                        otp_captcha_entered_manually = True
-                    else:
-                        # Re-solve only the CAPTCHA; OTP watcher handles #txtOTP.
-                        otp_captcha_entered_manually = await self._solve_captcha(
-                            "div.tab-pane.active img.imgcaptcha",
-                            "div.tab-pane.active #txtcaptcha",
-                            expected_length=6,
-                            refresh_selector="div.tab-pane.active #ImageButton1",
-                        )
-                    continue
-
-                # otp_step_outcome == "ready" — fields present and not cleared.
                 # The watcher can now fill #txtOTP while the CAPTCHA is handled.
                 otp_captcha_entered_manually = await self._solve_captcha(
                     "div.tab-pane.active img.imgcaptcha",
@@ -656,12 +621,18 @@ class PortalAutomation:
                     refresh_selector="div.tab-pane.active #ImageButton1",
                 )
 
-                otp = await self._await_otp_watcher(egrass_otp_task)
+                (
+                    otp,
+                    otp_captcha_entered_manually,
+                    egrass_otp_task,
+                ) = await self._await_egras_otp_with_single_recovery(
+                    egrass_otp_task, otp_captcha_entered_manually
+                )
                 if otp is not None:
                     # eGRAS requires every input at this validation point to be
                     # automatic before clicking Validate OTP.  A manual CAPTCHA
                     # or manual OTP leaves that action to the user.
-                    if not login_captcha_entered_manually and not otp_captcha_entered_manually:
+                    if not otp_captcha_entered_manually:
                         await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
                         self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
                 else:
@@ -700,6 +671,102 @@ class PortalAutomation:
         if task is None:
             return None
         return await task
+
+    async def _await_egras_otp_with_single_recovery(
+        self,
+        task: asyncio.Task[str | None] | None,
+        captcha_entered_manually: bool,
+    ) -> tuple[str | None, bool, asyncio.Task[str | None] | None]:
+        """Wait briefly, then perform at most one eGRAS OTP resend recovery."""
+        if task is None:
+            return None, captcha_entered_manually, None
+        if not self.retry_egras_otp_once:
+            return await self._await_otp_watcher(task), captcha_entered_manually, task
+
+        otp, finished = await self._wait_for_otp_watcher_for(
+            task, EGRASS_OTP_RECOVERY_WAIT_SECONDS
+        )
+        if finished:
+            return otp, captcha_entered_manually, task
+
+        self.emit(
+            UiEvent(
+                "log",
+                "No eGRAS OTP arrived within 15 seconds. Refreshing CAPTCHA and requesting one new OTP.",
+            )
+        )
+        await self._cancel_otp_watcher(task)
+        if not await self._resend_egras_otp_once():
+            return None, captcha_entered_manually, None
+
+        retry_task = self._start_otp_watcher("egrass", "#txtOTP")
+        await self._wait_for_egras_otp_step()
+        captcha_entered_manually = await self._solve_egras_otp_captcha()
+        otp, finished = await self._wait_for_otp_watcher_for(
+            retry_task, EGRASS_OTP_RECOVERY_WAIT_SECONDS
+        )
+        if finished:
+            return otp, captcha_entered_manually, retry_task
+
+        await self._cancel_otp_watcher(retry_task)
+        self.emit(
+            UiEvent(
+                "log",
+                "The one eGRAS OTP resend was attempted. Automatic retry is now disabled for this page; "
+                "waiting for manual validation.",
+            )
+        )
+        return None, captcha_entered_manually, None
+
+    async def _wait_for_otp_watcher_for(
+        self, task: asyncio.Task[str | None] | None, timeout_seconds: float
+    ) -> tuple[str | None, bool]:
+        if task is None:
+            return None, True
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+        if not done:
+            return None, False
+        return task.result(), True
+
+    async def _resend_egras_otp_once(self) -> bool:
+        """Refresh CAPTCHA, resend OTP, refresh again, and leave a fresh form ready."""
+        try:
+            await click_first(self.page, ["#ImageButton1", "input.rigcp"])
+            resend = await first_visible(self.page, ["#btnResendOTP:not([disabled])"], 10_000)
+            if resend is None:
+                self.emit(
+                    UiEvent(
+                        "notification",
+                        "eGRAS did not enable Re Send OTP after the CAPTCHA refresh. "
+                        "Enter the OTP and CAPTCHA manually, then click Validate OTP.",
+                        {"title": "Manual eGRAS OTP required", "level": "warning"},
+                    )
+                )
+                return False
+            await resend.click()
+            await self.page.wait_for_timeout(1_000)
+            await click_first(self.page, ["#ImageButton1", "input.rigcp"])
+            await self.page.wait_for_timeout(750)
+        except (PlaywrightError, RuntimeError) as error:
+            self.emit(
+                UiEvent(
+                    "notification",
+                    f"Could not perform the one-time eGRAS OTP retry: {error}",
+                    {"title": "Manual eGRAS OTP required", "level": "warning"},
+                )
+            )
+            return False
+
+        self.emit(UiEvent("log", "eGRAS OTP was resent once; polling the new OTP and reading the new CAPTCHA."))
+        return True
+
+    async def _solve_egras_otp_captcha(self) -> bool:
+        return await self._solve_captcha(
+            "div.tab-pane.active img.imgcaptcha",
+            "div.tab-pane.active #txtcaptcha",
+            expected_length=6,
+            refresh_selector="div.tab-pane.active #ImageButton1",
+        )
 
     async def _cancel_otp_watcher(self, task: asyncio.Task[str | None] | None) -> None:
         if task is not None and not task.done():
@@ -831,17 +898,10 @@ class PortalAutomation:
             if otp is not None and captcha is not None and captcha_input is not None:
                 # Detect a page reload that cleared the filled OTP or CAPTCHA
                 # fields — at least one will be empty if the form was reset.
-                otp_value = ""
-                captcha_value = ""
-                with suppress(PlaywrightError):
-                    otp_value = await otp.input_value()
-                with suppress(PlaywrightError):
-                    captcha_value = await captcha_input.input_value()
+                # A new OTP page is expected to begin with two blank fields.
                 # Give the page 1.5 s to fully settle after every (re)load
                 # before the caller starts filling CAPTCHA / OTP.
                 await self.page.wait_for_timeout(1_500)
-                if not otp_value.strip() or not captcha_value.strip():
-                    return "form_reset"
                 return "ready"
             await self.page.wait_for_timeout(500)
 

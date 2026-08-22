@@ -59,6 +59,7 @@ class WorkflowEngine:
             options.payment_trigger_url,
             options.payment_trigger_method,
             options.save_captcha_images,
+            options.retry_egras_otp_once,
         )
 
     async def run(self, options: RunOptions) -> bool:

@@ -111,6 +111,7 @@ class MainWindow:
         )
         self.save_captcha_images_var = tk.BooleanVar(value=config.save_captcha_images)
         self.fresh_browser_var = tk.BooleanVar(value=config.fresh_browser_per_unit)
+        self.retry_egras_otp_once_var = tk.BooleanVar(value=config.retry_egras_otp_once)
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
         self.payment_trigger_url_var = tk.StringVar(value=config.payment_trigger_url)
@@ -407,6 +408,13 @@ class MainWindow:
             command=self._save_non_secret_settings,
         )
         self.fresh_browser_checkbox.pack(side="left", padx=(8, 0))
+        self.egras_otp_retry_checkbox = ttk.Checkbutton(
+            modes,
+            text="Retry eGRAS OTP once after 15s",
+            variable=self.retry_egras_otp_once_var,
+            command=self._save_non_secret_settings,
+        )
+        self.egras_otp_retry_checkbox.pack(side="left", padx=(8, 0))
 
         controls = ttk.Frame(container)
         controls.pack(fill="x", pady=(0, 8))
@@ -717,6 +725,7 @@ class MainWindow:
         self.config.last_csv_path = self.csv_var.get().strip()
         self.config.save_captcha_images = self.save_captcha_images_var.get()
         self.config.fresh_browser_per_unit = self.fresh_browser_var.get()
+        self.config.retry_egras_otp_once = self.retry_egras_otp_once_var.get()
         browser = self.portal_browsers.get(self.portal_browser_var.get())
         if browser is not None:
             self.config.last_portal_browser_path = str(browser.executable)
@@ -1126,6 +1135,7 @@ class MainWindow:
             captcha_copy_mode=CaptchaCopyMode(self.captcha_copy_mode_var.get()),
             save_captcha_images=self.save_captcha_images_var.get(),
             fresh_browser_per_unit=self.fresh_browser_var.get(),
+            retry_egras_otp_once=self.retry_egras_otp_once_var.get(),
         )
         self.starting = True
         self.run_status_var.set(f"Opening {portal_browser.name}...")

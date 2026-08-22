@@ -165,6 +165,7 @@ class RunOptions:
     captcha_copy_mode: CaptchaCopyMode = CaptchaCopyMode.DIRECT
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
+    retry_egras_otp_once: bool = True
 
 
 @dataclass(frozen=True)
