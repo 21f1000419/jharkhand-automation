@@ -20,12 +20,13 @@ from core.models import OcrEngine, PortalBrowser, RunOptions, UiEvent
 from core.resources import bundled_path
 from core.workflow import WorkflowEngine
 from services.captcha_ocr import CaptchaSolver
-from services.gemini_ocr import EasyOcrCaptchaSolver
+from services.ddddocr_ocr import DdddOcrCaptchaSolver
 from services.gemini_web_ocr import GeminiWebCaptchaSolver
 
 
 def _ocr_engine_label(engine: OcrEngine) -> str:
     return {
+        OcrEngine.DDDDOCR: "ddddocr (local)",
         OcrEngine.EASYOCR: "EasyOCR (local)",
         OcrEngine.GEMINI: "Gemini (browser)",
     }[engine]
@@ -167,8 +168,13 @@ class AutomationController:
         return self.gemini_browser, self.solver
 
     async def _ensure_ocr_solver(self, engine: OcrEngine) -> CaptchaSolver:
-        if engine == OcrEngine.EASYOCR:
-            solver: CaptchaSolver = EasyOcrCaptchaSolver()
+        solver: CaptchaSolver
+        if engine == OcrEngine.DDDDOCR:
+            solver = DdddOcrCaptchaSolver()
+        elif engine == OcrEngine.EASYOCR:
+            from services.gemini_ocr import EasyOcrCaptchaSolver
+
+            solver = EasyOcrCaptchaSolver()
         else:
             _, solver = await self._ensure_gemini_services()
         if not await solver.verify_ready():

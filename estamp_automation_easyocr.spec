@@ -6,6 +6,7 @@ playwright_datas, playwright_binaries, playwright_hiddenimports = collect_all("p
 ddddocr_datas, ddddocr_binaries, ddddocr_hiddenimports = collect_all("ddddocr")
 onnxruntime_datas = collect_data_files("onnxruntime", include_py_files=False)
 onnxruntime_binaries = collect_dynamic_libs("onnxruntime")
+easyocr_datas, easyocr_binaries, easyocr_hiddenimports = collect_all("easyocr")
 scipy_array_api_hiddenimports = collect_submodules("scipy._external.array_api_compat.numpy")
 test_assets = [
     ("test-gemini-ocr.html", "."),
@@ -15,17 +16,18 @@ test_assets = [
 a = Analysis(
     ["src/app.py"],
     pathex=["src"],
-    binaries=playwright_binaries + ddddocr_binaries + onnxruntime_binaries,
-    datas=playwright_datas + ddddocr_datas + onnxruntime_datas + test_assets,
+    binaries=playwright_binaries + ddddocr_binaries + onnxruntime_binaries + easyocr_binaries,
+    datas=playwright_datas + ddddocr_datas + onnxruntime_datas + easyocr_datas + test_assets,
     hiddenimports=(
         playwright_hiddenimports
         + ddddocr_hiddenimports
+        + easyocr_hiddenimports
         + scipy_array_api_hiddenimports
     ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["easyocr", "fastapi", "torch", "torchvision", "uvicorn"],
+    excludes=["fastapi", "uvicorn"],
     noarchive=False,
     optimize=1,
 )
@@ -37,7 +39,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="Compitcom-eStamp-Automation",
+    name="Compitcom-eStamp-Automation-EasyOCR",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

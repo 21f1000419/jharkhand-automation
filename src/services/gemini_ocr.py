@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import io
-import re
 from collections import Counter
-from collections.abc import Sequence
-from typing import Any
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+from services.captcha_ocr import join_ocr_fragments, normalize_captcha
 
 try:
     import easyocr
@@ -16,58 +15,6 @@ try:
 except ImportError as error:  # pragma: no cover - environment-dependent dependency
     easyocr = None  # type: ignore[assignment]
     _easyocr_import_error = f"{type(error).__name__}: {error}"
-
-
-def normalize_captcha(value: str, expected_length: int | None = None) -> str:
-    candidates: list[str] = re.findall(r"[A-Za-z0-9]+", value.upper())
-    common_words = {
-        "ANSWER",
-        "CANNOT",
-        "CAPTCHA",
-        "CHARACTERS",
-        "CODE",
-        "DIGITS",
-        "IMAGE",
-        "LETTERS",
-        "ONLY",
-        "READ",
-        "RETURN",
-        "UNABLE",
-    }
-    candidates = [candidate for candidate in candidates if candidate not in common_words]
-    if expected_length:
-        exact = [candidate for candidate in candidates if len(candidate) == expected_length]
-        if exact:
-            return exact[-1]
-    useful = [candidate for candidate in candidates if 4 <= len(candidate) <= 10]
-    return useful[-1] if useful else ""
-
-
-def join_ocr_fragments(results: Sequence[Sequence[Any]], expected_length: int | None) -> str:
-    """Join left-to-right OCR fragments only when they form the expected CAPTCHA length."""
-    if expected_length is None:
-        return ""
-
-    fragments: list[tuple[float, str]] = []
-    for result in results:
-        if len(result) < 2:
-            continue
-        bounding_box, raw = result[0], str(result[1])
-        if not isinstance(bounding_box, Sequence) or isinstance(bounding_box, str | bytes):
-            continue
-        x_positions = [
-            float(point[0])
-            for point in bounding_box
-            if isinstance(point, Sequence) and not isinstance(point, str | bytes) and point
-        ]
-        if not x_positions:
-            continue
-        fragment = "".join(re.findall(r"[A-Za-z0-9]+", raw.upper()))
-        if fragment:
-            fragments.append((min(x_positions), fragment))
-
-    combined = "".join(fragment for _, fragment in sorted(fragments))
-    return combined if len(combined) == expected_length else ""
 
 
 class EasyOcrCaptchaSolver:

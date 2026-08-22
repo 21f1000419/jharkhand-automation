@@ -15,9 +15,10 @@ from automation.portal import PortalAutomation, transaction_details_from_rows
 from core.config import AppConfig, ConfigStore
 from core.controls import RunControls
 from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
+from services.captcha_ocr import join_ocr_fragments, normalize_captcha
 from services.credential_store import decode_credentials, encode_credentials
+from services.ddddocr_ocr import normalize_ddddocr_captcha
 from services.downloads import EstampDownloader, extract_reference
-from services.gemini_ocr import join_ocr_fragments, normalize_captcha
 from services.payment_trigger import send_payment_trigger_request
 
 
@@ -29,6 +30,10 @@ class ServiceTests(unittest.TestCase):
 
     def test_normalize_captcha_uppercases_alphanumeric_values(self) -> None:
         self.assertEqual(normalize_captcha("ab12cd", 6), "AB12CD")
+
+    def test_normalize_ddddocr_captcha_prefers_expected_length(self) -> None:
+        self.assertEqual(normalize_ddddocr_captcha("captcha: ab12cd", 6), "AB12CD")
+        self.assertEqual(normalize_ddddocr_captcha("ab12"), "AB12")
 
     def test_join_ocr_fragments_uses_left_to_right_order(self) -> None:
         results = [
@@ -383,6 +388,51 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(page.evaluate.await_count, 3)
             link.click.assert_awaited_once_with()
             page.wait_for_event.assert_awaited_once_with("download", timeout=60_000)
+
+    def test_short_ocr_result_refreshes_captcha_before_retrying(self) -> None:
+        page = MagicMock()
+
+        async def yield_to_ocr_task(_milliseconds: int) -> None:
+            await asyncio.sleep(0)
+
+        page.wait_for_timeout = AsyncMock(side_effect=yield_to_ocr_task)
+        controls = RunControls(lambda _event: None)
+        solver = MagicMock()
+        solver.solve_image = AsyncMock(side_effect=["AB12", "ABCDEF"])
+        solver.cancel_active_response = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            solver,
+            controls,
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        image = MagicMock()
+        field = MagicMock()
+        field.input_value = AsyncMock(return_value="")
+        field.fill = AsyncMock()
+        portal._capture_captcha_directly = AsyncMock(side_effect=[b"first", b"second"])  # type: ignore[method-assign]
+        portal._refresh_captcha = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "automation.portal.first_visible",
+            new=AsyncMock(side_effect=[image, field]),
+        ):
+            entered_manually = asyncio.run(
+                portal._solve_captcha(
+                    "img.imgcaptcha",
+                    "#txtcaptcha",
+                    expected_length=6,
+                    refresh_selector="#ImageButton1",
+                )
+            )
+
+        self.assertFalse(entered_manually)
+        portal._refresh_captcha.assert_awaited_once_with(image, "#ImageButton1")
+        field.fill.assert_awaited_once_with("ABCDEF")
 
     def test_manual_citizen_captcha_does_not_click_get_otp(self) -> None:
         page = MagicMock()

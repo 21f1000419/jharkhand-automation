@@ -22,6 +22,7 @@ from core.models import (
     RunMode,
     RunOptions,
     UiEvent,
+    available_ocr_engines,
 )
 from core.playwright_browsers import (
     browser_install_directory,
@@ -91,10 +92,16 @@ class MainWindow:
             if config.captcha_copy_mode in valid_captcha_copy_modes
             else CaptchaCopyMode.DIRECT
         )
-        self.captcha_copy_mode_var = tk.StringVar(value=saved_captcha_copy_mode)
-        valid_ocr_engines = {engine.value for engine in OcrEngine}
-        self.ocr_engine_var = tk.StringVar(
-            value=config.ocr_engine if config.ocr_engine in valid_ocr_engines else OcrEngine.EASYOCR
+        available_engines = available_ocr_engines()
+        valid_ocr_engines = {engine.value for engine in available_engines}
+        saved_ocr_engine = (
+            config.ocr_engine if config.ocr_engine in valid_ocr_engines else OcrEngine.DDDDOCR
+        )
+        self.ocr_engine_var = tk.StringVar(value=saved_ocr_engine)
+        self.captcha_copy_mode_var = tk.StringVar(
+            value=saved_captcha_copy_mode
+            if saved_ocr_engine == OcrEngine.GEMINI
+            else CaptchaCopyMode.DIRECT
         )
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
@@ -193,7 +200,7 @@ class MainWindow:
         self.ocr_engine_selector = ttk.Combobox(
             gemini_status,
             textvariable=self.ocr_engine_var,
-            values=[engine.value for engine in OcrEngine],
+            values=[engine.value for engine in available_ocr_engines()],
             state="readonly",
             width=18,
         )
@@ -216,9 +223,7 @@ class MainWindow:
             textvariable=self.captcha_copy_mode_var,
             values=[mode.value for mode in CaptchaCopyMode],
             state=(
-                "disabled"
-                if self.ocr_engine_var.get() == OcrEngine.EASYOCR
-                else "readonly"
+                "readonly" if self.ocr_engine_var.get() == OcrEngine.GEMINI else "disabled"
             ),
             width=14,
         )
@@ -485,7 +490,7 @@ class MainWindow:
 
     def _initial_gemini_check(self) -> None:
         self.gemini_checking = True
-        self.gemini_status_var.set("Gemini OCR: checking...")
+        self.gemini_status_var.set("OCR: checking selected engine...")
         # self.gemini_status_var.set("Gemini OCR: starting headless check...")  # Headless mode
         self._set_run_buttons()
         self.controller.record_activity("gemini_startup_check_started")
@@ -795,7 +800,7 @@ class MainWindow:
     def _verify_gemini(self) -> None:
         self._record_ui_action("start_ocr_browser_clicked")
         engine = OcrEngine(self.ocr_engine_var.get())
-        if engine != OcrEngine.EASYOCR and not self._save_browser_settings(reconfigure=False):
+        if engine == OcrEngine.GEMINI and not self._save_browser_settings(reconfigure=False):
             return
         self.gemini_checking = True
         self.gemini_ready = False
@@ -807,7 +812,7 @@ class MainWindow:
 
     def _on_ocr_engine_changed(self, _event: object | None = None) -> None:
         engine = OcrEngine(self.ocr_engine_var.get())
-        if engine == OcrEngine.EASYOCR:
+        if engine != OcrEngine.GEMINI:
             self.captcha_copy_mode_var.set(CaptchaCopyMode.DIRECT)
         self.gemini_ready = False
         self.config.gemini_verified = False
@@ -818,7 +823,7 @@ class MainWindow:
         )
         self.controller.reconfigure_browser()
         self.captcha_copy_mode_selector.configure(
-            state="disabled" if engine == OcrEngine.EASYOCR else "readonly"
+            state="readonly" if engine == OcrEngine.GEMINI else "disabled"
         )
         self._set_run_buttons()
 
@@ -832,7 +837,7 @@ class MainWindow:
             )
             return
         engine = OcrEngine(self.ocr_engine_var.get())
-        if engine != OcrEngine.EASYOCR and not self._save_browser_settings(reconfigure=False):
+        if engine == OcrEngine.GEMINI and not self._save_browser_settings(reconfigure=False):
             return
         self.ocr_test_running = True
         self.gemini_status_var.set(f"OCR: testing {engine.value}...")
@@ -1440,7 +1445,7 @@ class MainWindow:
     def _set_run_buttons(self) -> None:
         engine = OcrEngine(self.ocr_engine_var.get())
         if self.gemini_ready:
-            close_text = "Disable OCR" if engine == OcrEngine.EASYOCR else "Close OCR browser"
+            close_text = "Close OCR browser" if engine == OcrEngine.GEMINI else "Disable OCR"
             self.ocr_browser_button.configure(text=close_text, command=self._close_ocr_browser)
         # elif self.gemini_login_browser_open:
         #     self.ocr_browser_button.configure(text="Close OCR browser", command=self._close_ocr_browser)
@@ -1449,7 +1454,7 @@ class MainWindow:
         #         text="Start OCR browser", command=self._open_ocr_login_browser
         #     )
         else:
-            start_text = "Enable EasyOCR" if engine == OcrEngine.EASYOCR else "Start OCR browser"
+            start_text = "Start OCR browser" if engine == OcrEngine.GEMINI else f"Enable {engine.value}"
             self.ocr_browser_button.configure(text=start_text, command=self._verify_gemini)
         self.ocr_test_button.configure(
             state=(

@@ -19,9 +19,9 @@ from core.models import (
     UiEvent,
     WorkflowStopped,
 )
+from services.captcha_ocr import CaptchaSolver
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
-from services.captcha_ocr import CaptchaSolver
 from services.payment_trigger import send_payment_trigger_request
 from services.sms_otp_client import SmsOtpClient, SmsOtpServerError
 
@@ -43,6 +43,7 @@ TRANSACTION_FIELD_NAMES = {
 UPI_QR_READY_TEXT = "scan upi qr"
 UPI_TRANSACTION_TIMER_TEXT = "time left to complete the transaction"
 CAPTCHA_FAILURE_TEXT = "captcha validation failed"
+MAX_CAPTCHA_OCR_ATTEMPTS = 3
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -166,6 +167,7 @@ class PortalAutomation:
                     "#captcha_image",
                     "#captcha",
                     expected_length=6,
+                    refresh_selector=None,
                 )
 
             if not captcha_entered_manually and not await visible(self.page, "#otp", 500):
@@ -376,6 +378,7 @@ class PortalAutomation:
                     "img.imgcaptcha",
                     "#txtcaptcha",
                     expected_length=6,
+                    refresh_selector="#ImageButton1",
                 )
 
             if not login_captcha_entered_manually and not await visible(self.page, "#txtOTP", 500):
@@ -408,6 +411,7 @@ class PortalAutomation:
                 "div.tab-pane.active img.imgcaptcha",
                 "div.tab-pane.active #txtcaptcha",
                 expected_length=6,
+                refresh_selector="div.tab-pane.active #ImageButton1",
             )
 
             otp = await self._await_otp_watcher(egrass_otp_task)
@@ -866,6 +870,7 @@ class PortalAutomation:
         image_selector: str,
         input_selector: str,
         expected_length: int,
+        refresh_selector: str | None,
     ) -> bool:
         """Fill with OCR when possible; return True when the user entered it manually."""
         await self.controls.checkpoint()
@@ -886,29 +891,46 @@ class PortalAutomation:
 
         ocr_task: asyncio.Task[str] | None = None
         try:
-            if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
-                image_png = await self._capture_captcha_directly(image)
-                ocr_task = asyncio.create_task(solver.solve_image(image_png, expected_length))
-            else:
-                await self._copy_captcha_with_browser_menu(image)
-                ocr_task = asyncio.create_task(solver.solve(expected_length))
-            while not ocr_task.done():
-                await self.controls.checkpoint()
+            for attempt in range(1, MAX_CAPTCHA_OCR_ATTEMPTS + 1):
+                if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
+                    image_png = await self._capture_captcha_directly(image)
+                    ocr_task = asyncio.create_task(solver.solve_image(image_png, expected_length))
+                else:
+                    await self._copy_captcha_with_browser_menu(image)
+                    ocr_task = asyncio.create_task(solver.solve(expected_length))
+                while not ocr_task.done():
+                    await self.controls.checkpoint()
+                    if (await field.input_value()).strip():
+                        ocr_task.cancel()
+                        await asyncio.gather(ocr_task, return_exceptions=True)
+                        await solver.cancel_active_response()
+                        await self._manual_captcha_entered()
+                        return True
+                    await self.page.wait_for_timeout(100)
+                code = await ocr_task
+                ocr_task = None
                 if (await field.input_value()).strip():
-                    ocr_task.cancel()
-                    await asyncio.gather(ocr_task, return_exceptions=True)
-                    await solver.cancel_active_response()
                     await self._manual_captcha_entered()
                     return True
-                await self.page.wait_for_timeout(100)
-            code = await ocr_task
-            if (await field.input_value()).strip():
-                await self._manual_captcha_entered()
-                return True
-            await field.fill(code)
-            self._status("CAPTCHA filled; continuing with the portal...")
-            self.emit(UiEvent("log", "CAPTCHA solved by OCR."))
-            return False
+                if len(code) == expected_length:
+                    await field.fill(code)
+                    self._status("CAPTCHA filled; continuing with the portal...")
+                    self.emit(UiEvent("log", "CAPTCHA solved by OCR."))
+                    return False
+                if attempt == MAX_CAPTCHA_OCR_ATTEMPTS:
+                    raise RuntimeError(
+                        f"OCR returned {len(code)} characters instead of {expected_length} after "
+                        f"{MAX_CAPTCHA_OCR_ATTEMPTS} fresh CAPTCHA images."
+                    )
+                self.emit(
+                    UiEvent(
+                        "log",
+                        f"OCR returned {len(code)} characters instead of {expected_length}; "
+                        "refreshing the CAPTCHA and trying again.",
+                    )
+                )
+                await self._refresh_captcha(image, refresh_selector)
+            raise RuntimeError("OCR attempts ended without a result.")
         except WorkflowStopped:
             raise
         except PlaywrightError as error:
@@ -935,6 +957,28 @@ class PortalAutomation:
                 ocr_task.cancel()
                 await asyncio.gather(ocr_task, return_exceptions=True)
                 await solver.cancel_active_response()
+
+    async def _refresh_captcha(self, image: Locator, refresh_selector: str | None) -> None:
+        """Request a fresh CAPTCHA and wait until its image is usable for OCR."""
+        refresh = await first_visible(self.page, [refresh_selector], 2_000) if refresh_selector else None
+        if refresh is not None:
+            await refresh.click()
+        else:
+            await image.evaluate(
+                """element => {
+                    const url = new URL(element.src, window.location.href);
+                    url.searchParams.set('ocr_refresh', Date.now().toString());
+                    element.src = url.toString();
+                }"""
+            )
+        await image.wait_for(state="visible", timeout=5_000)
+        for _ in range(50):
+            loaded = await image.evaluate("image => image.complete && image.naturalWidth > 0")
+            if loaded:
+                await self.page.wait_for_timeout(250)
+                return
+            await self.page.wait_for_timeout(100)
+        raise RuntimeError("The refreshed CAPTCHA image did not finish loading.")
 
     async def _manual_captcha_entered(self) -> None:
         self._status("Manual CAPTCHA entered; waiting for the portal action...")

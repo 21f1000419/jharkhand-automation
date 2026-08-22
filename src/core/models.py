@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +23,17 @@ class CaptchaCopyMode(StrEnum):
 
 
 class OcrEngine(StrEnum):
+    DDDDOCR = "ddddocr"
     EASYOCR = "easyocr"
     GEMINI = "gemini"
+
+
+def available_ocr_engines() -> tuple[OcrEngine, ...]:
+    """Return engines whose optional dependencies are available in this build."""
+    engines = [OcrEngine.DDDDOCR, OcrEngine.GEMINI]
+    if find_spec("easyocr") is not None:
+        engines.insert(1, OcrEngine.EASYOCR)
+    return tuple(engines)
 
 
 @dataclass(frozen=True)
@@ -78,7 +88,7 @@ class RunOptions:
     mode: RunMode
     credentials: Credentials
     ocr_enabled: bool = False
-    ocr_engine: OcrEngine = OcrEngine.EASYOCR
+    ocr_engine: OcrEngine = OcrEngine.DDDDOCR
     sms_user_id: str = ""
     sms_server_url: str = ""
     payment_trigger_url: str = ""
