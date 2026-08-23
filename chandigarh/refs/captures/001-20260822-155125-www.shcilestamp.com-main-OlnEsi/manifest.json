@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-08-22T15:51:26+05:30",
+  "frame_name": "main",
+  "url": "https://www.shcilestamp.com/OnlineStamping/OlnEsi",
+  "asset_count": 3,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/OlnCss.css",
+      "file": "assets/001-OlnCss.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/disableRC.js",
+      "file": "assets/002-disableRC.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/facebox.css",
+      "file": "assets/003-facebox.css"
+    }
+  ]
+}

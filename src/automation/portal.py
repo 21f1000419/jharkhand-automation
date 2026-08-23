@@ -46,7 +46,6 @@ TRANSACTION_FIELD_NAMES = {
 UPI_QR_READY_TEXT = "scan upi qr"
 UPI_TRANSACTION_TIMER_TEXT = "time left to complete the transaction"
 CAPTCHA_FAILURE_TEXT = "captcha validation failed"
-MAX_CAPTCHA_OCR_ATTEMPTS = 3
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
@@ -234,26 +233,9 @@ class PortalAutomation:
         captcha_entered_manually = True
         form_reset_count = 0
         while True:
-            # Always auto-fill username and password regardless of reset count.
+            # Refill every time the portal resets the form; resets have no retry limit.
             await self._prepare_citizen_login_attempt(credentials)
-            if form_reset_count >= 3:
-                # Automatic CAPTCHA re-fill has failed 3 times due to repeated
-                # page reloads.  Credentials are still filled above; only the
-                # CAPTCHA is left to the user.
-                self._status(
-                    "Login form keeps resetting; please enter the CAPTCHA manually, then click Get OTP…"
-                )
-                self.emit(
-                    UiEvent(
-                        "notification",
-                        "The login form has been reset 3 times automatically. "
-                        "Your username and password have been filled. "
-                        "Please enter the CAPTCHA manually and click Get OTP.",
-                        {"title": "Manual CAPTCHA required", "level": "warning"},
-                    )
-                )
-                captcha_entered_manually = True  # prevent auto OTP-button click
-            elif credentials.citizen_username and credentials.citizen_password:
+            if credentials.citizen_username and credentials.citizen_password:
                 captcha_entered_manually = await self._solve_captcha(
                     "#captcha_image",
                     "#captcha",
@@ -280,8 +262,7 @@ class PortalAutomation:
                         "log",
                         f"Citizen login form was reset by the portal after the OTP request "
                         f"(page reload cleared the fields). "
-                        f"Auto-retry {form_reset_count}/3"
-                        + (" — switching to manual CAPTCHA entry." if form_reset_count >= 3 else ". Re-filling credentials and CAPTCHA…"),
+                        f"Auto-retry {form_reset_count}. Re-filling credentials and CAPTCHA…",
                     )
                 )
                 # Wait for the page to fully settle after every reload before
@@ -542,27 +523,12 @@ class PortalAutomation:
             # #txtPassword as the reset indicator instead of #txtLoginId.
             login_reset_count = 0
             while True:
-                # Always auto-fill username and password.
+                # Refill every time the portal resets the form; resets have no retry limit.
                 if credentials.egras_username and credentials.egras_password:
                     await username.fill(credentials.egras_username)
                     await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
 
-                if login_reset_count >= 3:
-                    self._status(
-                        "eGRAS login form keeps resetting; please enter the CAPTCHA manually, "
-                        "then click Proceed…"
-                    )
-                    self.emit(
-                        UiEvent(
-                            "notification",
-                            "The eGRAS login form has been reset 3 times automatically. "
-                            "Your username and password have been filled. "
-                            "Please enter the CAPTCHA manually and click Proceed.",
-                            {"title": "Manual CAPTCHA required", "level": "warning"},
-                        )
-                    )
-                    login_captcha_entered_manually = True  # prevent auto Proceed click
-                elif credentials.egras_username and credentials.egras_password:
+                if credentials.egras_username and credentials.egras_password:
                     login_captcha_entered_manually = await self._solve_captcha(
                         "img.imgcaptcha",
                         "#txtcaptcha",
@@ -592,8 +558,7 @@ class PortalAutomation:
                             "log",
                             f"eGRAS login form was reset by the portal after the Proceed click "
                             f"(page reload cleared the fields). "
-                            f"Auto-retry {login_reset_count}/3"
-                            + (" — switching to manual CAPTCHA entry." if login_reset_count >= 3 else ". Re-filling credentials and CAPTCHA…"),
+                            f"Auto-retry {login_reset_count}. Re-filling credentials and CAPTCHA…",
                         )
                     )
                     await self.page.wait_for_timeout(2_000)
@@ -1285,51 +1250,63 @@ class PortalAutomation:
 
         ocr_task: asyncio.Task[str] | None = None
         try:
-            for attempt in range(1, MAX_CAPTCHA_OCR_ATTEMPTS + 1):
-                if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
-                    image_png = await self._capture_captcha_directly(image)
-                    self._save_captcha_image(image_png)
-                    ocr_task = asyncio.create_task(solver.solve_image(image_png, expected_length))
-                else:
-                    if self.save_captcha_images:
-                        with suppress(Exception):
-                            image_png = await self._capture_captcha_directly(image)
-                            self._save_captcha_image(image_png)
-                    await self._copy_captcha_with_browser_menu(image)
-                    ocr_task = asyncio.create_task(solver.solve(expected_length))
-                while not ocr_task.done():
-                    await self.controls.checkpoint()
-                    if (await field.input_value()).strip():
-                        ocr_task.cancel()
-                        await asyncio.gather(ocr_task, return_exceptions=True)
-                        await solver.cancel_active_response()
-                        await self._manual_captcha_entered()
-                        return True
-                    await self.page.wait_for_timeout(100)
-                code = await ocr_task
-                ocr_task = None
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    if self.captcha_copy_mode == CaptchaCopyMode.DIRECT:
+                        image_png = await self._capture_captcha_directly(image)
+                        self._save_captcha_image(image_png)
+                        ocr_task = asyncio.create_task(solver.solve_image(image_png, expected_length))
+                    else:
+                        if self.save_captcha_images:
+                            with suppress(Exception):
+                                image_png = await self._capture_captcha_directly(image)
+                                self._save_captcha_image(image_png)
+                        await self._copy_captcha_with_browser_menu(image)
+                        ocr_task = asyncio.create_task(solver.solve(expected_length))
+                    while not ocr_task.done():
+                        await self.controls.checkpoint()
+                        if (await field.input_value()).strip():
+                            ocr_task.cancel()
+                            await asyncio.gather(ocr_task, return_exceptions=True)
+                            await solver.cancel_active_response()
+                            await self._manual_captcha_entered()
+                            return True
+                        await self.page.wait_for_timeout(100)
+                    code = await ocr_task
+                    ocr_task = None
+                except WorkflowStopped:
+                    raise
+                except PlaywrightError:
+                    raise
+                except Exception as error:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            f"OCR attempt {attempt} failed: {error}. "
+                            "Refreshing the CAPTCHA and trying again.",
+                        )
+                    )
+                    await self._refresh_captcha(image, refresh_selector)
+                    continue
+
                 if (await field.input_value()).strip():
                     await self._manual_captcha_entered()
                     return True
                 if len(code) == expected_length:
                     await field.fill(code)
                     self._status("CAPTCHA filled; continuing with the portal...")
-                    self.emit(UiEvent("log", "CAPTCHA solved by OCR."))
+                    self.emit(UiEvent("log", f"CAPTCHA solved by OCR on attempt {attempt}."))
                     return False
-                if attempt == MAX_CAPTCHA_OCR_ATTEMPTS:
-                    raise RuntimeError(
-                        f"OCR returned {len(code)} characters instead of {expected_length} after "
-                        f"{MAX_CAPTCHA_OCR_ATTEMPTS} fresh CAPTCHA images."
-                    )
                 self.emit(
                     UiEvent(
                         "log",
-                        f"OCR returned {len(code)} characters instead of {expected_length}; "
+                        f"OCR attempt {attempt} returned {len(code)} characters instead of {expected_length}; "
                         "refreshing the CAPTCHA and trying again.",
                     )
                 )
                 await self._refresh_captcha(image, refresh_selector)
-            raise RuntimeError("OCR attempts ended without a result.")
         except WorkflowStopped:
             raise
         except PlaywrightError as error:

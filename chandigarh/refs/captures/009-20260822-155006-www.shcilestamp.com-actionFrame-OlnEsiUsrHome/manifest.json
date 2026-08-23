@@ -1,0 +1,24 @@
+{
+  "captured_at": "2026-08-22T15:50:07+05:30",
+  "frame_name": "actionFrame",
+  "url": "https://www.shcilestamp.com/OnlineStamping/JSP/OlnEsiUsrHome.jsp?isid=110235219140_22081549202622905194",
+  "asset_count": 4,
+  "assets": [
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/OlnCss.css",
+      "file": "assets/001-OlnCss.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/commonValidation.js",
+      "file": "assets/002-commonValidation.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.js",
+      "file": "assets/003-jquery.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.validate.js",
+      "file": "assets/004-jquery.validate.js"
+    }
+  ]
+}

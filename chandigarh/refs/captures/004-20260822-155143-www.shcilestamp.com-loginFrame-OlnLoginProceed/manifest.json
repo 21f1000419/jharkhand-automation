@@ -1,0 +1,88 @@
+{
+  "captured_at": "2026-08-22T15:51:45+05:30",
+  "frame_name": "loginFrame",
+  "url": "https://www.shcilestamp.com/OnlineStamping/JSP/OlnLoginProceed.jsp",
+  "asset_count": 20,
+  "assets": [
+    {
+      "url": "https://www.google.com/recaptcha/api.js",
+      "file": "assets/001-api.js"
+    },
+    {
+      "url": "https://www.google.com/recaptcha/api2/anchor?ar=1&amp;k=6LfX3NsZAAAAAPfKJSdF6JMk9eAbzqb4MADT1E6A&amp;co=aHR0cHM6Ly93d3cuc2hjaWxlc3RhbXAuY29tOjQ0Mw..&amp;hl=en&amp;v=xg_pWYS8-HRESiV6Rdg4aY_R&amp;size=invisible&amp;anchor-ms=20000&amp;execute-ms=30000&amp;cb=y3xthc5esfy6",
+      "file": "assets/002-anchor"
+    },
+    {
+      "url": "https://www.gstatic.com/recaptcha/releases/xg_pWYS8-HRESiV6Rdg4aY_R/recaptcha__en.js",
+      "file": "assets/003-recaptcha__en.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/olnsys_divider.gif",
+      "file": "assets/004-olnsys_divider.gif"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/olnsys_login_bg.jpg",
+      "file": "assets/005-olnsys_login_bg.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/images/reload.jpg",
+      "file": "assets/006-reload.jpg"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/CheckVersion.js",
+      "file": "assets/007-CheckVersion.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/OlnCss.css",
+      "file": "assets/008-OlnCss.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/commonValidation.js",
+      "file": "assets/009-commonValidation.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery-ui.js",
+      "file": "assets/010-jquery-ui.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.js",
+      "file": "assets/011-jquery.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.keypad.alt.css",
+      "file": "assets/012-jquery.keypad.alt.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.keypad.js",
+      "file": "assets/013-jquery.keypad.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.plugin.js",
+      "file": "assets/014-jquery.plugin.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.realperson.css",
+      "file": "assets/015-jquery.realperson.css"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.realperson.js",
+      "file": "assets/016-jquery.realperson.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jquery.validate.js",
+      "file": "assets/017-jquery.validate.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jsencrypt.js",
+      "file": "assets/018-jsencrypt.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/jsencrypt.min.js",
+      "file": "assets/019-jsencrypt.min.js"
+    },
+    {
+      "url": "https://www.shcilestamp.com/OnlineStamping/libs/redmond/jquery-ui-1.10.2.custom.min.css",
+      "file": "assets/020-jquery-ui-1.10.2.custom.min.css"
+    }
+  ]
+}
