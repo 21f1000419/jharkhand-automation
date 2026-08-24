@@ -38,6 +38,7 @@ PREPAYMENT_SUMMARY_TEXT = "summary of pre payment details"
 MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
 EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
 EGRASS_OTP_RECOVERY_WAIT_SECONDS = 15
+EGRASS_OTP_PAGE_TIMEOUT_SECONDS = 15
 TRANSACTION_FIELD_NAMES = {
     "name": "Name",
     "token no / depositor id": "Token No / Depositor ID",
@@ -569,12 +570,23 @@ class PortalAutomation:
                     if proceed_btn is not None:
                         await proceed_btn.click()
 
-                outcome = await self._wait_for_login_progress(
-                    otp_selector="#txtOTP",
-                    success_url_prefix="",
-                    field_selectors=["#txtLoginId", "#txtPassword", "#txtcaptcha"],
-                    reset_indicator_selector="#txtPassword",
-                )
+                try:
+                    outcome = await asyncio.wait_for(
+                        self._wait_for_login_progress(
+                            otp_selector="#txtOTP",
+                            success_url_prefix="",
+                            field_selectors=["#txtLoginId", "#txtPassword", "#txtcaptcha"],
+                            reset_indicator_selector="#txtPassword",
+                        ),
+                        timeout=EGRASS_OTP_PAGE_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as error:
+                    await self._cancel_otp_watcher(egrass_otp_task)
+                    raise AutomationError(
+                        "The eGRAS OTP page did not appear within 15 seconds.",
+                        stage=self.stage,
+                        code="egras_otp_page_timeout",
+                    ) from error
                 if outcome not in ("captcha_failed", "form_reset"):
                     break
                 if outcome == "form_reset":
@@ -963,6 +975,19 @@ class PortalAutomation:
         self.emit(UiEvent("log", "eGRAS OTP page detected; solving the second CAPTCHA."))
 
     async def _wait_for_egras_otp_step(self) -> str:
+        try:
+            return await asyncio.wait_for(
+                self._poll_for_egras_otp_step(),
+                timeout=EGRASS_OTP_PAGE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as error:
+            raise AutomationError(
+                "The eGRAS OTP page did not become ready within 15 seconds.",
+                stage=self.stage,
+                code="egras_otp_page_timeout",
+            ) from error
+
+    async def _poll_for_egras_otp_step(self) -> str:
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():

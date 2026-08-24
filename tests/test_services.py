@@ -793,6 +793,72 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(fill.await_count, 2)
         self.assertEqual(portal._solve_captcha.await_count, 3)
 
+    def test_egras_login_fails_when_otp_page_does_not_appear_in_time(self) -> None:
+        page = MagicMock()
+        page.wait_for_timeout = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._solve_captcha = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        portal._start_otp_watcher = MagicMock(return_value=None)  # type: ignore[method-assign]
+        portal._cancel_otp_watcher = AsyncMock()  # type: ignore[method-assign]
+
+        async def wait_forever(**_kwargs: object) -> str:
+            await asyncio.Event().wait()
+            return "otp"
+
+        portal._wait_for_login_progress = wait_forever  # type: ignore[method-assign]
+
+        with (
+            patch("automation.portal.EGRASS_OTP_PAGE_TIMEOUT_SECONDS", 0.01),
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=AsyncMock())),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(
+                portal.complete_egras_login(
+                    Credentials(egras_username="egras-user", egras_password="egras-pass")
+                )
+            )
+
+        self.assertEqual(raised.exception.stage, Stage.EGRAS_LOGIN)
+        self.assertEqual(raised.exception.code, "egras_otp_page_timeout")
+        portal._cancel_otp_watcher.assert_awaited_once_with(None)
+
+    def test_egras_otp_fields_must_become_ready_in_time(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+
+        async def yield_to_timeout(_milliseconds: int) -> None:
+            await asyncio.sleep(0)
+
+        page.wait_for_timeout = AsyncMock(side_effect=yield_to_timeout)
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+
+        with (
+            patch("automation.portal.EGRASS_OTP_PAGE_TIMEOUT_SECONDS", 0.01),
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=None)),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(portal._wait_for_egras_otp_step())
+
+        self.assertEqual(raised.exception.code, "egras_otp_page_timeout")
+
     def test_automatic_egras_captcha_and_otp_submit_validation(self) -> None:
         page = MagicMock()
         page.wait_for_timeout = AsyncMock()
