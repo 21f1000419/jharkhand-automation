@@ -10,3 +10,7 @@ torchvision==0.28.0
 backports.tarfile==1.2.0
 python-bidi==0.6.11
 opencv-contrib-python==4.10.0.84
+imagesize==2.0.0
+pyclipper==1.4.0
+pypdfium2==5.13.0
+shapely==2.1.2
