@@ -5,10 +5,11 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
+from playwright.async_api import Dialog, Locator, Page
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Locator, Page
 
 from core.config import app_data_directory
 from core.controls import RunControls
@@ -61,6 +62,20 @@ StageCallback = Callable[[Stage], Awaitable[None]]
 EventCallback = Callable[[UiEvent], None]
 
 
+@dataclass
+class CitizenOtpResendBudget:
+    maximum: int = 2
+    used: int = 0
+
+    @property
+    def available(self) -> bool:
+        return self.used < self.maximum
+
+    def record(self) -> int:
+        self.used += 1
+        return self.used
+
+
 def extract_egrass_otp_reference(message: str) -> str:
     """Extract the e-GRAS OTP reference displayed above the OTP field."""
     match = EGRASS_REFERENCE_PATTERN.search(message)
@@ -86,6 +101,7 @@ class PortalAutomation:
         retry_egras_otp_once: bool = True,
         payment_coordinator: PaymentCoordinator | None = None,
         focus_payment_page: Callable[[], Awaitable[None]] | None = None,
+        citizen_otp_resend_budget: CitizenOtpResendBudget | None = None,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -103,6 +119,7 @@ class PortalAutomation:
         self.retry_egras_otp_once = retry_egras_otp_once
         self.payment_coordinator = payment_coordinator or default_payment_coordinator()
         self.focus_payment_page = focus_payment_page or self._default_focus_payment_page
+        self.citizen_otp_resend_budget = citizen_otp_resend_budget or CitizenOtpResendBudget()
         self._payment_lease: PaymentLease | None = None
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: tuple[str, str] | None = None
@@ -882,6 +899,7 @@ class PortalAutomation:
         deadline = started_at + timeout_seconds
         reported_connection_issue = False
         last_poll_time = 0.0
+        resend_was_visible = False
         while time.monotonic() < deadline:
             await self.controls.checkpoint()
             field = self.page.locator(field_selector).first
@@ -893,6 +911,42 @@ class PortalAutomation:
                     return None
             except PlaywrightError:
                 pass
+
+            if otp_type == "main":
+                resend_button = self.page.locator("#btnotp1").first
+                try:
+                    resend_is_visible = (
+                        await resend_button.count() > 0 and await resend_button.is_visible()
+                    )
+                except PlaywrightError:
+                    resend_is_visible = False
+
+                if (
+                    resend_is_visible
+                    and not resend_was_visible
+                    and self.citizen_otp_resend_budget.available
+                ):
+                    resend_was_visible = True
+                    fresh_request_time = self._capture_main_otp_request_time()
+                    if fresh_request_time is not None and await self._click_citizen_otp_resend(
+                        resend_button
+                    ):
+                        attempt = self.citizen_otp_resend_budget.record()
+                        not_before = fresh_request_time
+                        started_at = time.monotonic()
+                        deadline = started_at + timeout_seconds
+                        last_poll_time = 0.0
+                        reported_connection_issue = False
+                        self.emit(
+                            UiEvent(
+                                "log",
+                                f"Citizen OTP resent automatically ({attempt} of "
+                                f"{self.citizen_otp_resend_budget.maximum}); restarting the OTP wait.",
+                            )
+                        )
+                        continue
+                elif not resend_is_visible:
+                    resend_was_visible = False
 
             now = time.monotonic()
             elapsed_seconds = now - started_at
@@ -934,6 +988,33 @@ class PortalAutomation:
 
             await self.page.wait_for_timeout(250)
         return None
+
+    async def _click_citizen_otp_resend(self, resend_button: Locator) -> bool:
+        dialog_tasks: list[asyncio.Task[None]] = []
+
+        def accept_dialog(dialog: Dialog) -> None:
+            dialog_tasks.append(asyncio.create_task(dialog.accept()))
+
+        self.page.once("dialog", accept_dialog)
+        try:
+            await resend_button.click()
+            # The portal sometimes opens an alert after this click. Give its
+            # event handler a moment to accept it, but do not require an alert.
+            await asyncio.sleep(0.5)
+            if dialog_tasks:
+                await asyncio.gather(*dialog_tasks, return_exceptions=True)
+            return True
+        except PlaywrightError as error:
+            self.emit(
+                UiEvent(
+                    "log",
+                    f"Could not click the Citizen Resend OTP button: {error}",
+                    {"level": "warning"},
+                )
+            )
+            return False
+        finally:
+            self.page.remove_listener("dialog", accept_dialog)
 
     def _delete_used_otp_in_background(
         self,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
-from automation.portal import PortalAutomation
+from automation.portal import CitizenOtpResendBudget, PortalAutomation
 from core.controls import RunControls
 from core.models import (
     STAGE_CHECKPOINTS,
@@ -50,6 +50,7 @@ class WorkflowEngine:
         self.current_row: dict[str, str] | None = None
         self.current_stage = Stage.IDLE
         self.browser_interrupted = False
+        self.citizen_otp_resend_budget = CitizenOtpResendBudget()
 
     def _create_portal(self, page: Page, options: RunOptions) -> PortalAutomation:
         return PortalAutomation(
@@ -67,9 +68,11 @@ class WorkflowEngine:
             options.retry_egras_otp_once,
             self.payment_coordinator,
             self.focus_payment_page,
+            self.citizen_otp_resend_budget,
         )
 
     async def run(self, options: RunOptions) -> bool:
+        self.citizen_otp_resend_budget = CitizenOtpResendBudget()
         self.store = CsvBatchStore(options.csv_path)
         self.store.load()
         await self._persist()

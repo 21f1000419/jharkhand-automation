@@ -669,6 +669,111 @@ class ServiceTests(unittest.TestCase):
         get_otp_button.click.assert_awaited_once_with()
         login_button.click.assert_awaited_once_with()
 
+    def test_citizen_otp_wait_resends_twice_and_uses_fresh_request_times(self) -> None:
+        page = MagicMock()
+        field = MagicMock()
+        field.count = AsyncMock(return_value=1)
+        field.input_value = AsyncMock(return_value="")
+        resend_button = MagicMock()
+        resend_button.count = AsyncMock(return_value=1)
+        resend_button.is_visible = AsyncMock(
+            side_effect=[True, False, True, False, True]
+        )
+
+        def locate(selector: str) -> MagicMock:
+            located = MagicMock()
+            located.first = resend_button if selector == "#btnotp1" else field
+            return located
+
+        page.locator.side_effect = locate
+        page.wait_for_timeout = AsyncMock()
+        sms_client = MagicMock()
+        sms_client.get_main_otp = AsyncMock(side_effect=[None, None, "654321"])
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            sms_client,
+            "sms-user",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._capture_main_otp_request_time = MagicMock(  # type: ignore[method-assign]
+            side_effect=["fresh-1", "fresh-2"]
+        )
+        portal._click_citizen_otp_resend = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        clock = 0.0
+
+        def monotonic() -> float:
+            nonlocal clock
+            clock += 2.0
+            return clock
+
+        with patch("automation.portal.time.monotonic", side_effect=monotonic):
+            otp = asyncio.run(
+                portal._wait_for_sms_otp(
+                    "main",
+                    "#otp",
+                    100,
+                    not_before="initial",
+                )
+            )
+
+        self.assertEqual(otp, "654321")
+        self.assertEqual(portal.citizen_otp_resend_budget.used, 2)
+        self.assertEqual(portal._click_citizen_otp_resend.await_count, 2)
+        self.assertEqual(
+            [call.args[1] for call in sms_client.get_main_otp.await_args_list],
+            ["fresh-1", "fresh-2", "fresh-2"],
+        )
+
+    def test_citizen_otp_resend_accepts_an_optional_alert(self) -> None:
+        async def exercise(alert_appears: bool) -> None:
+            page = MagicMock()
+            dialog = MagicMock()
+            dialog.accept = AsyncMock()
+            registered_handler: list[object] = []
+
+            def register(_event: str, handler: object) -> None:
+                registered_handler.append(handler)
+
+            page.once.side_effect = register
+            resend_button = MagicMock()
+
+            async def click() -> None:
+                if alert_appears:
+                    handler = registered_handler[0]
+                    assert callable(handler)
+                    handler(dialog)
+
+            resend_button.click = AsyncMock(side_effect=click)
+            portal = PortalAutomation(
+                page,
+                None,
+                RunControls(lambda _event: None),
+                AsyncMock(),
+                lambda _event: None,
+                MagicMock(),
+                "",
+                CaptchaCopyMode.DIRECT,
+            )
+
+            with patch("automation.portal.asyncio.sleep", new=AsyncMock()):
+                clicked = await portal._click_citizen_otp_resend(resend_button)
+
+            self.assertTrue(clicked)
+            resend_button.click.assert_awaited_once_with()
+            page.remove_listener.assert_called_once_with("dialog", registered_handler[0])
+            if alert_appears:
+                dialog.accept.assert_awaited_once_with()
+            else:
+                dialog.accept.assert_not_awaited()
+
+        for alert_appears in (False, True):
+            with self.subTest(alert_appears=alert_appears):
+                asyncio.run(exercise(alert_appears))
+
     def test_manual_citizen_captcha_with_automatic_otp_clicks_login(self) -> None:
         page = MagicMock()
         page.is_closed.return_value = False
