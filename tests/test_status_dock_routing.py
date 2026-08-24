@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import unittest
+from unittest.mock import MagicMock
+
+from core.models import UiEvent
+from ui.main_window import MainWindow
+from ui.run_tab import AutomationTab
+
+
+class StatusDockRoutingTests(unittest.TestCase):
+    def window_with_tabs(self) -> tuple[MainWindow, MagicMock, MagicMock]:
+        window = MainWindow.__new__(MainWindow)
+        first = MagicMock()
+        first.tab_id = 1
+        first.run_id = "1"
+        first.display_name = "ID 1"
+        first.browser_recovery_pending = False
+        first.browser_recovery_ready = False
+        second = MagicMock()
+        second.tab_id = 2
+        second.run_id = "2"
+        second.display_name = "ID 2"
+        second.browser_recovery_pending = False
+        second.browser_recovery_ready = False
+        window.tabs = {1: first, 2: second}
+        window._record_ui_action = MagicMock()  # type: ignore[method-assign]
+        window._update_summary = MagicMock()  # type: ignore[method-assign]
+        return window, first, second
+
+    def test_dock_controls_target_only_the_selected_id(self) -> None:
+        window, first, second = self.window_with_tabs()
+
+        window._dock_pause("2")
+        window._dock_resume("2")
+        window._dock_stop("2")
+        window._dock_error_decision("2", "retry")
+
+        first.pause.assert_not_called()
+        first.resume.assert_not_called()
+        first.stop.assert_not_called()
+        first.decide_error.assert_not_called()
+        second.pause.assert_called_once_with()
+        second.resume.assert_called_once_with()
+        second.stop.assert_called_once_with()
+        second.decide_error.assert_called_once_with("retry")
+
+    def test_browser_recovery_controls_target_only_the_closed_id(self) -> None:
+        window, first, second = self.window_with_tabs()
+        second.browser_recovery_pending = True
+
+        window._dock_browser_recovery("2", "retry")
+        window._dock_stop("2")
+
+        first.recover_browser.assert_not_called()
+        first.dismiss_browser_recovery.assert_not_called()
+        second.recover_browser.assert_called_once_with("retry")
+        second.dismiss_browser_recovery.assert_called_once_with()
+        second.stop.assert_not_called()
+
+    def test_recovery_is_only_offered_while_another_run_is_active(self) -> None:
+        window, first, second = self.window_with_tabs()
+        first.is_active = True
+        first.portal_session_open = True
+        second.is_active = True
+        second.portal_session_open = True
+
+        self.assertTrue(window.should_offer_browser_recovery(first))
+
+        second.is_active = False
+        second.portal_session_open = False
+        self.assertFalse(window.should_offer_browser_recovery(first))
+
+        second.browser_recovery_pending = True
+        self.assertTrue(window.should_offer_browser_recovery(first))
+
+    def test_closed_browser_waits_for_cleanup_then_offers_recovery(self) -> None:
+        owner = MagicMock()
+        owner.should_offer_browser_recovery.return_value = True
+        tab = AutomationTab.__new__(AutomationTab)
+        tab.owner = owner
+        tab.config = MagicMock(display_name="ID 1")
+        tab.running = True
+        tab.starting = False
+        tab.paused = False
+        tab.auto_waiting = False
+        tab.portal_session_open = True
+        tab.browser_recovery_pending = False
+        tab.browser_recovery_ready = False
+        tab.current_row_number = 4
+        tab.current_unit_number = 2
+        tab._set_buttons = MagicMock()  # type: ignore[method-assign]
+        tab.set_state = MagicMock()  # type: ignore[method-assign]
+
+        tab.handle_event(UiEvent("browser_closed", "Chrome closed"))
+
+        self.assertTrue(tab.browser_recovery_pending)
+        self.assertFalse(tab.browser_recovery_ready)
+        tab.set_state.assert_called_with(
+            "Browser closed",
+            "This browser was closed. Finishing cleanup before it can restart...",
+        )
+        owner.show_browser_recovery.assert_called_with(
+            tab,
+            "This browser was closed. Finishing cleanup before it can restart...",
+            ready=False,
+        )
+
+        tab.handle_event(UiEvent("run_stopped", "Current row remains retryable"))
+        self.assertTrue(tab.browser_recovery_pending)
+
+        tab.handle_event(UiEvent("session_finished", "Ready"))
+        self.assertTrue(tab.browser_recovery_ready)
+        owner.show_browser_recovery.assert_called_with(
+            tab,
+            "Retry this row, skip it and open the next row, or stop this ID.",
+            ready=True,
+        )
+
+    def test_closed_browser_has_no_recovery_card_for_single_run(self) -> None:
+        owner = MagicMock()
+        owner.should_offer_browser_recovery.return_value = False
+        tab = AutomationTab.__new__(AutomationTab)
+        tab.owner = owner
+        tab.config = MagicMock(display_name="ID 1")
+        tab.running = True
+        tab.starting = False
+        tab.paused = False
+        tab.auto_waiting = False
+        tab.portal_session_open = True
+        tab.browser_recovery_pending = False
+        tab.browser_recovery_ready = False
+        tab._set_buttons = MagicMock()  # type: ignore[method-assign]
+        tab.set_state = MagicMock()  # type: ignore[method-assign]
+
+        tab.handle_event(UiEvent("browser_closed", "Chrome closed"))
+
+        self.assertFalse(tab.browser_recovery_pending)
+        tab.set_state.assert_called_with("Stopped", "Chrome closed")
+        owner.show_browser_recovery.assert_not_called()
+
+    def test_workflow_only_close_signal_keeps_multi_run_card(self) -> None:
+        owner = MagicMock()
+        owner.should_offer_browser_recovery.return_value = True
+        tab = AutomationTab.__new__(AutomationTab)
+        tab.owner = owner
+        tab.config = MagicMock(display_name="ID 2")
+        tab.running = True
+        tab.starting = False
+        tab.paused = False
+        tab.auto_waiting = False
+        tab.portal_session_open = True
+        tab.browser_recovery_pending = False
+        tab.browser_recovery_ready = False
+        tab._set_buttons = MagicMock()  # type: ignore[method-assign]
+        tab.set_state = MagicMock()  # type: ignore[method-assign]
+
+        tab.handle_event(
+            UiEvent(
+                "run_stopped",
+                "A browser was closed. The current row remains retryable.",
+                {"browser_closed": True},
+            )
+        )
+
+        self.assertTrue(tab.browser_recovery_pending)
+        tab.set_state.assert_called_with(
+            "Browser closed",
+            "This browser was closed. Finishing cleanup before it can restart...",
+        )
+        owner.show_browser_recovery.assert_called_once_with(
+            tab,
+            "This browser was closed. Finishing cleanup before it can restart...",
+            ready=False,
+        )
+
+    def test_payment_events_release_topmost_for_only_the_payment_id(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        dock = MagicMock()
+        dock.exists = True
+        window.automation_status_window = dock
+
+        window._handle_event(
+            UiEvent("payment_state", "Payment slot granted.", {"state": "slot_granted"}, "1")
+        )
+        dock.set_payment_active.assert_called_once_with("1", True)
+
+        dock.reset_mock()
+        window._handle_event(
+            UiEvent("payment_state", "Payment slot released.", {"state": "slot_released"}, "1")
+        )
+        dock.set_payment_active.assert_called_once_with("1", False)
+        self.assertEqual(first.handle_event.call_count, 2)
+
+    def test_starting_state_creates_one_colored_card_for_the_id(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        dock = MagicMock()
+        dock.exists = True
+        window.automation_status_window = dock
+        window.tab_states = {}
+        window.notebook = MagicMock()
+        window._tab_accent_image = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+        first.frame = MagicMock()
+        first.is_enabled = True
+        first.running = False
+        first.starting = True
+        first.paused = False
+        first.auto_waiting = False
+        first.portal_session_open = False
+
+        window.update_tab_state(first, "Starting", "Opening Chrome")
+
+        dock.begin_run.assert_called_once_with("1", "ID 1", "#2563eb", "Opening Chrome")
+        dock.set_controls.assert_called_once_with(
+            "1",
+            running=False,
+            starting=True,
+            paused=False,
+            auto_waiting=False,
+            portal_open=False,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

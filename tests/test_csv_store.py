@@ -130,6 +130,28 @@ class CsvBatchStoreTests(unittest.TestCase):
         self.assertIn("PDF download failed", row["last_error"])
         self.assertEqual(len(list(store.pending_rows())), 0)
 
+    def test_skip_row_marks_every_unfinished_quantity_processed(self) -> None:
+        CsvBatchStore.write_template(self.path)
+        store = CsvBatchStore(self.path)
+        store.load()
+        row = store.rows[0]
+        row["quantity"] = "4"
+        row["processed_quantity"] = "1"
+
+        skipped = store.mark_skipped_row(
+            row,
+            Stage.EGRAS_OTP,
+            "Browser was closed",
+        )
+
+        self.assertEqual(skipped, 3)
+        self.assertEqual(row["processed_quantity"], "4")
+        self.assertEqual(
+            [item["quantity"] for item in json.loads(row["skipped_quantities"])],
+            ["2", "3", "4"],
+        )
+        self.assertEqual(len(list(store.pending_rows())), 0)
+
     def test_interrupted_running_row_becomes_retryable_error(self) -> None:
         CsvBatchStore.write_template(self.path)
         store = CsvBatchStore(self.path)

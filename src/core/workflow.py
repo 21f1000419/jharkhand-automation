@@ -288,7 +288,7 @@ class WorkflowEngine:
                     self.store.mark_error(
                         self.current_row,
                         self.current_stage,
-                        "Browser closed. Start a new batch to continue.",
+                        "Browser closed. This row can be retried.",
                     )
                 else:
                     self.store.mark_stopped(
@@ -300,11 +300,17 @@ class WorkflowEngine:
                 self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
             self.current_row = None
             message = (
-                "A browser was closed. The current row was skipped; start a new batch to continue."
+                "A browser was closed. The current row remains retryable."
                 if self.browser_interrupted
                 else f"{self.controls.stop_reason}. Current work remains retryable."
             )
-            self.emit(UiEvent("run_stopped", message))
+            self.emit(
+                UiEvent(
+                    "run_stopped",
+                    message,
+                    {"browser_closed": self.browser_interrupted},
+                )
+            )
             return False
 
     async def _handle_error(

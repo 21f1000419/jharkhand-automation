@@ -423,6 +423,10 @@ class AutomationController:
                 del self.sessions[session.tab_id]
             with self._session_lock:
                 self._reserved_tabs.discard(session.tab_id)
+            self._emit_session(
+                session,
+                self._event("session_finished", "Automation session is ready to restart."),
+            )
 
     def _can_reuse_portal(self, session: RunSession, choice: PortalBrowser) -> bool:
         return (

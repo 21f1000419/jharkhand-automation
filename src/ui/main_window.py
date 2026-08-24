@@ -20,6 +20,7 @@ from core.playwright_browsers import (
 )
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
+from ui.automation_status import AutomationStatusWindow
 from ui.run_tab import CUSTOM_BROWSER_OPTION as TAB_CUSTOM_BROWSER_OPTION
 from ui.run_tab import AutomationTab
 
@@ -61,6 +62,7 @@ class MainWindow:
         self.gemini_ready = bool(config.gemini_verified)
         self.gemini_checking = False
         self.ocr_test_running = False
+        self.automation_status_window: AutomationStatusWindow | None = None
         self._closing = False
 
         # The OCR browser is shared by the controller. Run configuration stays
@@ -123,6 +125,9 @@ class MainWindow:
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
         ttk.Button(toolbar, text="Start All", command=self._start_all).pack(side="left")
         ttk.Button(toolbar, text="Stop All", command=self._stop_all).pack(side="left", padx=(7, 0))
+        ttk.Button(toolbar, text="Show status dock", command=self._show_status_dock).pack(
+            side="left", padx=(7, 0)
+        )
         ttk.Button(toolbar, text="Refresh browsers", command=self._refresh_portal_browsers).pack(
             side="left", padx=(7, 0)
         )
@@ -192,12 +197,145 @@ class MainWindow:
         existing = self.tab_accent_images.get(key)
         if existing is not None:
             return existing
-        color = TAB_ACCENT_COLORS[(tab_id - 1) % len(TAB_ACCENT_COLORS)] if enabled else "#9ca3af"
+        color = self._tab_accent_color(tab_id) if enabled else "#9ca3af"
         image = tk.PhotoImage(master=self.root, width=13, height=13)
         image.put("#374151" if enabled else "#6b7280", to=(0, 0, 13, 13))
         image.put(color, to=(1, 1, 12, 12))
         self.tab_accent_images[key] = image
         return image
+
+    def _tab_accent_color(self, tab_id: int) -> str:
+        return TAB_ACCENT_COLORS[(tab_id - 1) % len(TAB_ACCENT_COLORS)]
+
+    def _ensure_status_dock(self) -> AutomationStatusWindow:
+        dock = self.automation_status_window
+        if dock is None or not dock.exists:
+            dock = AutomationStatusWindow(
+                self.root,
+                on_pause=self._dock_pause,
+                on_resume=self._dock_resume,
+                on_stop=self._dock_stop,
+                on_error_decision=self._dock_error_decision,
+                on_browser_recovery=self._dock_browser_recovery,
+                on_stop_all=self._stop_all,
+            )
+            self.automation_status_window = dock
+        return dock
+
+    def _dock_tab(self, run_id: str) -> AutomationTab | None:
+        return self.tabs.get(int(run_id)) if run_id.isdigit() else None
+
+    def _dock_pause(self, run_id: str) -> None:
+        tab = self._dock_tab(run_id)
+        if tab is not None:
+            self._record_ui_action(f"id_{run_id}_dock_pause_clicked")
+            tab.pause()
+
+    def _dock_resume(self, run_id: str) -> None:
+        tab = self._dock_tab(run_id)
+        if tab is not None:
+            self._record_ui_action(f"id_{run_id}_dock_resume_clicked")
+            tab.resume()
+
+    def _dock_stop(self, run_id: str) -> None:
+        tab = self._dock_tab(run_id)
+        if tab is not None:
+            self._record_ui_action(f"id_{run_id}_dock_stop_clicked")
+            if tab.browser_recovery_pending:
+                tab.dismiss_browser_recovery()
+            else:
+                tab.stop()
+
+    def _dock_error_decision(self, run_id: str, action: str) -> None:
+        tab = self._dock_tab(run_id)
+        if tab is not None:
+            self._record_ui_action(f"id_{run_id}_dock_error_{action}_clicked")
+            tab.decide_error(action)
+
+    def _dock_browser_recovery(self, run_id: str, action: str) -> None:
+        tab = self._dock_tab(run_id)
+        if tab is not None:
+            self._record_ui_action(f"id_{run_id}_dock_browser_{action}_clicked")
+            tab.recover_browser(action)
+
+    def _show_status_dock(self) -> None:
+        self._record_ui_action("show_status_dock_clicked")
+        dock = self._ensure_status_dock()
+        for tab in self.tabs.values():
+            if (tab.is_active or tab.browser_recovery_pending) and not dock.has_run(tab.run_id):
+                dock.begin_run(
+                    tab.run_id,
+                    tab.display_name,
+                    self._tab_accent_color(tab.tab_id),
+                    tab.run_status_var.get(),
+                )
+            if tab.browser_recovery_pending and dock.has_run(tab.run_id):
+                dock.show_browser_recovery(
+                    tab.run_id,
+                    "Retry this row, skip it and open the next row, or stop this ID.",
+                    ready=tab.browser_recovery_ready,
+                )
+        dock.show()
+        if not any(tab.is_active for tab in self.tabs.values()) and not dock.has_cards:
+            self.run_status_var.set("No active IDs to show")
+
+    def should_offer_browser_recovery(self, closing_tab: AutomationTab) -> bool:
+        active_runs = sum(
+            tab.is_active or tab.portal_session_open or tab.browser_recovery_pending
+            for tab in self.tabs.values()
+        )
+        return closing_tab.tab_id in self.tabs and active_runs > 1
+
+    def show_browser_recovery(
+        self, tab: AutomationTab, message: str, *, ready: bool
+    ) -> None:
+        dock = self._ensure_status_dock()
+        if not dock.has_run(tab.run_id):
+            dock.begin_run(
+                tab.run_id,
+                tab.display_name,
+                self._tab_accent_color(tab.tab_id),
+                message,
+            )
+        dock.show_browser_recovery(tab.run_id, message, ready=ready)
+
+    def show_tab_error_in_dock(self, tab: AutomationTab, event: UiEvent) -> bool:
+        dock = self._ensure_status_dock()
+        if not dock.has_run(tab.run_id):
+            dock.begin_run(
+                tab.run_id,
+                tab.display_name,
+                self._tab_accent_color(tab.tab_id),
+                event.message,
+            )
+        dock.show_error(
+            tab.run_id,
+            message=event.message,
+            row=event.data.get("row"),
+            quantity=event.data.get("quantity"),
+            quantity_action=event.data.get("quantity_action", False),
+            post_payment_warning=event.data.get("post_payment_warning", False),
+            can_continue=event.data.get("can_continue", False),
+            next_checkpoint_title=event.data.get("next_checkpoint_title", ""),
+            next_checkpoint_instruction=event.data.get("next_checkpoint_instruction", ""),
+        )
+        return True
+
+    def update_status_dock_progress(
+        self, tab: AutomationTab, row: int | None, quantity: int | None
+    ) -> None:
+        dock = self.automation_status_window
+        if dock is not None and dock.exists:
+            dock.set_progress(tab.run_id, row, quantity)
+
+    def update_status_dock_payment(self, tab: AutomationTab, state: str) -> None:
+        dock = self.automation_status_window
+        if dock is None or not dock.exists:
+            return
+        if state in {"slot_granted", "pay_now_ready", "qr_ready", "foreground_verified"}:
+            dock.set_payment_active(tab.run_id, True)
+        elif state in {"slot_released", "download_ready"}:
+            dock.set_payment_active(tab.run_id, False)
 
     def _add_tab(self) -> None:
         self._record_ui_action("add_id_clicked")
@@ -233,6 +371,8 @@ class MainWindow:
         # Do not remove the profile directory. It is deliberately persistent.
         self.tabs.pop(tab.tab_id, None)
         self.tab_states.pop(tab.tab_id, None)
+        if self.automation_status_window is not None:
+            self.automation_status_window.remove_run(tab.run_id)
         self.tab_accent_images.pop((tab.tab_id, True), None)
         self.tab_accent_images.pop((tab.tab_id, False), None)
         self.config.tabs[:] = [item for item in self.config.tabs if item.tab_id != tab.tab_id]
@@ -296,6 +436,29 @@ class MainWindow:
         self.notebook.tab(  # type: ignore[no-untyped-call]
             str(tab.frame), text=caption, image=accent
         )
+        dock = self.automation_status_window
+        if state == "Starting" and tab.is_enabled:
+            dock = self._ensure_status_dock()
+            dock.begin_run(
+                tab.run_id,
+                tab.display_name,
+                self._tab_accent_color(tab.tab_id),
+                detail or "Preparing this automation session...",
+            )
+        elif dock is not None and dock.exists and dock.has_run(tab.run_id):
+            if state in {"Stopped", "Disabled"} and not tab.browser_recovery_pending:
+                dock.remove_run(tab.run_id)
+            else:
+                dock.set_status(tab.run_id, state, detail)
+        if dock is not None and dock.exists and dock.has_run(tab.run_id):
+            dock.set_controls(
+                tab.run_id,
+                running=tab.running,
+                starting=tab.starting,
+                paused=tab.paused,
+                auto_waiting=tab.auto_waiting,
+                portal_open=tab.portal_session_open,
+            )
         self._update_summary()
 
     def _tab_changed(self, _event: object = None) -> None:
@@ -306,7 +469,8 @@ class MainWindow:
         paused = sum(tab.paused for tab in self.tabs.values())
         complete = sum(self.tab_states.get(tab.tab_id) == "Complete" for tab in self.tabs.values())
         errors = sum(
-            self.tab_states.get(tab.tab_id) in {"Error", "Needs setup"} for tab in self.tabs.values()
+            self.tab_states.get(tab.tab_id) in {"Error", "Needs setup", "Browser closed"}
+            for tab in self.tabs.values()
         )
         disabled = sum(not tab.is_enabled for tab in self.tabs.values())
         idle = max(0, len(self.tabs) - active - complete - errors - disabled)
@@ -339,6 +503,22 @@ class MainWindow:
         tab = self.tabs.get(int(run_id)) if run_id.isdigit() else None
         if tab is not None:
             tab.handle_event(event)
+            if event.kind == "batch_update":
+                self.update_status_dock_progress(
+                    tab,
+                    event.data.get("current_row"),
+                    event.data.get("current_unit"),
+                )
+            elif event.kind == "payment_state":
+                self.update_status_dock_payment(tab, str(event.data.get("state", "")))
+            elif event.kind in {
+                "run_completed",
+                "run_stopped",
+                "browser_closed",
+                "portal_closed",
+                "fatal_error",
+            }:
+                self.update_status_dock_payment(tab, "slot_released")
             self._update_summary()
             return
         self._handle_global_event(event)
@@ -569,5 +749,7 @@ class MainWindow:
             return
         self.controller.record_activity("application_closed", "Desktop application closed.")
         self._closing = True
+        if self.automation_status_window is not None:
+            self.automation_status_window.close()
         self.controller.shutdown()
         self.root.destroy()

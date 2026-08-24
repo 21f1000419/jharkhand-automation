@@ -126,5 +126,6 @@ class AutomationControllerTabTests(unittest.TestCase):
                 self.assertTrue(
                     any("startup attempt 1 failed" in event.message for event in events)
                 )
+                self.assertTrue(any(event.kind == "session_finished" for event in events))
             finally:
                 controller.shutdown()

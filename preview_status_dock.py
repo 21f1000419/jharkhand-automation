@@ -34,13 +34,25 @@ def main() -> None:
     def open_dock() -> None:
         dock = AutomationStatusWindow(
             root,
-            on_pause=lambda: None,
-            on_resume=lambda: None,
-            on_stop=lambda: None,
-            on_error_decision=lambda _action: None,
+            on_pause=lambda _run_id: None,
+            on_resume=lambda _run_id: None,
+            on_stop=lambda _run_id: None,
+            on_error_decision=lambda _run_id, _action: None,
+            on_browser_recovery=lambda _run_id, _action: None,
+            on_stop_all=lambda: None,
         )
-        dock.set_status("Working", "Filling the eStamp form…")
-        dock.set_progress(row=4, quantity=2)
+        dock.begin_run("1", "ID 1", "#2563eb", "Filling the eStamp form...")
+        dock.set_status("1", "Working", "Filling the eStamp form...")
+        dock.set_progress("1", row=4, quantity=2)
+        dock.set_controls(
+            "1", running=True, starting=False, paused=False, auto_waiting=False, portal_open=True
+        )
+        dock.begin_run("2", "ID 2", "#059669", "Waiting for the Citizen OTP...")
+        dock.set_status("2", "Waiting", "Waiting for the Citizen OTP...")
+        dock.set_progress("2", row=1, quantity=1)
+        dock.set_controls(
+            "2", running=True, starting=False, paused=True, auto_waiting=True, portal_open=True
+        )
         dock.window.bind("<Button-3>", lambda _event: root.destroy())
 
     root.after(100, open_dock)

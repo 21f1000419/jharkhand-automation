@@ -92,7 +92,16 @@ COLLECTION_MODES = [
 ]
 
 
-def find_in_any_frame(page, selector, *, state="visible", timeout=30_000):
+def find_in_any_frame(
+    page,
+    selector,
+    *,
+    state="visible",
+    timeout=30_000,
+    stop_event=None,
+    pause_event=None,
+    log_fn=None,
+):
     """Return the first matching locator from the page or any live iframe.
 
     The SHCIL portal replaces its nested frames without changing the browser
@@ -107,6 +116,20 @@ def find_in_any_frame(page, selector, *, state="visible", timeout=30_000):
     last_error = None
 
     while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            raise AutomationCancelled()
+        if pause_event is not None and pause_event.is_set():
+            pause_start = time.monotonic()
+            if log_fn:
+                log_fn("Automation paused. Click Resume to continue.")
+            while pause_event.is_set():
+                if stop_event is not None and stop_event.is_set():
+                    raise AutomationCancelled()
+                page.wait_for_timeout(200)
+            deadline += time.monotonic() - pause_start
+            if log_fn:
+                log_fn("Automation resumed.")
+
         # Take a fresh snapshot each time: selecting State can recreate one or
         # more portal iframes while this function is waiting.
         for frame in page.frames:
@@ -326,7 +349,8 @@ class EStampAutomation:
         log_fn,
         status_fn,
         stop_event,
-        capture_references,
+        pause_event=None,
+        capture_references=False,
     ):
         self.user_id = user_id
         self.password = password
@@ -343,6 +367,7 @@ class EStampAutomation:
         self.current_record = None
         self.log = self._log
         self.stop_event = stop_event
+        self.pause_event = pause_event
         self.capture_references = capture_references
 
     def _log(self, message):
@@ -351,6 +376,13 @@ class EStampAutomation:
     def _check_stop(self):
         if self.stop_event.is_set():
             raise AutomationCancelled()
+        if self.pause_event is not None and self.pause_event.is_set():
+            self._log("Automation paused. Click Resume to continue.")
+            while self.pause_event.is_set():
+                if self.stop_event.is_set():
+                    raise AutomationCancelled()
+                time.sleep(0.2)
+            self._log("Automation resumed.")
 
     def run(self):
         with sync_playwright() as p:
@@ -432,10 +464,17 @@ class EStampAutomation:
         self.log("Login successful. Pay Stamp Duty form opened.")
         return True
 
-    @staticmethod
-    def _find_in_any_frame(page, selector, *, state="visible", timeout=30_000):
+    def _find_in_any_frame(self, page, selector, *, state="visible", timeout=30_000):
         """Portal-wide locator that tolerates the site's changing iframe tree."""
-        return find_in_any_frame(page, selector, state=state, timeout=timeout)
+        return find_in_any_frame(
+            page,
+            selector,
+            state=state,
+            timeout=timeout,
+            stop_event=self.stop_event,
+            pause_event=self.pause_event,
+            log_fn=self._log,
+        )
 
     def _wait_for_pay_stamp_duty_link(self, page, timeout=120_000):
         self._find_in_any_frame(
@@ -456,8 +495,15 @@ class EStampAutomation:
         self._click_pay_stamp_duty(page)
 
         # Step 5: select state. The portal refreshes its hidden options here.
+        self._check_stop()
         self.log(f"Selecting state {self.state_code}...")
         self._find_in_any_frame(page, "#iSttCd", timeout=60_000).select_option(value=self.state_code)
+
+        # Set the self-print limit after StateSelect() has finished, because
+        # that portal callback overwrites the hidden field with its default.
+        self._find_in_any_frame(
+            page, "#iEsiSelfPrintLimit", state="attached", timeout=60_000
+        ).evaluate("el => { el.value = '999999'; }")
 
         # StateSelect determines which collection methods the portal permits.
         # Use its normal radio/change handling rather than manipulating a hidden
@@ -465,6 +511,7 @@ class EStampAutomation:
         self._select_collection_mode(page)
 
         # Step 6: select article type
+        self._check_stop()
         self.log(f"Selecting article {self.article_value}...")
         # The portal hides the real radio input and displays a styled control.
         # Force-check the attached input so the native change handler still
@@ -474,6 +521,7 @@ class EStampAutomation:
         ).check(force=True)
 
         # Step 7: proceed
+        self._check_stop()
         self.log("Clicking Proceed...")
         self._find_in_any_frame(page, "#btn_sub[value='Proceed']", timeout=60_000).click()
 
@@ -493,6 +541,7 @@ class EStampAutomation:
         page.wait_for_timeout(500)
 
         # Select RAZORPAY as payment mode
+        self._check_stop()
         self.log("Selecting RAZORPAY payment mode...")
         self._find_in_any_frame(page, "#iPmtMode", timeout=60_000).select_option(value="RAZORPAY")
 
@@ -503,11 +552,13 @@ class EStampAutomation:
         page.wait_for_timeout(500)
 
         # Press Confirm
+        self._check_stop()
         self.log("Clicking Confirm...")
         self._find_in_any_frame(page, "#btnConfirm", timeout=60_000).click()
         page.wait_for_timeout(500)
 
         # Accept terms & conditions checkbox
+        self._check_stop()
         self.log("Checking 'I accept Terms and Conditions'...")
         self._find_in_any_frame(page, "#iChk", timeout=60_000).check()
 
@@ -522,11 +573,13 @@ class EStampAutomation:
             )
             self._find_in_any_frame(page, "#btnPrintCert", timeout=900_000)
 
+            self._check_stop()
             self.log("Clicking 'Print eStamp Certificate'...")
             self._find_in_any_frame(page, "#btnPrintCert", timeout=60_000).click()
             page.wait_for_timeout(500)
 
             # Wait for the final Print button and click it.
+            self._check_stop()
             self.log("Waiting for 'Print' button...")
             self._find_in_any_frame(page, "#printBtn", timeout=180_000).click()
         else:
@@ -535,6 +588,7 @@ class EStampAutomation:
                 "self-print a certificate; wait for the portal to return to 'Pay Stamp Duty'."
             )
 
+        self._check_stop()
         self.log("Waiting to return to 'Pay Stamp Duty' for the next record...")
         self._wait_for_pay_stamp_duty_link(page, timeout=900_000)
 
@@ -662,6 +716,7 @@ class App(tk.Tk):
 
         self.log_queue = queue.Queue()
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
         self.worker_thread = None
         self.status_var = tk.StringVar(value="Ready")
         self.browser_path = self._find_browser()
@@ -814,6 +869,10 @@ class App(tk.Tk):
         controls.pack(fill="x", **pad)
         self.start_btn = ttk.Button(controls, text="Start Automation", command=self._start)
         self.start_btn.pack(side="left", **pad)
+        self.pause_btn = ttk.Button(controls, text="Pause", command=self._pause, state="disabled")
+        self.pause_btn.pack(side="left", **pad)
+        self.resume_btn = ttk.Button(controls, text="Resume", command=self._resume, state="disabled")
+        self.resume_btn.pack(side="left", **pad)
         self.stop_btn = ttk.Button(controls, text="Stop", command=self._stop, state="disabled")
         self.stop_btn.pack(side="left", **pad)
         ttk.Label(controls, textvariable=self.status_var).pack(side="left", padx=12)
@@ -1137,7 +1196,10 @@ class App(tk.Tk):
         self._render_records(rows)
 
         self.stop_event.clear()
+        self.pause_event.clear()
         self.start_btn.configure(state="disabled")
+        self.pause_btn.configure(state="normal")
+        self.resume_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
 
         automation = EStampAutomation(
@@ -1160,6 +1222,7 @@ class App(tk.Tk):
             log_fn=self._log,
             status_fn=self._record_status,
             stop_event=self.stop_event,
+            pause_event=self.pause_event,
             capture_references=self.capture_references_var.get(),
         )
 
@@ -1185,18 +1248,38 @@ class App(tk.Tk):
         self.worker_thread = threading.Thread(target=worker, daemon=True)
         self.worker_thread.start()
 
+    def _pause(self):
+        self.pause_event.set()
+        self.pause_btn.configure(state="disabled")
+        self.resume_btn.configure(state="normal")
+        self.status_var.set("Paused by user.")
+        self._log("Pause requested - pausing automation.")
+
+    def _resume(self):
+        self.pause_event.clear()
+        self.pause_btn.configure(state="normal")
+        self.resume_btn.configure(state="disabled")
+        self.status_var.set("Resuming automation...")
+        self._log("Resume requested - continuing automation.")
+
     def _stop(self):
         self.stop_event.set()
+        self.pause_event.clear()
+        self.pause_btn.configure(state="disabled")
+        self.resume_btn.configure(state="disabled")
         self._log("Stop requested - will halt before the next record starts.")
 
     def _run_finished(self):
         self.start_btn.configure(state="normal")
+        self.pause_btn.configure(state="disabled")
+        self.resume_btn.configure(state="disabled")
         self.stop_btn.configure(state="disabled")
 
     def _on_close(self):
         self._save_settings()
         if self.worker_thread is not None and self.worker_thread.is_alive():
             self.stop_event.set()
+            self.pause_event.clear()
         self.destroy()
 
 

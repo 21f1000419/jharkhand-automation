@@ -164,6 +164,14 @@ class CsvBatchStore:
         row["status"] = RowStatus.PARTIAL if int(row["completed_quantity"]) else RowStatus.ERROR
         row["updated_at"] = utc_now()
 
+    def mark_skipped_row(self, row: dict[str, str], stage: Stage, message: str) -> int:
+        """Mark every unfinished quantity in one CSV row as skipped."""
+        quantity = safe_positive_int(row["quantity"])
+        first_unfinished = int(row["processed_quantity"]) + 1
+        for quantity_number in range(first_unfinished, quantity + 1):
+            self.mark_skipped_quantity(row, quantity_number, stage, message)
+        return max(0, quantity - first_unfinished + 1)
+
     def mark_error(self, row: dict[str, str], stage: Stage, message: str) -> None:
         row["error_count"] = str(int(row["error_count"]) + 1)
         row["last_stage"] = stage

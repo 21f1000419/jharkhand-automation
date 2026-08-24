@@ -16,6 +16,7 @@ from core.models import (
     PortalBrowser,
     RunMode,
     RunOptions,
+    Stage,
     UiEvent,
     available_ocr_engines,
 )
@@ -43,6 +44,10 @@ class AutomationTab:
         self.paused = False
         self.auto_waiting = False
         self.portal_session_open = False
+        self.browser_recovery_pending = False
+        self.browser_recovery_ready = False
+        self.current_row_number: int | None = None
+        self.current_unit_number: int | None = None
         self.csv_valid = False
         self.error_window: tk.Toplevel | None = None
         self.credentials_panel: ttk.LabelFrame | None = None
@@ -681,6 +686,8 @@ class AutomationTab:
             self.owner.append_session_log(f"{self.display_name}: {event.message}")
         kind = event.kind
         if kind == "run_started":
+            self.browser_recovery_pending = False
+            self.browser_recovery_ready = False
             self.starting = False
             self.running = True
             self.portal_session_open = True
@@ -714,21 +721,65 @@ class AutomationTab:
             elif state == "slot_released" and self.running:
                 self.set_state("Running", event.message)
         elif kind == "batch_update":
+            current_row = event.data.get("current_row")
+            current_unit = event.data.get("current_unit")
+            if isinstance(current_row, int):
+                self.current_row_number = current_row
+            if isinstance(current_unit, int):
+                self.current_unit_number = current_unit
             self._render_rows(event.data.get("rows", []), event.data.get("current_row"))
         elif kind == "error_prompt":
             self.paused = True
-            self._show_error(event)
+            self.auto_waiting = True
+            if not self.owner.show_tab_error_in_dock(self, event):
+                self._show_error(event)
             self.set_state("Error", event.message)
         elif kind == "notification":
             show_windows_notification(event.data.get("title", self.display_name), event.message)
-        elif kind in {"run_completed", "run_stopped", "browser_closed", "portal_closed", "fatal_error"}:
+        elif kind == "browser_closed":
+            offer_recovery = self.owner.should_offer_browser_recovery(self)
             self.starting = False
             self.running = False
             self.paused = False
             self.auto_waiting = False
             self.portal_session_open = False
-            state = "Complete" if kind == "run_completed" else "Error" if kind == "fatal_error" else "Stopped"
-            self.set_state(state, event.message)
+            self.browser_recovery_pending = offer_recovery
+            self.browser_recovery_ready = False
+            if offer_recovery:
+                message = "This browser was closed. Finishing cleanup before it can restart..."
+                self.set_state("Browser closed", message)
+                self.owner.show_browser_recovery(self, message, ready=False)
+            else:
+                self.set_state("Stopped", event.message)
+        elif kind == "session_finished":
+            if self.browser_recovery_pending:
+                self.browser_recovery_ready = True
+                message = "Retry this row, skip it and open the next row, or stop this ID."
+                self.set_state("Browser closed", message)
+                self.owner.show_browser_recovery(self, message, ready=True)
+        elif kind in {"run_completed", "run_stopped", "portal_closed", "fatal_error"}:
+            browser_closed = kind == "run_stopped" and bool(event.data.get("browser_closed"))
+            if browser_closed and not self.browser_recovery_pending:
+                self.browser_recovery_pending = self.owner.should_offer_browser_recovery(self)
+                self.browser_recovery_ready = False
+            self.starting = False
+            self.running = False
+            self.paused = False
+            self.auto_waiting = False
+            self.portal_session_open = False
+            if kind == "run_stopped" and self.browser_recovery_pending:
+                message = "This browser was closed. Finishing cleanup before it can restart..."
+                self.set_state("Browser closed", message)
+                self.owner.show_browser_recovery(self, message, ready=False)
+            else:
+                self.browser_recovery_pending = False
+                self.browser_recovery_ready = False
+                state = (
+                    "Complete"
+                    if kind == "run_completed"
+                    else "Error" if kind == "fatal_error" else "Stopped"
+                )
+                self.set_state(state, event.message)
             if kind == "fatal_error":
                 show_windows_notification(f"{self.display_name} automation error", event.message)
         self._set_buttons()
@@ -766,8 +817,70 @@ class AutomationTab:
             self.error_window.destroy()
         self.error_window = None
         self.paused = False
+        self.auto_waiting = False
         self.owner.controller.decide_error(self.run_id, action)
         self.set_state("Running", "Applying error decision")
+
+    def decide_error(self, action: str) -> None:
+        self._error_choice(action)
+
+    def recover_browser(self, action: str) -> None:
+        if not self.browser_recovery_pending or not self.browser_recovery_ready:
+            return
+        if action == "next" and not self._skip_browser_closed_row():
+            self.owner.show_browser_recovery(
+                self,
+                "Could not save the skipped row. Close the CSV in Excel, then try again.",
+                ready=True,
+            )
+            return
+        self.browser_recovery_pending = False
+        self.browser_recovery_ready = False
+        if not self.start():
+            self.browser_recovery_pending = True
+            self.browser_recovery_ready = True
+            self.owner.show_browser_recovery(
+                self,
+                "The browser could not restart. Check this ID's settings and try again.",
+                ready=True,
+            )
+
+    def dismiss_browser_recovery(self) -> None:
+        self.browser_recovery_pending = False
+        self.browser_recovery_ready = False
+        self.set_state("Stopped", "Browser recovery dismissed for this ID.")
+
+    def _skip_browser_closed_row(self) -> bool:
+        try:
+            path = Path(self.csv_var.get().strip())
+            store = CsvBatchStore(path)
+            store.load()
+            pending = list(store.pending_rows())
+            if not pending:
+                return True
+            selected: tuple[int, dict[str, str]] | None = None
+            if self.current_row_number is not None:
+                index = self.current_row_number - 1
+                if 0 <= index < len(store.rows):
+                    row = store.rows[index]
+                    if int(row["processed_quantity"]) < int(row["quantity"]):
+                        selected = (index, row)
+            _index, row = selected or pending[0]
+            try:
+                stage = Stage(row.get("last_stage", ""))
+            except ValueError:
+                stage = Stage.IDLE
+            store.mark_skipped_row(
+                row,
+                stage,
+                "Browser was closed; row skipped from the status dock.",
+            )
+            store.persist()
+            self._load_preview(path, quiet=True)
+            return True
+        except Exception as error:
+            messagebox.showerror("Skip row", str(error), parent=self.owner.root)
+            return False
 
     def _render_rows(self, rows: list[dict[str, str]], current_row: int | None = None) -> None:
         self.tree.delete(*self.tree.get_children())
