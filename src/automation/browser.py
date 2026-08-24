@@ -35,7 +35,7 @@ from playwright.async_api import (  # noqa: E402
 
 _PROCESS_LOCK = threading.Lock()
 _TRACKED_PROCESSES: set[subprocess.Popen[bytes]] = set()
-_PORTAL_LAUNCH_LOCK = asyncio.Lock()
+_PORTAL_WINDOW_CAPTURE_LOCK = asyncio.Lock()
 _SW_RESTORE = 9
 
 
@@ -356,14 +356,17 @@ class PortalBrowserSession:
                 launch_options["executable_path"] = str(self.choice.executable)
             self.profile_directory.mkdir(parents=True, exist_ok=True)
             self.closed_by_owner = False
-            async with _PORTAL_LAUNCH_LOCK:
-                self.context = await browser_type.launch_persistent_context(
-                    str(self.profile_directory), **launch_options
-                )
-                self.browser = self.context.browser
-                if self.browser is not None:
-                    self.browser.on("disconnected", self._disconnected)
-                self.context.on("close", self._context_closed)
+            self.context = await browser_type.launch_persistent_context(
+                str(self.profile_directory), **launch_options
+            )
+            self.browser = self.context.browser
+            if self.browser is not None:
+                self.browser.on("disconnected", self._disconnected)
+            self.context.on("close", self._context_closed)
+            # Browser processes may start in parallel. Only native-window
+            # identification needs serialization because it temporarily sets
+            # the first page's title and enumerates top-level Windows windows.
+            async with _PORTAL_WINDOW_CAPTURE_LOCK:
                 await self._capture_window_handle()
             return self.context
         except Exception:

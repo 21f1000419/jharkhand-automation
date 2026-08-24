@@ -439,19 +439,59 @@ class AutomationController:
         def callback(browser: PortalBrowserSession) -> None:
             self._on_portal_browser_disconnected(session, browser)
 
-        browser = (
-            self._portal_session_factory(session.options.portal_browser, callback)
-            if self._portal_session_factory is not None
-            else PortalBrowserSession(
-                session.options.portal_browser,
-                callback,
-                getattr(session.options, "portal_profile_path", None),
+        last_error: Exception | None = None
+        for attempt in range(1, 3):
+            self._emit_session(
+                session,
+                self._event(
+                    "status",
+                    f"Opening {session.options.portal_browser.name} for this ID "
+                    f"(attempt {attempt} of 2)...",
+                ),
             )
+            browser = (
+                self._portal_session_factory(session.options.portal_browser, callback)
+                if self._portal_session_factory is not None
+                else PortalBrowserSession(
+                    session.options.portal_browser,
+                    callback,
+                    getattr(session.options, "portal_profile_path", None),
+                )
+            )
+            session.portal_browser = browser
+            session.portal_browser_closed = False
+            try:
+                page = await asyncio.wait_for(
+                    browser.new_portal_page(CITIZEN_LOGIN_URL, timeout_ms=60_000),
+                    timeout=90,
+                )
+                session.portal_page = page
+                self._emit_session(
+                    session,
+                    self._event("log", f"{browser.choice.name} opened for this ID."),
+                )
+                return page
+            except asyncio.CancelledError:
+                await self._close_portal_browser(session)
+                raise
+            except Exception as error:
+                last_error = error
+                await self._close_portal_browser(session)
+                self._emit_session(
+                    session,
+                    self._event(
+                        "log",
+                        f"Portal browser startup attempt {attempt} failed: {error}",
+                        {"level": "warning"},
+                    ),
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.25)
+
+        raise RuntimeError(
+            "The portal browser could not open the Citizen login page after two attempts: "
+            f"{last_error}"
         )
-        session.portal_browser = browser
-        session.portal_browser_closed = False
-        session.portal_page = await browser.new_portal_page(CITIZEN_LOGIN_URL, timeout_ms=0)
-        return session.portal_page
 
     async def _monitor_portal_browser(self, session: RunSession) -> None:
         while True:
