@@ -10,5 +10,10 @@ if (-not (Test-Path -LiteralPath $python)) {
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE."
 }
-Write-Host "Executable created at dist\Compitcom-eStamp-Automation.exe"
+
+& (Join-Path $projectRoot 'scripts\validate_windows_dist.ps1')
+if ($LASTEXITCODE -ne 0) {
+    throw "The packaged application failed validation."
+}
+Write-Host "Windows package created at dist\Compitcom-eStamp-Automation"
 

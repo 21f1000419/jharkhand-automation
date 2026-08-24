@@ -110,13 +110,21 @@ While a portal automation session is active, a small always-on-top **Automation 
 
 Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
 
-## Build the Windows executable
+## Build the Windows package
 
 ```powershell
 .\build_exe.ps1
 ```
 
-The output is `dist\Compitcom-eStamp-Automation.exe`. Chrome is required for the dedicated Gemini profile; the portal may use any supported detected browser. For managed Firefox, users use the top-level **Download managed Firefox** menu item after starting the executable. Playwright does not download its own Chromium build.
+The output is the complete `dist\Compitcom-eStamp-Automation` folder. Keep the folder intact when moving it to another Windows system and start `Compitcom-eStamp-Automation.exe` inside it. The package includes the PaddleOCR model, PaddlePaddle, PaddleX, EasyOCR, Torch, OpenCV, and the Playwright runtime used by the application. Chrome is still required for the dedicated Gemini profile; the portal may use any supported detected browser. For managed Firefox, users use the top-level **Download managed Firefox** menu item after starting the executable. Playwright does not download its own Chromium build.
+
+### Build a downloadable package with GitHub Actions
+
+The `Build Windows package` workflow runs on `windows-latest`. It installs the pinned dependencies, builds the onedir package with `estamp_automation.spec`, checks the bundled OCR and browser files, runs a frozen-runtime smoke test, and creates `Compitcom-eStamp-Automation-Windows-<tag>.zip`. It also publishes `Compitcom-eStamp-Automation.exe` as a separate release asset for updating an existing installation.
+
+It runs automatically when an existing GitHub release is published. The ZIP, EXE, and SHA-256 checksum are attached to that release. You can also run it from **Actions > Build Windows package > Run workflow**. If you enter an existing release tag, the workflow attaches the new files there; otherwise the run provides separate ZIP and EXE artifacts for download.
+
+For an existing installation, replace only the EXE when the update changes Python application logic or the UI and does not change dependencies, native DLLs, the PyInstaller spec, or bundled assets. Download the complete ZIP whenever any of those packaged files change.
 
 ## Development checks
 
