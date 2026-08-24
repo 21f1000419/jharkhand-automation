@@ -27,9 +27,16 @@ if (-not $SkipRuntimeSmokeTest) {
     $previousReport = $env:COMPITCOM_SMOKE_TEST_REPORT
     try {
         $env:COMPITCOM_SMOKE_TEST_REPORT = $report
-        & (Join-Path $dist 'Compitcom-eStamp-Automation.exe') '--packaging-smoke-test'
-        $exitCode = $LASTEXITCODE
-        $details = if (Test-Path -LiteralPath $report) { Get-Content -Raw -LiteralPath $report } else { '' }
+        $process = Start-Process `
+            -FilePath (Join-Path $dist 'Compitcom-eStamp-Automation.exe') `
+            -ArgumentList '--packaging-smoke-test' `
+            -Wait `
+            -PassThru
+        $exitCode = $process.ExitCode
+        if (-not (Test-Path -LiteralPath $report -PathType Leaf)) {
+            throw "Frozen runtime smoke test did not create its report."
+        }
+        $details = Get-Content -Raw -LiteralPath $report
         if ($exitCode -ne 0) {
             throw "Frozen runtime smoke test failed (exit code $exitCode). $details"
         }
