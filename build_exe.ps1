@@ -15,5 +15,5 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "The packaged application failed validation."
 }
-Write-Host "Windows package created at dist\Compitcom-eStamp-Automation"
+Write-Host "Windows package created at dist\jharni"
 

@@ -56,17 +56,10 @@ jobs:
       - name: Create ZIP and checksum
         id: package
         shell: pwsh
-        env:
-          RELEASE_LABEL: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
-          $releaseLabel = $env:RELEASE_LABEL
-          if ([string]::IsNullOrWhiteSpace($releaseLabel)) {
-            $releaseLabel = "run-${env:GITHUB_RUN_NUMBER}"
-          }
-          $safeLabel = $releaseLabel -replace '[^0-9A-Za-z._-]', '-'
-          $source = Join-Path $env:GITHUB_WORKSPACE 'dist\Compitcom-eStamp-Automation'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'dist\jharni'
           $exePath = Join-Path $source 'Compitcom-eStamp-Automation.exe'
-          $archiveName = "Compitcom-eStamp-Automation-Windows-$safeLabel.zip"
+          $archiveName = 'jharni.zip'
           $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
           $checksumPath = "$archivePath.sha256"
           if (Test-Path -LiteralPath $archivePath) {
@@ -91,7 +84,7 @@ jobs:
       - name: Upload ZIP as Actions artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Compitcom-eStamp-Automation-Windows
+          name: jharni
           path: ${{ steps.package.outputs.archive_path }}
           archive: false
           if-no-files-found: error
@@ -100,7 +93,7 @@ jobs:
       - name: Upload EXE as Actions artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Compitcom-eStamp-Automation-Windows-exe
+          name: jharni-exe
           path: ${{ steps.package.outputs.exe_path }}
           archive: false
           if-no-files-found: error

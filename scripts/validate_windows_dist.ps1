@@ -1,5 +1,5 @@
 param(
-    [string]$DistDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\Compitcom-eStamp-Automation'),
+    [string]$DistDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\jharni'),
     [switch]$SkipRuntimeSmokeTest
 )
 

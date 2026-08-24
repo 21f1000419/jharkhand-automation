@@ -124,5 +124,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="Compitcom-eStamp-Automation",
+    name="jharni",
 )

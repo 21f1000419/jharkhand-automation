@@ -116,11 +116,11 @@ Continuous mode still pauses for manual OTP and payment. Retrying a failure afte
 .\build_exe.ps1
 ```
 
-The output is the complete `dist\Compitcom-eStamp-Automation` folder. Keep the folder intact when moving it to another Windows system and start `Compitcom-eStamp-Automation.exe` inside it. The package includes the PaddleOCR model, PaddlePaddle, PaddleX, EasyOCR, Torch, OpenCV, and the Playwright runtime used by the application. Chrome is still required for the dedicated Gemini profile; the portal may use any supported detected browser. For managed Firefox, users use the top-level **Download managed Firefox** menu item after starting the executable. Playwright does not download its own Chromium build.
+The output is the complete `dist\jharni` folder. Keep the folder intact when moving it to another Windows system and start `Compitcom-eStamp-Automation.exe` inside it. The package includes the PaddleOCR model, PaddlePaddle, PaddleX, EasyOCR, Torch, OpenCV, and the Playwright runtime used by the application. Chrome is still required for the dedicated Gemini profile; the portal may use any supported detected browser. For managed Firefox, users use the top-level **Download managed Firefox** menu item after starting the executable. Playwright does not download its own Chromium build.
 
 ### Build a downloadable package with GitHub Actions
 
-The `Build Windows package` workflow runs on `windows-latest`. It installs the pinned dependencies, builds the onedir package with `estamp_automation.spec`, checks the bundled OCR and browser files, runs a frozen-runtime smoke test, and creates `Compitcom-eStamp-Automation-Windows-<tag>.zip`. It also publishes `Compitcom-eStamp-Automation.exe` as a separate release asset for updating an existing installation.
+The `Build Windows package` workflow runs on `windows-latest`. It installs the pinned dependencies, builds the onedir package with `estamp_automation.spec`, checks the bundled OCR and browser files, runs a frozen-runtime smoke test, and creates `jharni.zip`. The ZIP extracts to a top-level `jharni` folder. It also publishes `Compitcom-eStamp-Automation.exe` as a separate release asset for updating an existing installation.
 
 It runs automatically when an existing GitHub release is published. The ZIP, EXE, and SHA-256 checksum are attached to that release. You can also run it from **Actions > Build Windows package > Run workflow**. If you enter an existing release tag, the workflow attaches the new files there; otherwise the run provides separate ZIP and EXE artifacts for download.
 
