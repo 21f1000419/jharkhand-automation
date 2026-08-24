@@ -18,7 +18,7 @@ from automation.portal import (
 )
 from core.config import AppConfig, ConfigStore
 from core.controls import RunControls
-from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
+from core.models import AutomationError, CaptchaCopyMode, Credentials, Stage, WorkflowStopped
 from services.captcha_ocr import join_ocr_fragments, normalize_captcha
 from services.credential_store import decode_credentials, encode_credentials
 from services.downloads import EstampDownloader, extract_reference
@@ -147,6 +147,42 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(details["Transaction ID"], "15a44b09719f32951d72")
         self.assertEqual(details["GRN"], "2604247253")
         self.assertEqual(details["CIN"], "10002162026082107215")
+
+    def test_gateway_suspension_page_fails_after_sbi_selection(self) -> None:
+        page = MagicMock()
+        page.wait_for_load_state = AsyncMock()
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value=(
+                "PNB gateway has been temporarily suspended!!! Other available options of "
+                "Payment Gateway may please be used. Summary of Pre Payment Details "
+                "Government of Jharkhand"
+            )
+        )
+        page.locator.return_value = body
+        radio = MagicMock()
+        radio.check = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+
+        with (
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=radio)),
+            patch("automation.portal.click_first", new=AsyncMock()),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(portal.choose_gateway())
+
+        self.assertEqual(raised.exception.stage, Stage.GATEWAY_SELECT)
+        self.assertEqual(raised.exception.code, "payment_gateway_suspended")
+        self.assertTrue(raised.exception.retryable)
 
     def test_confirmed_transaction_survives_pdf_download_failure(self) -> None:
         page = MagicMock()

@@ -33,6 +33,8 @@ CITIZEN_WELCOME_URL = "https://jharnibandhan.gov.in/Citizenentry/welcome"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
 MAIN_HOME_URL = "https://jharnibandhan.gov.in"
 SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
+GATEWAY_SUSPENDED_TEXT = "pnb gateway has been temporarily suspended"
+PREPAYMENT_SUMMARY_TEXT = "summary of pre payment details"
 MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
 EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
 EGRASS_OTP_RECOVERY_WAIT_SECONDS = 15
@@ -1014,9 +1016,11 @@ class PortalAutomation:
         await radio.check(force=True)
         await click_first(self.page, ["#btnSubmit", 'input[value^="Pay Rs"]'])
         await self.page.wait_for_load_state("domcontentloaded", timeout=60_000)
+        await self._raise_if_gateway_suspended()
 
     async def accept_gateway_terms(self) -> None:
         await self._stage(Stage.GATEWAY_TERMS)
+        await self._raise_if_gateway_suspended()
         agree = await first_visible(
             self.page,
             ["#ContentPlaceHolder1_rblagree_0", 'input[type="radio"][value="Y"]'],
@@ -1045,6 +1049,7 @@ class PortalAutomation:
                     code="browser_closed",
                     retryable=False,
                 )
+            await self._raise_if_gateway_suspended()
             if self.page.url.startswith(SBI_HOSTED_PAYMENT_URL):
                 upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
                 if upi is not None:
@@ -1053,6 +1058,24 @@ class PortalAutomation:
                     self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
                     return
             await self.page.wait_for_timeout(500)
+
+    async def _raise_if_gateway_suspended(self) -> None:
+        try:
+            visible_text = " ".join(
+                (await self.page.locator("body").inner_text(timeout=1_000)).casefold().split()
+            )
+        except PlaywrightError:
+            return
+        if (
+            GATEWAY_SUSPENDED_TEXT in visible_text
+            and PREPAYMENT_SUMMARY_TEXT in visible_text
+        ):
+            raise AutomationError(
+                "The payment gateway is temporarily suspended. Choose Retry after the gateway "
+                "is available, or move to the next quantity.",
+                stage=self.stage,
+                code="payment_gateway_suspended",
+            )
 
     async def select_upi_qr_and_pay(self) -> None:
         """Select UPI QR and begin the user-facing UPI payment."""

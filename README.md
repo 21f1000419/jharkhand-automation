@@ -115,6 +115,8 @@ Each tab shows its current state, row/quantity progress, and payment-queue posit
 
 Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
 
+If the page reports that the PNB gateway is temporarily suspended after SBIePay selection, the application stops waiting for UPI controls and records a retryable gateway error. Assisted mode offers Retry, Continue, or Move to next. Continuous mode records the failure and advances according to its normal error policy.
+
 ## Build the Windows package
 
 ```powershell
