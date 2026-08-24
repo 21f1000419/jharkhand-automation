@@ -1,6 +1,6 @@
 # Compitcom eStamp Batch Automation
 
-Windows Tkinter application for processing resumable CSV batches through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. It uses a signed-in dedicated Chrome profile to set up Gemini, then reopens that profile headlessly to read CAPTCHA images. The portal itself opens in the browser selected in the app. There is no OCR web server or FastAPI process.
+Windows Tkinter application for processing multiple resumable CSV batches in parallel through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. Each ID tab owns its settings, credentials, CSV, SMS configuration, browser profile, and automation process. The application uses a signed-in dedicated Chrome profile to set up Gemini, then reopens that profile headlessly to read CAPTCHA images. The portals open in the browsers selected in their tabs. There is no OCR web server or FastAPI process.
 
 Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
 
@@ -36,11 +36,17 @@ CAPTCHA element without moving the mouse and uploads those exact PNG bytes direc
 clipboard ownership and browser-focus races. The `mouse_cursor` option retains the previous right-click **Copy
 image** browser-menu method.
 
-The dedicated profile and non-secret settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Citizen/eGRAS credentials exist only in application memory and are cleared on exit.
+The dedicated Gemini profile and non-secret tab settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Saved Citizen/eGRAS credentials use Windows Credential Manager and are isolated by ID tab.
+
+## ID tabs and parallel runs
+
+**ID 1** is the permanent default tab. Use **Add ID** to create more independently configured tabs and **Remove ID** to remove the selected non-default tab. Removing a tab keeps its browser profile and saved credentials. The next added tab reuses the first available ID and reconnects to the data associated with that ID. Its run settings start blank. **Copy all from ID 1** copies ID 1's current run settings and credentials while preserving the target ID and its separate browser profile.
+
+Each tab has a different color marker and can use its own CSV, Article, browser, OCR choice, SMS settings, payment trigger, download folder, and operating mode. **Disable ID** keeps that tab and its settings but excludes it from **Start All** and grays its tab marker; **Enable ID** includes it again. Its Start, Pause, Resume, and Stop controls affect only that run. **Start All** starts every valid enabled tab and reports tabs that still need configuration; **Stop All** stops every active run. The same CSV cannot be active in two tabs at once.
 
 ## Browser selection
 
-The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, and Yandex Browser. It also always lists **Firefox (managed automation)**. Use the top-level **Download managed Firefox** menu item once to install the Playwright Firefox build required for Firefox-based automation. The item changes to **Managed Firefox downloaded** after a successful download. It is stored in `%LOCALAPPDATA%\Compitcom\eStampAutomation\playwright-browsers`, not beside the executable, so it remains available when the `.exe` is moved to the Desktop or updated. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Chromium choices run the selected installed browser, while Firefox-based choices run a fresh managed Firefox session. The custom choice is saved. Portal automation launches a separate, visible fresh session without touching saved browser profiles or downloads. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing the portal browser stops the automation safely.
+The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, and Yandex Browser. It also always lists **Firefox (managed automation)**. Use the top-level **Download managed Firefox** menu item once to install the Playwright Firefox build required for Firefox-based automation. The item changes to **Managed Firefox downloaded** after a successful download. It is stored in `%LOCALAPPDATA%\Compitcom\eStampAutomation\playwright-browsers`, not beside the executable, so it remains available when the `.exe` is moved to the Desktop or updated. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Every ID launches a separate visible browser process with its own persistent profile; custom-browser profiles are further separated by browser name. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing one portal browser stops only that ID's automation.
 
 ## CSV batches
 
@@ -91,12 +97,11 @@ Every application action, workflow stage, error, and stop event is appended to o
 
 Enter the Citizen User ID used by the SMS server in **SMS OTP settings**. The ID applies only to the `main` NGDRS OTP. For eGRAS, the application reads the OTP reference number from the website and fetches the OTP stored under that reference, so parallel eGRAS sessions do not share or overwrite an OTP slot. The default server address is `https://sms-server.compitcom.in`; it can be changed in settings. An empty or incorrect Citizen User ID disables only automatic Citizen OTP retrieval. The browser remains available for manual entry if no OTP arrives.
 
-## Optional payment trigger
+## Optional payment trigger and payment queue
 
-Batch setup accepts an optional payment-trigger URL and `GET`/`POST` method. After Pay Now, automation waits until
-both **Scan UPI QR** and **Time left to complete the transaction** are visible, then calls the configured URL once.
-POST sends an empty request body. The setting is remembered with the other non-secret preferences. Trigger timeouts,
-HTTP errors, and invalid URLs are written to the activity log and never stop transaction-result polling.
+Each ID accepts an optional payment-trigger URL and `GET`/`POST` method. Before clicking **Pay Now**, parallel runs enter a process-wide FIFO queue. Only the run at the front proceeds to its QR code. After both **Scan UPI QR** and **Time left to complete the transaction** appear, the application brings that run's native browser window to the foreground and verifies it is active. Only then does it call the configured URL once; POST sends an empty request body.
+
+That run retains the queue until the transaction result and download link appear. The next queued browser is then allowed to proceed and come to the foreground. Foreground activation retries until it succeeds or the run is stopped. Trigger timeouts, HTTP errors, and invalid URLs are written to the activity log and do not stop transaction-result polling.
 
 ## Operating modes and controls
 
@@ -104,9 +109,9 @@ HTTP errors, and invalid URLs are written to the activity log and never stop tra
 - **Continuous** records ordinary errors, skips that quantity, and advances once without a prompt.
 - **Pause** keeps the current page and stops before the next browser action.
 - **Stop** cancels the active unit and preserves it as retryable.
-- Closing the selected portal browser stops the entire run. Gemini OCR runs headlessly while a batch is active; closing the application closes both automation browsers.
+- Closing a portal browser stops only its ID. Gemini OCR runs headlessly while batches are active; closing the application stops all runs and closes their automation browsers.
 
-While a portal automation session is active, a small always-on-top **Automation status** window shows the current step and row/quantity, with Pause, Resume, and Stop controls. Actionable row failures appear there with **Retry** and **Move to next** choices; the window closes when the portal browser closes.
+Each tab shows its current state, row/quantity progress, and payment-queue position. Actionable row failures provide **Retry** and **Move to next** choices for that tab without blocking the other runs.
 
 Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
 

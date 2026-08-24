@@ -76,7 +76,8 @@ STAGE_CHECKPOINTS: dict[Stage, tuple[Stage, str, str]] = {
     Stage.FILL_ESTAMP: (
         Stage.CONFIRM_ESTAMP,
         "Pay Now Confirmation Modal",
-        "Fill required form fields, click 'Proceed to Pay', and leave the browser on the 'Pay Now' confirmation modal.",
+        "Fill required form fields, click 'Proceed to Pay', and leave the browser on the "
+        "'Pay Now' confirmation modal.",
     ),
     Stage.CONFIRM_ESTAMP: (
         Stage.EGRAS_TERMS,
@@ -91,12 +92,14 @@ STAGE_CHECKPOINTS: dict[Stage, tuple[Stage, str, str]] = {
     Stage.EGRAS_LOGIN: (
         Stage.EGRAS_OTP,
         "eGRAS OTP & Validation CAPTCHA",
-        "Enter eGRAS login credentials and CAPTCHA, click Proceed, and leave the browser on the eGRAS OTP page.",
+        "Enter eGRAS login credentials and CAPTCHA, click Proceed, and leave the browser on the "
+        "eGRAS OTP page.",
     ),
     Stage.EGRAS_OTP: (
         Stage.GATEWAY_SELECT,
         "Payment Gateway Selection (SBIePay)",
-        "Enter OTP and validation CAPTCHA, click Validate OTP, and leave the browser on the Payment Gateway (SBIePay) selection page.",
+        "Enter OTP and validation CAPTCHA, click Validate OTP, and leave the browser on the "
+        "Payment Gateway (SBIePay) selection page.",
     ),
     Stage.GATEWAY_SELECT: (
         Stage.GATEWAY_TERMS,
@@ -116,7 +119,8 @@ STAGE_CHECKPOINTS: dict[Stage, tuple[Stage, str, str]] = {
     Stage.PAYMENT: (
         Stage.RESULT,
         "Transaction Confirmation Details",
-        "Complete the UPI payment in your banking app and leave the browser on the Transaction Details confirmation page.",
+        "Complete the UPI payment in your banking app and leave the browser on the Transaction Details "
+        "confirmation page.",
     ),
     Stage.RESULT: (
         Stage.DOWNLOAD,
@@ -166,6 +170,8 @@ class RunOptions:
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
     retry_egras_otp_once: bool = True
+    run_id: str = ""
+    portal_profile_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +187,7 @@ class UiEvent:
     kind: str
     message: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    run_id: str = ""
 
 
 class AutomationError(RuntimeError):

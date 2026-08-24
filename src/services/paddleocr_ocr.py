@@ -55,7 +55,7 @@ class PaddleOcrCaptchaSolver:
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
         try:
-            from paddleocr import TextRecognition
+            from paddleocr import TextRecognition  # type: ignore[import-untyped]
         except ImportError as error:  # pragma: no cover - environment-dependent dependency
             raise RuntimeError(f"PaddleOCR could not be imported: {error}") from error
 

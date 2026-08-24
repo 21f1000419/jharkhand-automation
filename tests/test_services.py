@@ -150,7 +150,17 @@ class ServiceTests(unittest.TestCase):
 
     def test_confirmed_transaction_survives_pdf_download_failure(self) -> None:
         page = MagicMock()
+        page.is_closed.return_value = False
         events: list[object] = []
+        order: list[str] = []
+        payment_lease = MagicMock()
+
+        async def release_payment() -> None:
+            order.append("release")
+
+        payment_lease.release = AsyncMock(side_effect=release_payment)
+        payment_coordinator = MagicMock()
+        payment_coordinator.acquire = AsyncMock(return_value=payment_lease)
         portal = PortalAutomation(
             page,
             None,
@@ -160,6 +170,7 @@ class ServiceTests(unittest.TestCase):
             MagicMock(),
             "",
             CaptchaCopyMode.DIRECT,
+            payment_coordinator=payment_coordinator,
         )
         for method_name in (
             "ensure_citizen_session",
@@ -179,7 +190,13 @@ class ServiceTests(unittest.TestCase):
             "GRN": "grn-123",
             "CIN": "cin-123",
         }
-        portal.find_result_details = AsyncMock(return_value=details)  # type: ignore[method-assign]
+        async def find_download_page() -> dict[str, str]:
+            order.append("download_ready")
+            return details
+
+        portal.find_result_details = AsyncMock(  # type: ignore[method-assign]
+            side_effect=find_download_page
+        )
         portal._stage = AsyncMock()  # type: ignore[method-assign]
         link = MagicMock()
 
@@ -187,7 +204,11 @@ class ServiceTests(unittest.TestCase):
             patch("automation.portal.first_visible", new=AsyncMock(return_value=link)),
             patch("automation.portal.EstampDownloader") as downloader_type,
         ):
-            downloader_type.return_value.download = AsyncMock(side_effect=RuntimeError("HTTP 500"))
+            async def fail_download(*_args: object) -> None:
+                order.append("download")
+                raise RuntimeError("HTTP 500")
+
+            downloader_type.return_value.download = AsyncMock(side_effect=fail_download)
             result = asyncio.run(
                 portal.process_unit(
                     {},
@@ -203,6 +224,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.details, details)
         self.assertIsNone(result.destination)
         self.assertEqual(result.download_error, "HTTP 500")
+        self.assertEqual(order, ["download_ready", "release", "download"])
 
     def test_egras_terms_checkbox_uses_native_fallback(self) -> None:
         portal = PortalAutomation(
@@ -299,6 +321,7 @@ class ServiceTests(unittest.TestCase):
         page = MagicMock()
         page.is_closed.return_value = False
         page.wait_for_timeout = AsyncMock()
+        page.bring_to_front = AsyncMock()
         body = MagicMock()
         body.inner_text = AsyncMock(
             side_effect=[
@@ -308,6 +331,16 @@ class ServiceTests(unittest.TestCase):
         )
         page.locator.return_value = body
         events: list[object] = []
+        order: list[str] = []
+
+        async def focus_page() -> None:
+            order.append("focus")
+
+        async def send_trigger(*_args: object) -> int:
+            order.append("trigger")
+            return 204
+
+        focus = AsyncMock(side_effect=focus_page)
         portal = PortalAutomation(
             page,
             None,
@@ -319,21 +352,50 @@ class ServiceTests(unittest.TestCase):
             CaptchaCopyMode.DIRECT,
             "https://payment-trigger.example/start",
             "POST",
+            focus_payment_page=focus,
         )
 
         with patch(
             "automation.portal.send_payment_trigger_request",
-            new=AsyncMock(return_value=204),
+            new=AsyncMock(side_effect=send_trigger),
         ) as trigger:
             asyncio.run(portal.wait_for_upi_qr_and_trigger())
 
         trigger.assert_awaited_once_with("https://payment-trigger.example/start", "POST")
+        focus.assert_awaited_once_with()
+        self.assertEqual(order, ["focus", "trigger"])
         page.wait_for_timeout.assert_awaited_once_with(250)
         self.assertTrue(any("HTTP 204" in getattr(event, "message", "") for event in events))
+
+    def test_empty_payment_trigger_still_foregrounds_the_qr_page(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value="Scan UPI QR Time left to complete the transaction"
+        )
+        page.locator.return_value = body
+        focus = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+            focus_payment_page=focus,
+        )
+
+        asyncio.run(portal.wait_for_upi_qr_and_trigger())
+
+        focus.assert_awaited_once_with()
 
     def test_payment_trigger_failure_is_logged_and_ignored(self) -> None:
         page = MagicMock()
         page.is_closed.return_value = False
+        page.bring_to_front = AsyncMock()
         body = MagicMock()
         body.inner_text = AsyncMock(
             return_value="Scan UPI QR Time left to complete the transaction"
@@ -487,6 +549,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_manual_citizen_captcha_does_not_click_get_otp(self) -> None:
         page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         portal = PortalAutomation(
             page,
@@ -502,6 +566,7 @@ class ServiceTests(unittest.TestCase):
         portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_manual_citizen_login = AsyncMock()  # type: ignore[method-assign]
         portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(return_value="otp")  # type: ignore[method-assign]
 
         async def is_visible(_page: object, selector: str, _timeout: int) -> bool:
             return selector == "#username"
@@ -519,6 +584,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_automatic_citizen_otp_clicks_login(self) -> None:
         page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         sms_client = MagicMock()
         sms_client.request_time.return_value = "2026-08-21T10:00:00Z"
@@ -537,6 +604,7 @@ class ServiceTests(unittest.TestCase):
         portal._wait_for_sms_otp = AsyncMock(return_value="123456")  # type: ignore[method-assign]
         portal._wait_for_manual_citizen_login = AsyncMock()  # type: ignore[method-assign]
         portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(return_value="otp")  # type: ignore[method-assign]
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
         otp_field = MagicMock()
         otp_field.count = AsyncMock(return_value=1)
@@ -567,6 +635,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_manual_citizen_captcha_with_automatic_otp_clicks_login(self) -> None:
         page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         sms_client = MagicMock()
         sms_client.request_time.return_value = "2026-08-21T10:00:00Z"
@@ -585,6 +655,7 @@ class ServiceTests(unittest.TestCase):
         portal._wait_for_sms_otp = AsyncMock(return_value="123456")  # type: ignore[method-assign]
         portal._wait_for_manual_citizen_login = AsyncMock()  # type: ignore[method-assign]
         portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(return_value="otp")  # type: ignore[method-assign]
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
         otp_field = MagicMock()
         otp_field.count = AsyncMock(return_value=1)
@@ -609,6 +680,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_citizen_captcha_failure_retries_credentials_and_captcha(self) -> None:
         page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         portal = PortalAutomation(
             page,
@@ -620,7 +693,7 @@ class ServiceTests(unittest.TestCase):
             "",
             CaptchaCopyMode.DIRECT,
         )
-        portal._wait_for_login_element = AsyncMock()
+        portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
         portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
         portal._wait_for_login_progress = AsyncMock(side_effect=["captcha_failed", "otp"])  # type: ignore[method-assign]
         portal._wait_for_manual_citizen_login = AsyncMock()  # type: ignore[method-assign]
@@ -635,6 +708,7 @@ class ServiceTests(unittest.TestCase):
         with (
             patch("automation.portal.visible", side_effect=is_visible),
             patch("automation.portal.fill_first", new=AsyncMock()) as fill,
+            patch("automation.portal.first_visible", new=AsyncMock(return_value=AsyncMock())),
         ):
             asyncio.run(portal.ensure_citizen_session(Credentials("user", "pass")))
 
@@ -643,6 +717,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_egras_captcha_failure_retries_credentials_and_captcha(self) -> None:
         page = MagicMock()
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         portal = PortalAutomation(
             page,
@@ -654,13 +730,16 @@ class ServiceTests(unittest.TestCase):
             "",
             CaptchaCopyMode.DIRECT,
         )
-        portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
+        portal._solve_captcha = AsyncMock(side_effect=[False, False, True])  # type: ignore[method-assign]
         portal._wait_for_login_progress = AsyncMock(side_effect=["captcha_failed", "otp"])  # type: ignore[method-assign]
         portal._wait_for_egras_otp_step = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_manual_egras_otp = AsyncMock()  # type: ignore[method-assign]
         portal._await_otp_watcher = AsyncMock(return_value=None)  # type: ignore[method-assign]
         portal._cancel_otp_watcher = AsyncMock()  # type: ignore[method-assign]
         portal._start_otp_watcher = MagicMock(return_value=None)  # type: ignore[method-assign]
+        portal._await_egras_otp_with_single_recovery = AsyncMock(  # type: ignore[method-assign]
+            return_value=(None, True, None)
+        )
         username = MagicMock()
         username.fill = AsyncMock()
 
@@ -676,7 +755,7 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(username.fill.await_count, 2)
         self.assertEqual(fill.await_count, 2)
-        self.assertEqual(portal._solve_captcha.await_count, 2)
+        self.assertEqual(portal._solve_captcha.await_count, 3)
 
     def test_automatic_egras_captcha_and_otp_submit_validation(self) -> None:
         page = MagicMock()
@@ -694,7 +773,7 @@ class ServiceTests(unittest.TestCase):
             "sms-user",
             CaptchaCopyMode.DIRECT,
         )
-        portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
+        portal._solve_captcha = AsyncMock(side_effect=[False, False, True])  # type: ignore[method-assign]
         portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_login_progress = AsyncMock(  # type: ignore[method-assign]
             return_value="otp"

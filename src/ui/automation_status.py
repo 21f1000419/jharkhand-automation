@@ -168,7 +168,8 @@ class AutomationStatusWindow:
         if can_continue and next_checkpoint_title:
             self.checkpoint_title_var.set(f"Next checkpoint: {next_checkpoint_title}")
             self.checkpoint_instruction_var.set(
-                f"{next_checkpoint_instruction}\nOnce at the checkpoint page, click 'Fixed error and continue'."
+                f"{next_checkpoint_instruction}\nOnce at the checkpoint page, click "
+                "'Fixed error and continue'."
             )
             self.checkpoint_frame.pack(fill="x", pady=(4, 0))
             self.continue_button.pack(side="left", before=self.retry_button)

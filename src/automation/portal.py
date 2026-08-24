@@ -21,6 +21,7 @@ from core.models import (
     UiEvent,
     WorkflowStopped,
 )
+from core.payment_coordination import PaymentCoordinator, PaymentLease, default_payment_coordinator
 from services.captcha_ocr import CaptchaSolver
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
@@ -80,6 +81,8 @@ class PortalAutomation:
         payment_trigger_method: str = "GET",
         save_captcha_images: bool = True,
         retry_egras_otp_once: bool = True,
+        payment_coordinator: PaymentCoordinator | None = None,
+        focus_payment_page: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -95,6 +98,9 @@ class PortalAutomation:
         )
         self.save_captcha_images = save_captcha_images
         self.retry_egras_otp_once = retry_egras_otp_once
+        self.payment_coordinator = payment_coordinator or default_payment_coordinator()
+        self.focus_payment_page = focus_payment_page or self._default_focus_payment_page
+        self._payment_lease: PaymentLease | None = None
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: tuple[str, str] | None = None
         self.stage = Stage.IDLE
@@ -157,12 +163,14 @@ class PortalAutomation:
             if should_run(Stage.UPI_SELECT):
                 await self.select_upi()
             if should_run(Stage.PAYMENT):
+                await self._acquire_payment_slot()
                 await self.select_upi_qr_and_pay()
                 await self.wait_for_upi_qr_and_trigger()
 
             details: dict[str, str] = {}
             if should_run(Stage.RESULT) or should_run(Stage.DOWNLOAD):
                 details = await self.find_result_details()
+                await self._release_payment_slot()
                 reference = (
                     details.get("Transaction ID")
                     or details.get("GRN")
@@ -225,8 +233,12 @@ class PortalAutomation:
                 stage=self.stage,
                 code="playwright_error",
             ) from error
+        except WorkflowStopped:
+            raise
         except Exception as error:
             raise AutomationError(str(error), stage=self.stage) from error
+        finally:
+            await self._release_payment_slot()
 
     async def ensure_citizen_session(self, credentials: Credentials) -> None:
         await self._stage(Stage.CITIZEN_LOGIN)
@@ -529,6 +541,7 @@ class PortalAutomation:
         egrass_otp_task = self._start_otp_watcher("egrass", "#txtOTP")
         login_captcha_entered_manually = True
         if not start_from_otp:
+            assert username is not None
             # ── Step 1: username + password + CAPTCHA → Proceed ─────────────────
             # eGRAS does NOT clear the username field on page reload, so we use
             # #txtPassword as the reset indicator instead of #txtLoginId.
@@ -742,7 +755,12 @@ class PortalAutomation:
             )
             return False
 
-        self.emit(UiEvent("log", "eGRAS OTP was resent once; polling the new OTP and reading the new CAPTCHA."))
+        self.emit(
+            UiEvent(
+                "log",
+                "eGRAS OTP was resent once; polling the new OTP and reading the new CAPTCHA.",
+            )
+        )
         return True
 
     async def _solve_egras_otp_captcha(self) -> bool:
@@ -1147,6 +1165,9 @@ class PortalAutomation:
                 break
             await self.page.wait_for_timeout(250)
 
+        self._payment_state("qr_ready")
+        await self.focus_payment_page()
+        self._payment_state("foreground_verified")
         if not self.payment_trigger_url:
             return
 
@@ -1175,6 +1196,8 @@ class PortalAutomation:
     async def find_result_details(self) -> dict[str, str]:
         await self._stage(Stage.RESULT)
         self._status("Waiting for UPI payment completion and transaction confirmation…")
+        confirmation_logged = False
+        confirmed_details: dict[str, str] = {}
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
@@ -1202,6 +1225,9 @@ class PortalAutomation:
             try:
                 details = await self._read_transaction_details()
                 if details:
+                    confirmed_details = details
+                if details and not confirmation_logged:
+                    confirmation_logged = True
                     self.emit(
                         UiEvent(
                             "log",
@@ -1210,15 +1236,13 @@ class PortalAutomation:
                             f"GRN {details.get('GRN', 'N/A')}, CIN {details.get('CIN', 'N/A')}.",
                         )
                     )
-                    return details
 
-                # If the download link is already visible, return whatever details are present.
                 download_link = await first_visible(
                     self.page, ['a[href*="gras_estamp_download"]'], 500
                 )
                 if download_link is not None:
-                    details = await self._read_transaction_details()
-                    return details
+                    self._payment_state("download_ready")
+                    return confirmed_details
             except PlaywrightError:
                 pass
 
@@ -1397,7 +1421,8 @@ class PortalAutomation:
                 self.emit(
                     UiEvent(
                         "log",
-                        f"OCR attempt {attempt} returned {len(code)} characters instead of {expected_length}; "
+                        f"OCR attempt {attempt} returned {len(code)} characters instead of "
+                        f"{expected_length}; "
                         "refreshing the CAPTCHA and trying again.",
                     )
                 )
@@ -1577,6 +1602,38 @@ class PortalAutomation:
 
     def _status(self, message: str) -> None:
         self.emit(UiEvent("status", message))
+
+    async def _acquire_payment_slot(self) -> None:
+        if self._payment_lease is not None:
+            return
+        self._payment_state("queueing")
+        self._payment_lease = await self.payment_coordinator.acquire(
+            self.emit,
+            wait_check=self._check_payment_wait,
+        )
+        self._payment_state("pay_now_ready")
+
+    async def _release_payment_slot(self) -> None:
+        lease, self._payment_lease = self._payment_lease, None
+        if lease is not None:
+            await lease.release()
+
+    async def _check_payment_wait(self) -> None:
+        await self.controls.ensure_not_stopped()
+        if self.page.is_closed():
+            raise AutomationError(
+                "The portal browser was closed while waiting for the payment queue.",
+                stage=self.stage,
+                code="browser_closed",
+                retryable=False,
+            )
+
+    async def _default_focus_payment_page(self) -> None:
+        await self._check_payment_wait()
+        await self.page.bring_to_front()
+
+    def _payment_state(self, state: str) -> None:
+        self.emit(UiEvent("payment_state", state.replace("_", " ").capitalize() + ".", {"state": state}))
 
     async def _goto(self, url: str, *, timeout_ms: int = 120_000) -> None:
         await self.controls.checkpoint()

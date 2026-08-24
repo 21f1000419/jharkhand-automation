@@ -113,7 +113,7 @@ class GeminiWebCaptchaSolver:
 
 
 def _normalize(value: str, expected_length: int | None) -> str:
-    values = re.findall(r"[A-Za-z0-9]+", value.upper())
+    values: list[str] = re.findall(r"[A-Za-z0-9]+", value.upper())
     if expected_length:
         exact = [item for item in values if len(item) == expected_length]
         if exact:
@@ -170,10 +170,13 @@ async def _wait_for_response(page: Page, baseline: list[str]) -> str:
         current = await _responses(page)
         candidate = current[-1] if current else ""
         previous = baseline[-1] if baseline else ""
-        if candidate and (len(current) > len(baseline) or candidate != previous):
-            if candidate != latest:
-                latest = candidate
-                changed_at = time.monotonic()
+        if (
+            candidate
+            and (len(current) > len(baseline) or candidate != previous)
+            and candidate != latest
+        ):
+            latest = candidate
+            changed_at = time.monotonic()
         generating = await _first_visible(page, STOP_SELECTORS, 100) is not None
         if latest and not generating and time.monotonic() - changed_at > 1:
             return latest

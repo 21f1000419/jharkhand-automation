@@ -10,10 +10,10 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from services.captcha_ocr import join_ocr_fragments, normalize_captcha
 
 try:
-    import easyocr
+    import easyocr  # type: ignore[import-untyped]
     _easyocr_import_error = ""
 except ImportError as error:  # pragma: no cover - environment-dependent dependency
-    easyocr = None  # type: ignore[assignment]
+    easyocr = None
     _easyocr_import_error = f"{type(error).__name__}: {error}"
 
 

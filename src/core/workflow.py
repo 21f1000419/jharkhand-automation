@@ -10,18 +10,19 @@ from playwright.async_api import Page
 from automation.portal import PortalAutomation
 from core.controls import RunControls
 from core.models import (
+    STAGE_CHECKPOINTS,
     AutomationError,
     Credentials,
     PersistenceError,
     RunMode,
     RunOptions,
     Stage,
-    STAGE_CHECKPOINTS,
     UiEvent,
     WorkflowStopped,
 )
-from services.csv_store import CsvBatchStore
+from core.payment_coordination import PaymentCoordinator, default_payment_coordinator
 from services.captcha_ocr import CaptchaSolver
+from services.csv_store import CsvBatchStore
 from services.sms_otp_client import SmsOtpClient
 
 
@@ -34,6 +35,8 @@ class WorkflowEngine:
         emit: Callable[[UiEvent], None],
         open_portal_page: Callable[[], Awaitable[Page]] | None = None,
         close_portal_page: Callable[[], Awaitable[None]] | None = None,
+        payment_coordinator: PaymentCoordinator | None = None,
+        focus_payment_page: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -41,6 +44,8 @@ class WorkflowEngine:
         self.emit = emit
         self.open_portal_page = open_portal_page
         self.close_portal_page = close_portal_page
+        self.payment_coordinator = payment_coordinator or default_payment_coordinator()
+        self.focus_payment_page = focus_payment_page
         self.store: CsvBatchStore | None = None
         self.current_row: dict[str, str] | None = None
         self.current_stage = Stage.IDLE
@@ -60,6 +65,8 @@ class WorkflowEngine:
             options.payment_trigger_method,
             options.save_captcha_images,
             options.retry_egras_otp_once,
+            self.payment_coordinator,
+            self.focus_payment_page,
         )
 
     async def run(self, options: RunOptions) -> bool:
@@ -75,9 +82,11 @@ class WorkflowEngine:
         download_root = options.download_root or Path.home() / "Downloads"
         portal: PortalAutomation | None = None
         if not options.fresh_browser_per_unit:
-            if self.page is None or self.page.is_closed():
-                if self.open_portal_page is not None:
-                    self.page = await self.open_portal_page()
+            if (
+                (self.page is None or self.page.is_closed())
+                and self.open_portal_page is not None
+            ):
+                self.page = await self.open_portal_page()
             if self.page is None:
                 raise RuntimeError("No portal browser page available.")
             portal = self._create_portal(self.page, options)
@@ -153,6 +162,8 @@ class WorkflowEngine:
                                 raise RuntimeError("No portal browser page available.")
                             portal = self._create_portal(self.page, options)
 
+                    if portal is None:
+                        raise RuntimeError("No portal automation session available.")
                     try:
                         result = await portal.process_unit(
                             row,
@@ -334,7 +345,13 @@ class WorkflowEngine:
                 try:
                     await portal.reset_to_start(record_stage=False, credentials=credentials)
                 except Exception as reset_error:
-                    self.emit(UiEvent("log", f"Could not reset the portal: {reset_error}", {"level": "error"}))
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            f"Could not reset the portal: {reset_error}",
+                            {"level": "error"},
+                        )
+                    )
             return "next"
 
         checkpoint_info = STAGE_CHECKPOINTS.get(error.stage)
@@ -367,7 +384,13 @@ class WorkflowEngine:
                 try:
                     await portal.reset_to_start(record_stage=False, credentials=credentials)
                 except Exception as reset_error:
-                    self.emit(UiEvent("log", f"Could not reset the portal: {reset_error}", {"level": "error"}))
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            f"Could not reset the portal: {reset_error}",
+                            {"level": "error"},
+                        )
+                    )
 
         return decision
 
