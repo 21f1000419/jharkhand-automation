@@ -189,7 +189,7 @@ class MainWindow:
 
         sms_settings = ttk.Frame(header)
         sms_settings.grid(row=0, column=1, sticky="e", padx=(16, 0))
-        ttk.Label(sms_settings, text="SMS User ID").grid(row=0, column=0, sticky="w")
+        ttk.Label(sms_settings, text="Citizen SMS User ID").grid(row=0, column=0, sticky="w")
         sms_user_id_entry = ttk.Entry(sms_settings, textvariable=self.sms_user_id_var, width=16)
         sms_user_id_entry.grid(row=0, column=1, padx=(5, 10))
         sms_user_id_entry.bind("<FocusOut>", self._save_non_secret_settings)
@@ -199,7 +199,7 @@ class MainWindow:
         sms_server_url_entry.bind("<FocusOut>", self._save_non_secret_settings)
         ttk.Label(
             sms_settings,
-            text="Warning: Empty or incorrect User ID prevents automatic OTP fetch.",
+            text="User ID applies only to Citizen OTPs. eGRAS OTPs match by reference number.",
             foreground="#b7791f",
         ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
 

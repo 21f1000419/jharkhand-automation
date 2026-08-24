@@ -26,23 +26,39 @@ class SmsOtpClient:
         """Record the desktop's current time in UTC for an OTP freshness filter."""
         return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
-    async def get_otp(self, user_id: str, otp_type: str, not_before: str) -> str | None:
-        return await asyncio.to_thread(self._get_otp, user_id, otp_type, not_before)
+    async def get_main_otp(self, user_id: str, not_before: str) -> str | None:
+        return await asyncio.to_thread(self._get_otp, self._main_endpoint(user_id, not_before))
 
-    async def delete_otp_after_use(self, user_id: str, otp_type: str, otp: str) -> bool:
+    async def get_egrass_otp(self, reference_number: str) -> str | None:
+        return await asyncio.to_thread(
+            self._get_otp,
+            self._egrass_endpoint(reference_number),
+        )
+
+    async def delete_main_otp_after_use(self, user_id: str, otp: str) -> bool:
         """Delete in a worker thread so cleanup never blocks browser automation."""
-        return await asyncio.to_thread(self._delete_otp, user_id, otp_type, otp)
+        return await asyncio.to_thread(self._delete_otp, self._main_endpoint(user_id), otp)
 
-    def _endpoint(self, user_id: str, otp_type: str, not_before: str | None = None) -> str:
+    async def delete_egrass_otp_after_use(self, reference_number: str, otp: str) -> bool:
+        return await asyncio.to_thread(
+            self._delete_otp,
+            self._egrass_endpoint(reference_number),
+            otp,
+        )
+
+    def _main_endpoint(self, user_id: str, not_before: str | None = None) -> str:
         query = f"?{urlencode({'notBefore': not_before})}" if not_before else ""
         return (
             f"{self.base_url}/api/users/{quote(user_id, safe='')}/otps/"
-            f"{quote(otp_type, safe='')}{query}"
+            f"main{query}"
         )
 
-    def _get_otp(self, user_id: str, otp_type: str, not_before: str) -> str | None:
+    def _egrass_endpoint(self, reference_number: str) -> str:
+        return f"{self.base_url}/api/egrass/otps/{quote(reference_number, safe='')}"
+
+    def _get_otp(self, endpoint: str) -> str | None:
         try:
-            with urlopen(self._endpoint(user_id, otp_type, not_before), timeout=8) as response:  # noqa: S310
+            with urlopen(endpoint, timeout=8) as response:  # noqa: S310
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             if error.code == 404:
@@ -56,10 +72,10 @@ class SmsOtpClient:
             return otp
         return None
 
-    def _delete_otp(self, user_id: str, otp_type: str, otp: str) -> bool:
+    def _delete_otp(self, endpoint: str, otp: str) -> bool:
         data = json.dumps({"otp": otp}).encode("utf-8")
         request = Request(
-            self._endpoint(user_id, otp_type),
+            endpoint,
             data=data,
             headers={"Content-Type": "application/json"},
             method="DELETE",

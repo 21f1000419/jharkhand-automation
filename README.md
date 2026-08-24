@@ -89,7 +89,7 @@ Every application action, workflow stage, error, and stop event is appended to o
 
 ## Optional SMS-server OTP auto-fill
 
-Enter the User ID used by the SMS server in **SMS OTP settings**. MacroDroid forwards SMS messages to the shared SMS server, and the application polls that server for matching `main` (NGDRS) and `egrass` OTPs. The default address is `https://sms-server.compitcom.in`; it can be changed in settings if required. An empty or incorrect User ID prevents automatic OTP retrieval, and the browser remains available for manual entry if no OTP arrives.
+Enter the Citizen User ID used by the SMS server in **SMS OTP settings**. The ID applies only to the `main` NGDRS OTP. For eGRAS, the application reads the OTP reference number from the website and fetches the OTP stored under that reference, so parallel eGRAS sessions do not share or overwrite an OTP slot. The default server address is `https://sms-server.compitcom.in`; it can be changed in settings. An empty or incorrect Citizen User ID disables only automatic Citizen OTP retrieval. The browser remains available for manual entry if no OTP arrives.
 
 ## Optional payment trigger
 

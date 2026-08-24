@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -46,10 +47,20 @@ TRANSACTION_FIELD_NAMES = {
 UPI_QR_READY_TEXT = "scan upi qr"
 UPI_TRANSACTION_TIMER_TEXT = "time left to complete the transaction"
 CAPTCHA_FAILURE_TEXT = "captcha validation failed"
+EGRASS_REFERENCE_PATTERN = re.compile(
+    r"\bOTP\s+Reference(?:\s+(?:number|no\.?|is))?\s*[:\-]?\s*([A-Z0-9-]+)\b",
+    re.IGNORECASE,
+)
 
 
 StageCallback = Callable[[Stage], Awaitable[None]]
 EventCallback = Callable[[UiEvent], None]
+
+
+def extract_egrass_otp_reference(message: str) -> str:
+    """Extract the e-GRAS OTP reference displayed above the OTP field."""
+    match = EGRASS_REFERENCE_PATTERN.search(message)
+    return match.group(1).upper() if match else ""
 
 
 class PortalAutomation:
@@ -85,7 +96,7 @@ class PortalAutomation:
         self.save_captcha_images = save_captcha_images
         self.retry_egras_otp_once = retry_egras_otp_once
         self.citizen_otp_for_cleanup: str | None = None
-        self.egrass_otp_for_cleanup: str | None = None
+        self.egrass_otp_for_cleanup: tuple[str, str] | None = None
         self.stage = Stage.IDLE
         self.page.set_default_timeout(15_000)
 
@@ -612,18 +623,27 @@ class PortalAutomation:
         finally:
             await self._cancel_otp_watcher(egrass_otp_task)
         if self.egrass_otp_for_cleanup is not None:
-            self._delete_used_otp_in_background("egrass", self.egrass_otp_for_cleanup)
+            reference_number, otp = self.egrass_otp_for_cleanup
+            self._delete_used_otp_in_background(
+                "egrass",
+                otp,
+                reference_number=reference_number,
+            )
             self.egrass_otp_for_cleanup = None
 
-    def _capture_otp_request_time(self) -> str | None:
+    def _capture_main_otp_request_time(self) -> str | None:
         """Use UTC so differing local timezones cannot admit old OTPs."""
-        return self.sms_otp_client.request_time() if self.sms_user_id else None
+        if not self.sms_user_id or not self.sms_otp_client.is_configured:
+            return None
+        return self.sms_otp_client.request_time()
 
     def _start_otp_watcher(
         self, otp_type: str, field_selector: str
     ) -> asyncio.Task[str | None] | None:
         """Start an OTP watcher without coupling it to CAPTCHA entry."""
-        if not self.sms_user_id:
+        if not self.sms_otp_client.is_configured:
+            return None
+        if otp_type == "main" and not self.sms_user_id:
             return None
         timeout_seconds = (
             MAIN_OTP_POLL_TIMEOUT_SECONDS if otp_type == "main" else EGRASS_OTP_POLL_TIMEOUT_SECONDS
@@ -744,11 +764,35 @@ class PortalAutomation:
         """Wait for the portal OTP field, then retrieve and fill an untouched OTP."""
         await self._wait_for_login_element(field_selector)
         field = self.page.locator(field_selector).first
-        not_before = self._capture_otp_request_time()
-        if not_before is None:
-            return None
-        self.emit(UiEvent("otp_waiting", f"Waiting for {otp_type} OTP from the SMS server..."))
-        otp = await self._wait_for_sms_otp(otp_type, field_selector, not_before, timeout_seconds)
+        reference_number: str | None = None
+        not_before: str | None = None
+        if otp_type == "egrass":
+            reference_number = await self._wait_for_egrass_otp_reference()
+            if not reference_number:
+                self.emit(
+                    UiEvent(
+                        "otp_reference_missing",
+                        "Could not read the eGRAS OTP reference number. Enter the OTP manually.",
+                    )
+                )
+                return None
+            waiting_message = (
+                f"Waiting for eGRAS OTP reference {reference_number} from the SMS server..."
+            )
+        else:
+            not_before = self._capture_main_otp_request_time()
+            if not_before is None:
+                return None
+            waiting_message = "Waiting for Citizen OTP from the SMS server..."
+
+        self.emit(UiEvent("otp_waiting", waiting_message))
+        otp = await self._wait_for_sms_otp(
+            otp_type,
+            field_selector,
+            timeout_seconds,
+            not_before=not_before,
+            reference_number=reference_number,
+        )
         if otp is None:
             return None
         try:
@@ -767,13 +811,39 @@ class PortalAutomation:
             self.citizen_otp_for_cleanup = otp
             message = "Citizen OTP received from the SMS server and filled."
         else:
-            self.egrass_otp_for_cleanup = otp
+            if reference_number is None:
+                return None
+            self.egrass_otp_for_cleanup = (reference_number, otp)
             message = "OTP received from the SMS server and filled in eGRAS."
         self.emit(UiEvent("otp_filled", message))
         return otp
 
+    async def _wait_for_egrass_otp_reference(self, timeout_seconds: float = 10) -> str | None:
+        """Read the reference shown by e-GRAS after it creates an OTP."""
+        deadline = time.monotonic() + timeout_seconds
+        message = self.page.locator("#divOtpMsg").first
+        while time.monotonic() < deadline:
+            await self.controls.checkpoint()
+            try:
+                if await message.count() > 0:
+                    reference_number = extract_egrass_otp_reference(
+                        (await message.text_content()) or ""
+                    )
+                    if reference_number:
+                        return reference_number
+            except PlaywrightError:
+                pass
+            await self.page.wait_for_timeout(250)
+        return None
+
     async def _wait_for_sms_otp(
-        self, otp_type: str, field_selector: str, not_before: str, timeout_seconds: float
+        self,
+        otp_type: str,
+        field_selector: str,
+        timeout_seconds: float,
+        *,
+        not_before: str | None = None,
+        reference_number: str | None = None,
     ) -> str | None:
         """Poll without blocking Playwright; a missing/unreachable server falls back to manual entry."""
         started_at = time.monotonic()
@@ -798,7 +868,17 @@ class PortalAutomation:
             if now - last_poll_time >= poll_interval:
                 last_poll_time = now
                 try:
-                    otp = await self.sms_otp_client.get_otp(self.sms_user_id, otp_type, not_before)
+                    if otp_type == "egrass":
+                        if reference_number is None:
+                            return None
+                        otp = await self.sms_otp_client.get_egrass_otp(reference_number)
+                    else:
+                        if not_before is None:
+                            return None
+                        otp = await self.sms_otp_client.get_main_otp(
+                            self.sms_user_id,
+                            not_before,
+                        )
                 except SmsOtpServerError as error:
                     if not reported_connection_issue:
                         self.emit(
@@ -823,14 +903,29 @@ class PortalAutomation:
             await self.page.wait_for_timeout(250)
         return None
 
-    def _delete_used_otp_in_background(self, otp_type: str, otp: str) -> None:
+    def _delete_used_otp_in_background(
+        self,
+        otp_type: str,
+        otp: str,
+        *,
+        reference_number: str | None = None,
+    ) -> None:
         """Cleanup is deliberately detached so it cannot delay the browser workflow."""
 
         async def delete() -> None:
             try:
-                deleted = await self.sms_otp_client.delete_otp_after_use(
-                    self.sms_user_id, otp_type, otp
-                )
+                if otp_type == "egrass":
+                    if reference_number is None:
+                        return
+                    deleted = await self.sms_otp_client.delete_egrass_otp_after_use(
+                        reference_number,
+                        otp,
+                    )
+                else:
+                    deleted = await self.sms_otp_client.delete_main_otp_after_use(
+                        self.sms_user_id,
+                        otp,
+                    )
             except SmsOtpServerError as error:
                 self.emit(UiEvent("otp_cleanup_issue", f"Used {otp_type} OTP could not be removed: {error}"))
                 return

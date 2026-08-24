@@ -1,126 +1,108 @@
 # SMS reader API
 
-This document describes the local SMS-to-OTP bridge in [`sms-server`](sms-server). MacroDroid forwards SMS messages from a phone to the server, then the Python automation polls the server for an OTP matching its entered user ID.
+The `sms-server` bridge receives messages from MacroDroid and lets the Python automation poll for matching OTPs. It uses Node.js built-ins and keeps OTPs only in memory.
 
-The server is intentionally lightweight: Node.js built-ins only, no database, and no npm dependencies. OTPs are kept only in memory, so restarting the server clears them.
-
-## Start the server
+## Start and check the server
 
 ```powershell
 cd sms-server
 node server.js
 ```
 
-Default address: `http://COMPUTER_LAN_IP:8787`.
-
-The phone must be on a network that can reach the computer. If Windows Firewall asks, allow Node.js on the private network only.
-
-## API
-
-### Health check
-
-```http
-GET /
+```text
+GET /health
 ```
-
-`GET /health` returns the same payload.
-
-Example response:
 
 ```json
 { "ok": true, "pendingOtpCount": 0 }
 ```
 
-### Forward an SMS from MacroDroid
+## Forward an SMS from MacroDroid
 
-```http
+```text
 POST /api/users/:userId/sms
 Content-Type: application/json
 ```
-
-`userId` must exactly match the ID entered in the Python application.
 
 ```json
 {
   "sender": "AX-MKUBER-S",
   "content": "KUBER JH- OTP for One Time User Validation IN JEGRAS IS A09AFD Time:18/08/2026 08:35:22 AM KUBER JH-OTP REFERENCE IS 2127753 Valid for 2 minutes",
   "metadata": {
-    "receivedOnPhone": "optional MacroDroid timestamp"
+    "receivedOnPhone": "2026-08-18T08:35:22+05:30"
   }
 }
 ```
 
-`metadata` is optional. Unrecognised messages are accepted with `202` but are not stored.
+The path user ID is used only when the message is a Citizen/NGDRS OTP. eGRAS storage ignores it and uses the reference number in the SMS.
 
-### Poll an OTP from the Python application
+## Poll a Citizen OTP
 
-```http
-GET /api/users/:userId/otps/:type?notBefore=:serverUtcTimestamp
+```text
+GET /api/users/:userId/otps/main?notBefore=:serverUtcTimestamp
 ```
 
-Allowed OTP types are `main` and `egrass`.
+The app records the UTC timestamp immediately before polling. OTPs older than `notBefore` are not returned.
 
-```http
-GET /api/users/my-user/otps/main?notBefore=2026-08-18T10:00:00.000Z
-GET /api/users/my-user/otps/egrass?notBefore=2026-08-18T10:00:00.000Z
+## Poll an eGRAS OTP
+
+The automation reads text such as `OTP Reference number : 2163352` from `#divOtpMsg` on the eGRAS page. It then requests only that reference:
+
+```text
+GET /api/egrass/otps/2163352
 ```
 
-If no OTP is waiting, the response is `404`:
+The eGRAS route has no user ID. Multiple references can remain pending at the same time, so parallel browser sessions cannot overwrite one another's OTPs.
+
+If no OTP is waiting, either poll route returns `404`:
 
 ```json
 { "found": false }
 ```
 
-If an OTP is waiting, the response is `200`:
+A matching eGRAS response is:
 
 ```json
 {
   "found": true,
-  "userId": "my-user",
   "type": "egrass",
   "otp": "A09AFD",
+  "referenceNumber": "2163352",
   "sender": "AX-MKUBER-S",
-  "receivedAt": "2026-08-18T10:00:00.000Z"
+  "receivedAt": "2026-08-18T10:00:05.000Z"
 }
 ```
 
-Immediately before requesting an OTP, the desktop app records a UTC (`Z`) timestamp as `notBefore`. It polls for 90 seconds for `main` and 100 seconds for `egrass`—well beyond 30-40 seconds. Checks happen every second for the first 10 seconds, every 2 seconds until 40 seconds, then every 3 seconds. UTC means the desktop and SMS server can use completely different local timezones without affecting the comparison. OTPs received before `notBefore` return `404` and are not used.
+The app polls for up to 90 seconds for Citizen OTPs and 100 seconds for eGRAS. Checks happen every second for the first 10 seconds, every two seconds until 40 seconds, then every three seconds.
 
-### Mark the OTP used and remove it
+## Remove an accepted OTP
 
-Only delete the OTP after the target website has accepted it. Send the OTP that was used so a delayed cleanup cannot remove a newer replacement OTP. This is a single DELETE request; there is no separate pre-delete lookup.
+The app deletes an OTP only after the target website accepts it. It sends the used OTP value so a delayed cleanup cannot delete a replacement.
 
-```http
-DELETE /api/users/:userId/otps/:type
+```text
+DELETE /api/users/:userId/otps/main
+Content-Type: application/json
+
+{ "otp": "36367408" }
 ```
 
-Example:
+```text
+DELETE /api/egrass/otps/2163352
+Content-Type: application/json
 
-```http
-DELETE /api/users/my-user/otps/egrass
-```
-
-```json
 { "otp": "A09AFD" }
 ```
 
-Response:
+The server returns `409` and keeps the stored entry if the submitted OTP differs from the current OTP for that user or reference.
 
-```json
-{ "deleted": true }
-```
+## Recognition and expiry
 
-If a newer OTP has already replaced this one, the server returns `409` and leaves the newer OTP untouched.
+- Citizen/NGDRS OTPs come only from `Your OTP to NGDRS Login :- 36367408` and contain four to eight digits.
+- eGRAS OTPs come from the six-character value after `JEGRAS IS`.
+- An eGRAS message is stored only when it also contains `JH-OTP REFERENCE IS ...`.
+- Each eGRAS reference has an independent entry. A resend for the same reference updates only that entry.
+- Entries expire after five minutes by default. Set `OTP_TTL_MS` to change this.
 
-## OTP recognition and replacement rules
+## Security
 
-- `main` / Jharnibandhan: the numeric OTP is extracted only from `Your OTP to NGDRS Login :- 36367408`. The captured OTP is 4-8 digits.
-- `egrass` / KUBER JH: the six-character alphanumeric OTP is extracted only from `KUBER JH- OTP for One Time User Validation IN JEGRAS IS A09AFD`.
-- For e-GRAS, the `JH-OTP REFERENCE IS 2127753` value is a reference number, not an OTP, and is never used.
-- The original SMS sender is stored with the OTP for traceability. The known e-GRAS sender is normally `AX-MKUBER-S`.
-- Only one pending OTP exists for each `(userId, type)`. A newer matching SMS replaces an older one automatically.
-- OTPs expire after five minutes by default (`OTP_TTL_MS` can change this). Used OTPs should be deleted through the API immediately after successful use.
-
-## Future authentication
-
-Authentication is deliberately not implemented for the initial 2-5-user local-network setup. Before exposing this server outside a trusted private network, add authentication to every SMS submission and OTP read/delete request—for example, a shared API key in an `Authorization` header or a per-device token. HTTPS and IP/network restrictions should also be considered before any wider use.
+The server currently has no authentication. Use it only on a trusted private network. Add authentication, HTTPS, and network restrictions before wider exposure.

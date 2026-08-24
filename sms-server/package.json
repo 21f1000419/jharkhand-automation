@@ -4,7 +4,8 @@
   "private": true,
   "description": "Dependency-free in-memory SMS OTP server for MacroDroid",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

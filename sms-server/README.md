@@ -1,108 +1,104 @@
 # Local SMS OTP server
 
-A dependency-free Node.js API for MacroDroid to forward incoming SMS messages to the local automation application. OTPs live only in memory: restarting the server clears them.
+A dependency-free Node.js API for forwarding SMS messages from MacroDroid to the automation app. OTPs are held in memory and expire after five minutes by default. Restarting the server clears them.
 
-## Run
+## Start the server
 
 ```powershell
 cd sms-server
 node server.js
 ```
 
-It listens on port `8787`. To change this or the five-minute OTP expiry:
+The server listens on port `8787`. These environment variables change the port and expiry:
 
 ```powershell
-$env:PORT = 8788
+$env:PORT = 9000
 $env:OTP_TTL_MS = 300000
 node server.js
 ```
 
-Open `http://localhost:8787/` to verify the server is running. It returns JSON like:
+Check it with `GET /health`:
 
 ```json
 { "ok": true, "service": "sms-otp-server", "pendingOtpCount": 0 }
 ```
 
-The phone and the computer must be able to reach each other. Use the computer's LAN IP in MacroDroid, for example `http://192.168.1.20:8787`.
+## Forward SMS messages
 
-## MacroDroid HTTP request
+The existing MacroDroid endpoint remains:
 
-Create an SMS-received macro and send an HTTP `POST` request to:
-
+```text
+POST /api/users/USER_ID/sms
+Content-Type: application/json
 ```
-http://COMPUTER_LAN_IP:8787/api/users/USER_ID/sms
-```
-
-Set the body type to JSON and send the actual MacroDroid variables for the sender and message content:
 
 ```json
 {
   "sender": "[SMS sender variable]",
   "content": "[SMS message body variable]",
   "metadata": {
-    "receivedOnPhone": "[optional timestamp variable]"
+    "receivedOnPhone": "[timestamp variable]"
   }
 }
 ```
 
-`USER_ID` must exactly match the user ID entered in the Python application. `metadata` is optional.
+`USER_ID` routes only the Citizen/NGDRS OTP. The server ignores it for eGRAS and extracts the eGRAS reference number from the SMS body.
 
 ## OTP recognition and storage
 
-- `main` (Jharnibandhan): a content match for `Your OTP to NGDRS Login :- 36367408` stores the 4-8 digit value immediately after `:-` as the `main` OTP.
-- `egrass` (KUBER JH, usually sender `AX-MKUBER-S`): a content match for `KUBER JH- OTP for One Time User Validation IN JEGRAS IS A09AFD` stores exactly the six alphanumeric characters after `JEGRAS IS`. The later `JH-OTP REFERENCE IS 2127753` is never stored as an OTP.
-- Other numeric values, including dates, times, GRNs, and reference numbers, are ignored.
-- Only one pending OTP exists for each `(userId, type)`. A new matching SMS replaces the old value automatically.
-- OTPs expire after five minutes by default. They are removed after a successful use by the Python app.
+- Citizen/NGDRS messages match `Your OTP to NGDRS Login :- 36367408`. One pending Citizen OTP is stored per user ID.
+- eGRAS messages must contain both `JEGRAS IS A09AFD` and `JH-OTP REFERENCE IS 2127753`. The server stores `A09AFD` under reference `2127753`.
+- Each eGRAS reference has its own entry. Receiving an OTP for another reference does not replace or delete any existing eGRAS OTP.
+- Receiving another OTP for the same reference replaces that reference's value, which is needed for resends.
+- Unknown or incomplete messages return `202` and are not stored.
 
-Unknown SMS messages are accepted but not stored (`202` response), so one MacroDroid rule can forward all SMS messages safely.
+## Fetch OTPs
 
-## Python API contract
+Citizen OTPs still use the configured SMS user ID and freshness timestamp:
 
-Poll every 1-2 seconds while the browser is waiting for an OTP:
-
-```
-GET /api/users/USER_ID/otps/main
-GET /api/users/USER_ID/otps/egrass
-```
-
-To exclude OTPs that arrived before the website requested a new one, add an ISO-8601 UTC `notBefore` query parameter:
-
-```
+```text
 GET /api/users/USER_ID/otps/main?notBefore=2026-08-18T10:00:00.000Z
 ```
 
-The desktop app records this timestamp in UTC immediately before requesting an OTP. UTC avoids timezone differences between the desktop and server.
+eGRAS has no user ID or OTP type in its lookup route:
 
-A waiting OTP returns `404` with `{ "found": false }`. A received OTP returns:
+```text
+GET /api/egrass/otps/2127753
+```
+
+A missing OTP returns `404` with `{ "found": false }`. A matching eGRAS OTP returns:
 
 ```json
 {
   "found": true,
-  "userId": "USER_ID",
-  "type": "main",
-  "otp": "36367408",
-  "sender": "VM-NGDRS",
-  "receivedAt": "2026-08-18T10:00:00.000Z"
+  "type": "egrass",
+  "otp": "A09AFD",
+  "referenceNumber": "2127753",
+  "sender": "AX-MKUBER-S",
+  "receivedAt": "2026-08-18T10:00:05.000Z"
 }
 ```
 
-After the OTP was actually accepted by the target website, remove it. Send the OTP value used in the body so a delayed cleanup cannot delete a newer replacement OTP. This is one DELETE request; no pre-delete lookup is needed.
+## Delete used OTPs
 
-```
+Delete an OTP only after the website accepts it. Include the used value so delayed cleanup cannot remove a replacement OTP.
+
+```text
 DELETE /api/users/USER_ID/otps/main
-```
+Content-Type: application/json
 
-```json
 { "otp": "36367408" }
 ```
 
-Use the same route with `egrass` for e-GRAS. The delete response is `{ "deleted": true }` when an entry was removed. It returns `409` if a newer OTP is already pending.
+```text
+DELETE /api/egrass/otps/2127753
+Content-Type: application/json
 
-## Quick manual check
-
-```powershell
-Invoke-RestMethod -Method Post -Uri 'http://localhost:8787/api/users/demo/sms' -ContentType 'application/json' -Body '{"sender":"VM-NGDRS","content":"Your OTP to NGDRS Login :- 36367408"}'
-Invoke-RestMethod 'http://localhost:8787/api/users/demo/otps/main'
-Invoke-RestMethod -Method Delete -Uri 'http://localhost:8787/api/users/demo/otps/main' -ContentType 'application/json' -Body '{"otp":"36367408"}'
+{ "otp": "A09AFD" }
 ```
+
+The response is `{ "deleted": true }` when the entry existed. A different pending OTP for the same key returns `409` and remains stored.
+
+## Security
+
+This server has no authentication. Keep it on a trusted private network. Add authentication, HTTPS, and network restrictions before exposing it more widely.

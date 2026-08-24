@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from playwright.async_api import Download
 from playwright.async_api import Error as PlaywrightError
 
-from automation.portal import PortalAutomation, transaction_details_from_rows
+from automation.portal import (
+    PortalAutomation,
+    extract_egrass_otp_reference,
+    transaction_details_from_rows,
+)
 from core.config import AppConfig, ConfigStore
 from core.controls import RunControls
 from core.models import CaptchaCopyMode, Credentials, WorkflowStopped
@@ -51,6 +55,58 @@ class ServiceTests(unittest.TestCase):
             extract_reference("https://example.test/gras_estamp_download/7489afcddfd00e8d892a"),
             "7489afcddfd00e8d892a",
         )
+
+    def test_extract_egrass_otp_reference_from_page_message(self) -> None:
+        self.assertEqual(
+            extract_egrass_otp_reference(
+                "Your OTP has been sent to registered mobile no. 94XXXX3576 "
+                "with OTP Reference number :  2163352"
+            ),
+            "2163352",
+        )
+        self.assertEqual(extract_egrass_otp_reference("OTP reference no: ab-123"), "AB-123")
+        self.assertEqual(extract_egrass_otp_reference("No OTP has been requested"), "")
+
+    def test_egrass_watcher_uses_reference_without_sms_user_id(self) -> None:
+        page = MagicMock()
+        sms_client = MagicMock()
+        sms_client.is_configured = True
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            sms_client,
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_egrass_otp_reference = AsyncMock(  # type: ignore[method-assign]
+            return_value="2163352"
+        )
+        portal._wait_for_sms_otp = AsyncMock(  # type: ignore[method-assign]
+            return_value="A09AFD"
+        )
+        otp_field = MagicMock()
+        otp_field.input_value = AsyncMock(return_value="")
+        otp_field.fill = AsyncMock()
+        page.locator.return_value.first = otp_field
+
+        otp = asyncio.run(
+            portal._watch_and_fill_sms_otp("egrass", "#txtOTP", timeout_seconds=1)
+        )
+
+        self.assertEqual(otp, "A09AFD")
+        portal._wait_for_sms_otp.assert_awaited_once_with(
+            "egrass",
+            "#txtOTP",
+            1,
+            not_before=None,
+            reference_number="2163352",
+        )
+        otp_field.fill.assert_awaited_once_with("A09AFD")
+        self.assertEqual(portal.egrass_otp_for_cleanup, ("2163352", "A09AFD"))
 
     def test_payment_trigger_supports_get_and_post(self) -> None:
         for method in ("GET", "POST"):
@@ -624,6 +680,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_automatic_egras_captcha_and_otp_submit_validation(self) -> None:
         page = MagicMock()
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         sms_client = MagicMock()
         sms_client.request_time.return_value = "2026-08-21T10:00:00Z"
@@ -639,7 +696,13 @@ class ServiceTests(unittest.TestCase):
         )
         portal._solve_captcha = AsyncMock(side_effect=[False, False])  # type: ignore[method-assign]
         portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(  # type: ignore[method-assign]
+            return_value="otp"
+        )
         portal._wait_for_sms_otp = AsyncMock(return_value="A09AFD")  # type: ignore[method-assign]
+        portal._wait_for_egrass_otp_reference = AsyncMock(  # type: ignore[method-assign]
+            return_value="2163352"
+        )
         portal._wait_for_egras_otp_step = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_manual_egras_otp = AsyncMock()  # type: ignore[method-assign]
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
@@ -674,6 +737,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_manual_egras_captchas_do_not_submit_portal_actions(self) -> None:
         page = MagicMock()
+        page.wait_for_timeout = AsyncMock()
         controls = RunControls(lambda _event: None)
         sms_client = MagicMock()
         sms_client.request_time.return_value = "2026-08-21T10:00:00Z"
@@ -689,7 +753,13 @@ class ServiceTests(unittest.TestCase):
         )
         portal._solve_captcha = AsyncMock(side_effect=[True, True])  # type: ignore[method-assign]
         portal._wait_for_login_element = AsyncMock()  # type: ignore[method-assign]
+        portal._wait_for_login_progress = AsyncMock(  # type: ignore[method-assign]
+            return_value="otp"
+        )
         portal._wait_for_sms_otp = AsyncMock(return_value="123456")  # type: ignore[method-assign]
+        portal._wait_for_egrass_otp_reference = AsyncMock(  # type: ignore[method-assign]
+            return_value="2163352"
+        )
         portal._wait_for_egras_otp_step = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_manual_egras_otp = AsyncMock()  # type: ignore[method-assign]
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
