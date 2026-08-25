@@ -23,6 +23,12 @@ from core.playwright_browsers import (
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
 from services.estamp_transactions import export_payment_transactions
+from services.transaction_reconciliation import (
+    TransactionReconciliation,
+    reconcile_transactions,
+    write_reconciliation_csv,
+    write_reconciliation_text,
+)
 from ui.automation_status import AutomationStatusWindow
 from ui.run_tab import CUSTOM_BROWSER_OPTION as TAB_CUSTOM_BROWSER_OPTION
 from ui.run_tab import AutomationTab
@@ -164,6 +170,10 @@ class MainWindow:
         menu.add_command(
             label="Export eStamp payment transactions...",
             command=self._export_payment_transactions,
+        )
+        menu.add_command(
+            label="Compare transaction CSV with downloaded stamps...",
+            command=self._compare_transactions_with_stamps,
         )
 
         profile_menu = tk.Menu(menu, tearoff=False)
@@ -488,6 +498,130 @@ class MainWindow:
         self.transaction_export_running = False
         tab.portal_session_open = False
         tab._set_buttons()
+
+    def _compare_transactions_with_stamps(self) -> None:
+        self._record_ui_action("compare_transactions_with_stamps_clicked")
+        transaction_csv = filedialog.askopenfilename(
+            title="Choose exported payment transactions CSV",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self.root,
+        )
+        if not transaction_csv:
+            return
+        stamps_directory = filedialog.askdirectory(
+            title="Choose the folder containing downloaded eStamp PDFs",
+            parent=self.root,
+            mustexist=True,
+        )
+        if not stamps_directory:
+            return
+        try:
+            report = reconcile_transactions(Path(transaction_csv), Path(stamps_directory))
+        except Exception as error:
+            messagebox.showerror("Compare transactions and stamps", str(error), parent=self.root)
+            return
+        self._show_transaction_reconciliation(report)
+
+    def _show_transaction_reconciliation(self, report: TransactionReconciliation) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Transaction and stamp comparison")
+        dialog.geometry("980x620")
+        dialog.transient(self.root)
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame,
+            text=(
+                f"{len(report.missing_pdfs)} transaction(s) without a PDF | "
+                f"{len(report.unmatched_pdfs)} PDF(s) without a CSV transaction"
+            ),
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
+
+        notebook = ttk.Notebook(frame)
+        notebook.pack(fill="both", expand=True)
+        missing_text = tk.Text(notebook, wrap="none", font=("Consolas", 9))
+        unmatched_text = tk.Text(notebook, wrap="none", font=("Consolas", 9))
+        notebook.add(missing_text, text=f"Transactions without PDF ({len(report.missing_pdfs)})")
+        notebook.add(unmatched_text, text=f"PDFs without CSV transaction ({len(report.unmatched_pdfs)})")
+
+        missing_text.insert("1.0", "\n".join(self._missing_pdf_lines(report)) or "No missing PDFs.")
+        unmatched_text.insert(
+            "1.0",
+            "\n".join(self._unmatched_pdf_lines(report)) or "No unmatched PDFs.",
+        )
+        missing_text.configure(state="disabled")
+        unmatched_text.configure(state="disabled")
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(anchor="w", pady=(10, 0))
+        ttk.Button(
+            buttons,
+            text="Export CSV...",
+            command=lambda: self._export_reconciliation_csv(report),
+        ).pack(side="left")
+        ttk.Button(
+            buttons,
+            text="Export text...",
+            command=lambda: self._export_reconciliation_text(report),
+        ).pack(side="left", padx=(7, 0))
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left", padx=(7, 0))
+
+    @staticmethod
+    def _missing_pdf_lines(report: TransactionReconciliation) -> list[str]:
+        return [
+            " | ".join(
+                f"{header}: {value}"
+                for header, value in zip(report.headers, item.values, strict=True)
+                if value
+            )
+            for item in report.missing_pdfs
+        ]
+
+    @staticmethod
+    def _unmatched_pdf_lines(report: TransactionReconciliation) -> list[str]:
+        return [
+            f"Transaction ID: {item.transaction_id or '(not found)'} | Path: {item.path}"
+            for item in report.unmatched_pdfs
+        ]
+
+    def _export_reconciliation_csv(self, report: TransactionReconciliation) -> None:
+        selected = filedialog.asksaveasfilename(
+            title="Export transaction and stamp comparison as CSV",
+            defaultextension=".csv",
+            initialfile="transaction_stamp_comparison.csv",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self.root,
+        )
+        if not selected:
+            return
+        try:
+            write_reconciliation_csv(Path(selected), report)
+        except Exception as error:
+            messagebox.showerror("Export comparison CSV", str(error), parent=self.root)
+            return
+        messagebox.showinfo(
+            "Export comparison CSV", f"Saved comparison report to:\n{selected}", parent=self.root
+        )
+
+    def _export_reconciliation_text(self, report: TransactionReconciliation) -> None:
+        selected = filedialog.asksaveasfilename(
+            title="Export transaction and stamp comparison as text",
+            defaultextension=".txt",
+            initialfile="transaction_stamp_comparison.txt",
+            filetypes=[("Text files", "*.txt")],
+            parent=self.root,
+        )
+        if not selected:
+            return
+        try:
+            write_reconciliation_text(Path(selected), report)
+        except Exception as error:
+            messagebox.showerror("Export comparison text", str(error), parent=self.root)
+            return
+        messagebox.showinfo(
+            "Export comparison text", f"Saved comparison report to:\n{selected}", parent=self.root
+        )
 
     def _remove_selected_tab(self) -> None:
         self._record_ui_action("remove_id_clicked")
