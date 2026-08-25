@@ -82,6 +82,7 @@ class AppConfig:
     chrome_profile_path: str = ""
     gemini_verified: bool = False
     debug_port: int = 9347
+    transaction_export_path: str = ""
     tabs: list[TabConfig] = field(default_factory=lambda: [TabConfig.new(1, 1)])
     next_profile_number: int = 2
 
@@ -229,6 +230,7 @@ class ConfigStore:
             chrome_profile_path=values.get("chrome_profile_path", ""),
             gemini_verified=values.get("gemini_verified", False),
             debug_port=values.get("debug_port", 9347),
+            transaction_export_path=values.get("transaction_export_path", ""),
             tabs=tabs,
             next_profile_number=values.get(
                 "next_profile_number", max(tab.profile_number for tab in tabs) + 1
@@ -287,6 +289,7 @@ class ConfigStore:
             "chrome_profile_path": config.chrome_profile_path,
             "gemini_verified": config.gemini_verified,
             "debug_port": config.debug_port,
+            "transaction_export_path": config.transaction_export_path,
             "tabs": [tab.to_dict() for tab in config.tabs],
             "next_profile_number": config.next_profile_number,
         }

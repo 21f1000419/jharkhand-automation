@@ -609,7 +609,7 @@ class AutomationTab:
         if not self.is_enabled:
             self.set_state("Disabled", "Skipped by user")
             return False
-        if self.is_active:
+        if self.is_active or self.portal_session_open:
             return False
         if self.browser_recovery_pending and not self.browser_recovery_ready:
             return False
@@ -923,6 +923,7 @@ class AutomationTab:
             state=(
                 "disabled"
                 if self.is_active
+                or self.portal_session_open
                 or not self.is_enabled
                 or (self.browser_recovery_pending and not self.browser_recovery_ready)
                 else "normal"

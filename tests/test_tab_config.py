@@ -82,6 +82,16 @@ class TabConfigTests(unittest.TestCase):
 
             self.assertEqual(store.load().get_tab(1).last_article, "LEASE")
 
+    def test_transaction_export_path_is_persisted_for_all_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "settings.json")
+            config = store.load()
+            config.transaction_export_path = str(Path(directory) / "transactions.csv")
+
+            store.save(config)
+
+            self.assertEqual(store.load().transaction_export_path, config.transaction_export_path)
+
     def test_removed_id_and_its_profile_are_reused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = ConfigStore(Path(directory) / "settings.json").load()

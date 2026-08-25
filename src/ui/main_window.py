@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -10,7 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from core.browser_detection import detect_supported_browsers
-from core.config import AppConfig, ConfigStore, TabConfig, app_data_directory
+from core.config import AppConfig, ConfigStore, TabConfig, app_data_directory, default_download_directory
 from core.controller import AutomationController
 from core.models import PortalBrowser, UiEvent
 from core.playwright_browsers import (
@@ -20,6 +22,7 @@ from core.playwright_browsers import (
 )
 from services.credential_store import WindowsCredentialStore
 from services.csv_store import CsvBatchStore
+from services.estamp_transactions import export_payment_transactions
 from ui.automation_status import AutomationStatusWindow
 from ui.run_tab import CUSTOM_BROWSER_OPTION as TAB_CUSTOM_BROWSER_OPTION
 from ui.run_tab import AutomationTab
@@ -62,6 +65,7 @@ class MainWindow:
         self.gemini_ready = bool(config.gemini_verified)
         self.gemini_checking = False
         self.ocr_test_running = False
+        self.transaction_export_running = False
         self.automation_status_window: AutomationStatusWindow | None = None
         self._closing = False
 
@@ -157,6 +161,10 @@ class MainWindow:
         self.managed_firefox_menu_index = 0
         self._update_managed_firefox_menu()
         menu.add_command(label="Download CSV format...", command=self._download_template)
+        menu.add_command(
+            label="Export eStamp payment transactions...",
+            command=self._export_payment_transactions,
+        )
 
         profile_menu = tk.Menu(menu, tearoff=False)
         profile_menu.add_command(
@@ -379,6 +387,107 @@ class MainWindow:
             if str(tab.frame) == str(selected):
                 return tab
         return None
+
+    def _export_payment_transactions(self) -> None:
+        if self.transaction_export_running:
+            messagebox.showinfo(
+                "Export payment transactions",
+                "A payment transaction export is already running.",
+                parent=self.root,
+            )
+            return
+        tab = self._selected_tab()
+        if tab is None:
+            return
+        if tab.is_active or tab.portal_session_open:
+            messagebox.showwarning(
+                "Export payment transactions",
+                f"Stop {tab.display_name} before using its portal profile for this export.",
+                parent=self.root,
+            )
+            return
+        browser = tab._selected_browser()
+        if browser is None:
+            messagebox.showwarning(
+                "Export payment transactions",
+                "Choose an installed portal browser for the selected ID first.",
+                parent=self.root,
+            )
+            return
+        output_path = self._transaction_export_path()
+        if output_path is None:
+            return
+
+        profile_slug = re.sub(r"[^a-z0-9]+", "-", browser.name.casefold()).strip("-") or "browser"
+        profile_path = Path(tab.config.portal_profile_path) / browser.engine.value / profile_slug
+        self.transaction_export_running = True
+        tab.portal_session_open = True
+        tab._set_buttons()
+        self._record_ui_action(f"id_{tab.run_id}_export_payment_transactions_clicked")
+        self.run_status_var.set(f"{tab.display_name}: waiting for manual Citizen login...")
+
+        def report_status(message: str) -> None:
+            self.root.after(0, lambda: self.run_status_var.set(f"{tab.display_name}: {message}"))
+
+        def run_export() -> None:
+            try:
+                summary = asyncio.run(
+                    export_payment_transactions(browser, profile_path, output_path, report_status)
+                )
+            except Exception as error:
+                error_message = str(error)
+                self.root.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Export payment transactions", error_message, parent=self.root
+                    ),
+                )
+                report_status("payment transaction export failed")
+            else:
+                message = (
+                    f"Saved {summary.appended_rows} new transaction(s) to:\n{summary.output_path}\n\n"
+                    f"Skipped {summary.skipped_duplicates} duplicate(s)."
+                )
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Export payment transactions", message, parent=self.root
+                    ),
+                )
+                report_status(message)
+            finally:
+                self.root.after(0, lambda: self._finish_transaction_export(tab))
+
+        threading.Thread(target=run_export, name="payment-transaction-export", daemon=True).start()
+
+    def _transaction_export_path(self) -> Path | None:
+        configured = self.config.transaction_export_path.strip()
+        previous_path = Path(configured).expanduser() if configured else None
+        selected = filedialog.asksaveasfilename(
+            title="Choose eStamp payment transactions CSV",
+            initialdir=(
+                previous_path.parent
+                if previous_path is not None and previous_path.parent.is_dir()
+                else default_download_directory()
+            ),
+            initialfile=(
+                previous_path.name if previous_path is not None else "estamp_payment_transactions.csv"
+            ),
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            confirmoverwrite=False,
+            parent=self.root,
+        )
+        if not selected:
+            return None
+        self.config.transaction_export_path = selected
+        self.save_config()
+        return Path(selected)
+
+    def _finish_transaction_export(self, tab: AutomationTab) -> None:
+        self.transaction_export_running = False
+        tab.portal_session_open = False
+        tab._set_buttons()
 
     def _remove_selected_tab(self) -> None:
         self._record_ui_action("remove_id_clicked")
