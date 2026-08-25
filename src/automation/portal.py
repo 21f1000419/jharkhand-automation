@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import Dialog, Locator, Page
 from playwright.async_api import Error as PlaywrightError
@@ -40,6 +41,7 @@ MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
 EGRASS_OTP_POLL_TIMEOUT_SECONDS = 100
 EGRASS_OTP_RECOVERY_WAIT_SECONDS = 15
 EGRASS_OTP_PAGE_TIMEOUT_SECONDS = 15
+PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS = 60.0
 TRANSACTION_FIELD_NAMES = {
     "name": "Name",
     "token no / depositor id": "Token No / Depositor ID",
@@ -124,6 +126,13 @@ class PortalAutomation:
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: tuple[str, str] | None = None
         self.stage = Stage.IDLE
+        self._prepayment_watchdog_task: asyncio.Task[None] | None = None
+        self._prepayment_owner_task: asyncio.Task[Any] | None = None
+        self._prepayment_last_activity = 0.0
+        self._prepayment_last_url = ""
+        self._prepayment_page_marker = ""
+        self._prepayment_timed_out = False
+        self._prepayment_watchdog_active = False
         self.page.set_default_timeout(15_000)
 
     async def process_unit(
@@ -136,6 +145,13 @@ class PortalAutomation:
         sequence: int,
         start_from_stage: Stage = Stage.CITIZEN_LOGIN,
     ) -> TransactionResult:
+        prepayment_start = start_from_stage not in {
+            Stage.PAYMENT,
+            Stage.RESULT,
+            Stage.DOWNLOAD,
+        }
+        if prepayment_start:
+            self._start_prepayment_watchdog()
         try:
             stage_order = [
                 Stage.CITIZEN_LOGIN,
@@ -183,6 +199,7 @@ class PortalAutomation:
             if should_run(Stage.UPI_SELECT):
                 await self.select_upi()
             if should_run(Stage.PAYMENT):
+                self._prepayment_watchdog_active = False
                 await self._acquire_payment_slot()
                 await self.select_upi_qr_and_pay()
                 await self.wait_for_upi_qr_and_trigger()
@@ -238,6 +255,14 @@ class PortalAutomation:
 
             return TransactionResult(details, reference)
 
+        except asyncio.CancelledError as error:
+            if self._prepayment_timed_out:
+                raise AutomationError(
+                    "The pre-payment page made no progress for 60 seconds.",
+                    stage=self.stage,
+                    code="prepayment_inactivity_timeout",
+                ) from error
+            raise
         except AutomationError:
             raise
         except PlaywrightError as error:
@@ -258,6 +283,7 @@ class PortalAutomation:
         except Exception as error:
             raise AutomationError(str(error), stage=self.stage) from error
         finally:
+            await self._stop_prepayment_watchdog()
             await self._release_payment_slot()
 
     async def ensure_citizen_session(self, credentials: Credentials) -> None:
@@ -290,6 +316,7 @@ class PortalAutomation:
                 otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
                 if otp_button is not None:
                     await otp_button.click()
+                    self._record_prepayment_activity()
 
             outcome = await self._wait_for_login_progress(
                 otp_selector="#otp",
@@ -325,6 +352,7 @@ class PortalAutomation:
                 # Manual CAPTCHA does not imply manual OTP/login.  Only a
                 # manual OTP takes ownership of the final Login action.
                 await click_first(self.page, ["#btnSubmit", 'button:has-text("Login")'])
+                self._record_prepayment_activity()
                 self.emit(UiEvent("log", "Citizen OTP login submitted automatically."))
             else:
                 self.emit(
@@ -442,6 +470,7 @@ class PortalAutomation:
             if citizen_link is not None:
                 with suppress(PlaywrightError):
                     await citizen_link.click()
+                    self._record_prepayment_activity()
                 await self.page.wait_for_load_state("domcontentloaded", timeout=15_000)
         else:
             self.emit(
@@ -477,18 +506,21 @@ class PortalAutomation:
             value="2",
             field_name="Purpose of Payment",
         )
+        self._record_prepayment_activity()
         await select_value(
             self.page,
             "#district_id",
             label=row["district"].strip(),
             field_name="District",
         )
+        self._record_prepayment_activity()
         await select_value(
             self.page,
             "#article_id",
             label=article.strip(),
             field_name="Article",
         )
+        self._record_prepayment_activity()
         fields = {
             "#party1_fullname_en": row["first_party_name"],
             "#party2_fullname_en": row["second_party_name"] or "NIL",
@@ -502,10 +534,12 @@ class PortalAutomation:
         for selector, value in fields.items():
             await self.controls.checkpoint()
             await fill_first(self.page, [selector], value)
+            self._record_prepayment_activity()
         form_errors = await form_validation_errors(self.page, fields)
         if form_errors:
             raise AutomationError("; ".join(form_errors), stage=self.stage, code="form_validation_failed")
         await click_first(self.page, ["#launchmodal", 'button:has-text("Proceed to Pay")'])
+        self._record_prepayment_activity()
 
     async def confirm_estamp(self) -> None:
         await self._stage(Stage.CONFIRM_ESTAMP)
@@ -518,6 +552,7 @@ class PortalAutomation:
                 '#exampleModal button:has-text("Pay Now")',
             ],
         )
+        self._record_prepayment_activity()
         await self.page.wait_for_load_state("domcontentloaded", timeout=60_000)
 
     async def accept_egras_terms(self) -> None:
@@ -527,6 +562,7 @@ class PortalAutomation:
             return
         try:
             await checkbox.check(force=True)
+            self._record_prepayment_activity()
         except PlaywrightError:
             # This portal sometimes handles the forced click but immediately reports the
             # checkbox as unchanged. Set the native property and emit the same form events
@@ -545,6 +581,7 @@ class PortalAutomation:
                 code="terms_checkbox_failed",
             )
         await click_first(self.page, ["button.close_model", 'button:has-text("OK")'])
+        self._record_prepayment_activity()
 
     async def complete_egras_login(
         self, credentials: Credentials, *, start_from_otp: bool = False
@@ -570,7 +607,9 @@ class PortalAutomation:
                 # Refill every time the portal resets the form; resets have no retry limit.
                 if credentials.egras_username and credentials.egras_password:
                     await username.fill(credentials.egras_username)
+                    self._record_prepayment_activity()
                     await fill_first(self.page, ["#txtPassword"], credentials.egras_password)
+                    self._record_prepayment_activity()
 
                 if credentials.egras_username and credentials.egras_password:
                     login_captcha_entered_manually = await self._solve_captcha(
@@ -586,6 +625,7 @@ class PortalAutomation:
                     )
                     if proceed_btn is not None:
                         await proceed_btn.click()
+                        self._record_prepayment_activity()
 
                 try:
                     outcome = await asyncio.wait_for(
@@ -654,6 +694,7 @@ class PortalAutomation:
                     # or manual OTP leaves that action to the user.
                     if not otp_captcha_entered_manually:
                         await click_first(self.page, ["#btnproceed", 'input[value="Validate OTP"]'])
+                        self._record_prepayment_activity()
                         self.emit(UiEvent("log", "eGRAS OTP validation submitted automatically."))
                 else:
                     self.emit(
@@ -761,6 +802,7 @@ class PortalAutomation:
         """Refresh CAPTCHA, resend OTP, refresh again, and leave a fresh form ready."""
         try:
             await click_first(self.page, ["#ImageButton1", "input.rigcp"])
+            self._record_prepayment_activity()
             resend = await first_visible(self.page, ["#btnResendOTP:not([disabled])"], 10_000)
             if resend is None:
                 self.emit(
@@ -773,8 +815,10 @@ class PortalAutomation:
                 )
                 return False
             await resend.click()
+            self._record_prepayment_activity()
             await self.page.wait_for_timeout(1_000)
             await click_first(self.page, ["#ImageButton1", "input.rigcp"])
+            self._record_prepayment_activity()
             await self.page.wait_for_timeout(750)
         except (PlaywrightError, RuntimeError) as error:
             self.emit(
@@ -853,6 +897,7 @@ class PortalAutomation:
                 )
                 return None
             await field.fill(otp)
+            self._record_prepayment_activity()
         except PlaywrightError:
             return None
 
@@ -998,6 +1043,7 @@ class PortalAutomation:
         self.page.once("dialog", accept_dialog)
         try:
             await resend_button.click()
+            self._record_prepayment_activity()
             # The portal sometimes opens an alert after this click. Give its
             # event handler a moment to accept it, but do not require an alert.
             await asyncio.sleep(0.5)
@@ -1120,7 +1166,9 @@ class PortalAutomation:
         if radio is None:
             raise AutomationError("The SBIePay gateway option was not found.", stage=self.stage)
         await radio.check(force=True)
+        self._record_prepayment_activity()
         await click_first(self.page, ["#btnSubmit", 'input[value^="Pay Rs"]'])
+        self._record_prepayment_activity()
         await self.page.wait_for_load_state("domcontentloaded", timeout=60_000)
         await self._raise_if_gateway_suspended()
 
@@ -1135,11 +1183,13 @@ class PortalAutomation:
         if agree is None:
             return
         await agree.check(force=True)
+        self._record_prepayment_activity()
         self.page.once("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
         await click_first(
             self.page,
             ["#ContentPlaceHolder1_btncontinue", 'a:has-text("Proceed For Payment")'],
         )
+        self._record_prepayment_activity()
         await self.page.wait_for_timeout(500)
 
     async def select_upi(self) -> None:
@@ -1160,6 +1210,7 @@ class PortalAutomation:
                 upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
                 if upi is not None:
                     await upi.click()
+                    self._record_prepayment_activity()
                     await self.page.wait_for_timeout(1_000)
                     self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
                     return
@@ -1206,6 +1257,7 @@ class PortalAutomation:
                 automatic_selection_attempted = True
                 try:
                     await qr_option.click(force=True, timeout=3_000)
+                    self._record_prepayment_activity()
                 except PlaywrightError as error:
                     self.emit(UiEvent("log", f"Normal UPI QR click was not accepted: {error}"))
                 qr_checked = await locator_is_checked(qr_option)
@@ -1259,6 +1311,7 @@ class PortalAutomation:
                     return
                 if qr_checked:
                     await pay_now.click()
+                    self._record_prepayment_activity()
                     self.emit(UiEvent("log", "UPI QR selected and Pay Now clicked."))
                     return
             await self.page.wait_for_timeout(500)
@@ -1544,6 +1597,7 @@ class PortalAutomation:
                     return True
                 if len(code) == expected_length:
                     await field.fill(code)
+                    self._record_prepayment_activity()
                     self._status("CAPTCHA filled; continuing with the portal...")
                     self.emit(UiEvent("log", f"CAPTCHA solved by OCR on attempt {attempt}."))
                     return False
@@ -1588,6 +1642,7 @@ class PortalAutomation:
         refresh = await first_visible(self.page, [refresh_selector], 2_000) if refresh_selector else None
         if refresh is not None:
             await refresh.click()
+            self._record_prepayment_activity()
         else:
             await image.evaluate(
                 """element => {
@@ -1646,7 +1701,9 @@ class PortalAutomation:
     async def _prepare_citizen_login_attempt(self, credentials: Credentials) -> None:
         if credentials.citizen_username and credentials.citizen_password:
             await fill_first(self.page, ["#username"], credentials.citizen_username)
+            self._record_prepayment_activity()
             await fill_first(self.page, ["#password"], credentials.citizen_password)
+            self._record_prepayment_activity()
 
     async def _wait_for_login_progress(
         self,
@@ -1726,11 +1783,102 @@ class PortalAutomation:
 
     async def _stage(self, stage: Stage) -> None:
         self.stage = stage
+        if stage == Stage.PAYMENT:
+            self._prepayment_watchdog_active = False
+        else:
+            self._record_prepayment_activity()
         await self.controls.checkpoint()
         await self.on_stage(stage)
 
     def _status(self, message: str) -> None:
         self.emit(UiEvent("status", message))
+
+    def _start_prepayment_watchdog(self) -> None:
+        self._prepayment_timed_out = False
+        self._prepayment_watchdog_active = True
+        self._prepayment_owner_task = asyncio.current_task()
+        self._prepayment_last_url = self._current_page_url()
+        self._prepayment_page_marker = ""
+        self._record_prepayment_activity()
+        self._prepayment_watchdog_task = asyncio.create_task(
+            self._watch_prepayment_activity(),
+            name="prepayment-inactivity-watchdog",
+        )
+
+    async def _stop_prepayment_watchdog(self) -> None:
+        self._prepayment_watchdog_active = False
+        watchdog, self._prepayment_watchdog_task = self._prepayment_watchdog_task, None
+        self._prepayment_owner_task = None
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
+
+    async def _watch_prepayment_activity(self) -> None:
+        while self._prepayment_watchdog_active:
+            interval = min(0.25, max(0.01, PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS / 4))
+            await asyncio.sleep(interval)
+            if not self._prepayment_watchdog_active:
+                return
+            if not self.controls.run_gate.is_set():
+                self._record_prepayment_activity()
+                continue
+            current_url = self._current_page_url()
+            if current_url and current_url != self._prepayment_last_url:
+                self._prepayment_last_url = current_url
+                self._record_prepayment_activity()
+                continue
+            page_marker = await self._read_page_activity_marker()
+            if page_marker and page_marker != self._prepayment_page_marker:
+                if self._prepayment_page_marker:
+                    self._record_prepayment_activity()
+                self._prepayment_page_marker = page_marker
+                continue
+            inactive_for = time.monotonic() - self._prepayment_last_activity
+            if inactive_for < PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS:
+                continue
+            self._prepayment_timed_out = True
+            self._prepayment_watchdog_active = False
+            owner = self._prepayment_owner_task
+            if owner is not None and not owner.done():
+                owner.cancel()
+            return
+
+    def _record_prepayment_activity(self) -> None:
+        if self._prepayment_watchdog_active:
+            self._prepayment_last_activity = time.monotonic()
+
+    def _current_page_url(self) -> str:
+        try:
+            url = self.page.url
+            return url if isinstance(url, str) else ""
+        except PlaywrightError:
+            return ""
+
+    async def _read_page_activity_marker(self) -> str:
+        try:
+            marker = await self.page.evaluate(
+                """() => {
+                    const key = '__estampPrepaymentActivity';
+                    if (!window[key]) {
+                        const state = {value: Date.now()};
+                        const record = () => { state.value = Date.now(); };
+                        new MutationObserver(record).observe(document.documentElement, {
+                            attributes: true,
+                            childList: true,
+                            characterData: true,
+                            subtree: true
+                        });
+                        document.addEventListener('click', record, true);
+                        document.addEventListener('input', record, true);
+                        document.addEventListener('change', record, true);
+                        window[key] = state;
+                    }
+                    return String(window[key].value);
+                }"""
+            )
+            return marker if isinstance(marker, str) else ""
+        except (PlaywrightError, TypeError, RuntimeError):
+            return ""
 
     async def _acquire_payment_slot(self) -> None:
         if self._payment_lease is not None:
@@ -1767,6 +1915,8 @@ class PortalAutomation:
     async def _goto(self, url: str, *, timeout_ms: int = 120_000) -> None:
         await self.controls.checkpoint()
         await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        self._prepayment_last_url = self._current_page_url()
+        self._record_prepayment_activity()
 
 
 def transaction_details_from_rows(rows: list[list[str]]) -> dict[str, str]:

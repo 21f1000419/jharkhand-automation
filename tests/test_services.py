@@ -26,6 +26,122 @@ from services.payment_trigger import send_payment_trigger_request
 
 
 class ServiceTests(unittest.TestCase):
+    @staticmethod
+    def _watchdog_portal() -> PortalAutomation:
+        page = MagicMock()
+        page.url = "https://example.test/prepayment"
+        page.evaluate = AsyncMock(return_value="unchanged")
+        return PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+
+    def test_prepayment_inactivity_raises_after_configured_timeout(self) -> None:
+        portal = self._watchdog_portal()
+
+        async def wait_forever(credentials: Credentials) -> None:
+            del credentials
+            await asyncio.Event().wait()
+
+        portal.ensure_citizen_session = wait_forever  # type: ignore[method-assign]
+
+        with (
+            patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.04),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(
+                portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1)
+            )
+
+        self.assertEqual(raised.exception.code, "prepayment_inactivity_timeout")
+        self.assertEqual(raised.exception.stage, Stage.IDLE)
+
+    def test_prepayment_activity_resets_timeout(self) -> None:
+        portal = self._watchdog_portal()
+
+        async def make_progress(credentials: Credentials) -> None:
+            del credentials
+            for _ in range(4):
+                await asyncio.sleep(0.02)
+                portal._record_prepayment_activity()
+            raise AutomationError("expected stop", stage=Stage.CITIZEN_LOGIN, code="expected")
+
+        portal.ensure_citizen_session = make_progress  # type: ignore[method-assign]
+
+        with (
+            patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.04),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(
+                portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1)
+            )
+
+        self.assertEqual(raised.exception.code, "expected")
+
+    def test_payment_stage_is_not_subject_to_prepayment_timeout(self) -> None:
+        portal = self._watchdog_portal()
+        portal._acquire_payment_slot = AsyncMock()  # type: ignore[method-assign]
+
+        async def slow_payment() -> None:
+            await asyncio.sleep(0.06)
+            raise AutomationError("expected stop", stage=Stage.PAYMENT, code="expected")
+
+        portal.select_upi_qr_and_pay = slow_payment  # type: ignore[method-assign]
+
+        with (
+            patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.02),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(
+                portal.process_unit(
+                    {},
+                    "Article",
+                    Credentials(),
+                    Path("downloads"),
+                    1,
+                    1,
+                    start_from_stage=Stage.PAYMENT,
+                )
+            )
+
+        self.assertEqual(raised.exception.code, "expected")
+
+    def test_payment_queue_wait_is_not_subject_to_prepayment_timeout(self) -> None:
+        portal = self._watchdog_portal()
+        for method_name in (
+            "ensure_citizen_session",
+            "fill_estamp_form",
+            "confirm_estamp",
+            "accept_egras_terms",
+            "complete_egras_login",
+            "choose_gateway",
+            "accept_gateway_terms",
+            "select_upi",
+        ):
+            setattr(portal, method_name, AsyncMock())
+
+        async def slow_payment_queue() -> None:
+            await asyncio.sleep(0.06)
+            raise AutomationError("expected stop", stage=Stage.PAYMENT, code="expected")
+
+        portal._acquire_payment_slot = slow_payment_queue  # type: ignore[method-assign]
+
+        with (
+            patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.02),
+            self.assertRaises(AutomationError) as raised,
+        ):
+            asyncio.run(
+                portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1)
+            )
+
+        self.assertEqual(raised.exception.code, "expected")
+
     def test_normalize_captcha_prefers_expected_length(self) -> None:
         self.assertEqual(normalize_captcha("The code is `UL1HVY`.", 6), "UL1HVY")
         self.assertEqual(normalize_captcha("answer: AB12"), "AB12")
