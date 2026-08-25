@@ -342,7 +342,10 @@ class _RunStatusCard:
 
 
 class AutomationStatusWindow:
-    """A single dock containing vertically stacked status cards for active IDs."""
+    """A top-left dock containing horizontally arranged status cards for active IDs."""
+
+    _CARD_WIDTH = 470
+    _SCREEN_INSET = 8
 
     def __init__(
         self,
@@ -364,7 +367,6 @@ class AutomationStatusWindow:
         self.on_browser_recovery = on_browser_recovery
         self.on_focus_browser = on_focus_browser
         self.cards: dict[str, _RunStatusCard] = {}
-        self.payment_ids: set[str] = set()
         self._manually_hidden = False
         self._user_positioned = False
         self._drag_x = 0
@@ -424,24 +426,23 @@ class AutomationStatusWindow:
 
         content = tk.Frame(shell, background="#f3f4f6")
         content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
         self.canvas = tk.Canvas(
             content,
-            width=470,
+            width=self._CARD_WIDTH,
             height=1,
             background="#f3f4f6",
             borderwidth=0,
             highlightthickness=0,
         )
-        self.scrollbar = tk.Scrollbar(content, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
+        self.scrollbar = tk.Scrollbar(content, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(xscrollcommand=self.scrollbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar.grid(row=1, column=0, sticky="ew")
+        self.scrollbar.grid_remove()
         self.cards_frame = tk.Frame(self.canvas, background="#f3f4f6", padx=7, pady=7)
-        self.canvas_item = self.canvas.create_window(
-            (0, 0), window=self.cards_frame, anchor="nw", width=470
-        )
+        self.canvas_item = self.canvas.create_window((0, 0), window=self.cards_frame, anchor="nw")
         self.cards_frame.bind("<Configure>", lambda _event: self._refresh_layout())
-        self.canvas.bind("<Configure>", self._canvas_resized)
 
     @property
     def exists(self) -> bool:
@@ -534,7 +535,6 @@ class AutomationStatusWindow:
 
     def remove_run(self, run_id: str) -> None:
         card = self.cards.pop(run_id, None)
-        self.payment_ids.discard(run_id)
         if card is not None:
             card.frame.destroy()
         self._apply_topmost_state()
@@ -545,10 +545,7 @@ class AutomationStatusWindow:
             self._manually_hidden = False
 
     def set_payment_active(self, run_id: str, active: bool) -> None:
-        if active:
-            self.payment_ids.add(run_id)
-        else:
-            self.payment_ids.discard(run_id)
+        del run_id, active
         self._apply_topmost_state()
 
     def hide(self) -> None:
@@ -587,13 +584,13 @@ class AutomationStatusWindow:
 
     def _repack_cards(self) -> None:
         for card in self.cards.values():
-            card.frame.pack_forget()
+            card.frame.grid_forget()
 
         def order(item: str) -> tuple[int, int | str]:
             return (0, int(item)) if item.isdigit() else (1, item)
 
-        for run_id in sorted(self.cards, key=order):
-            self.cards[run_id].frame.pack(fill="x", pady=(0, 7))
+        for column, run_id in enumerate(sorted(self.cards, key=order)):
+            self.cards[run_id].frame.grid(row=0, column=column, sticky="ns", padx=(0, 7))
         self._refresh_layout()
 
     def _show(self) -> None:
@@ -601,21 +598,30 @@ class AutomationStatusWindow:
             return
         self._apply_topmost_state()
         self.window.deiconify()
-        if not self.payment_ids:
-            self.window.lift()
         self.window.after_idle(self._refresh_layout)
 
     def _apply_topmost_state(self) -> None:
         if self.exists:
-            self.window.attributes("-topmost", not self.payment_ids)
+            self.window.attributes("-topmost", True)
+            self.window.lift()
 
     def _refresh_layout(self) -> None:
         if not self.exists:
             return
         self.cards_frame.update_idletasks()
+        requested_width = self.cards_frame.winfo_reqwidth()
         requested_height = self.cards_frame.winfo_reqheight()
+        maximum_width = max(1, self.window.winfo_screenwidth() - (self._SCREEN_INSET * 2))
         maximum_height = max(180, int(self.window.winfo_screenheight() * 0.62))
+        visible_width = min(requested_width, maximum_width)
+        has_overflow = requested_width > visible_width
+        if has_overflow:
+            self.scrollbar.grid()
+        else:
+            self.scrollbar.grid_remove()
+            self.canvas.xview_moveto(0)
         self.canvas.configure(
+            width=max(1, visible_width),
             height=max(1, min(requested_height, maximum_height)),
             scrollregion=self.canvas.bbox("all"),
         )
@@ -623,19 +629,8 @@ class AutomationStatusWindow:
         if not self._user_positioned:
             self._place_window()
 
-    def _canvas_resized(self, event: tk.Event[tk.Misc]) -> None:
-        self.canvas.itemconfigure(self.canvas_item, width=max(1, event.width))
-
     def _place_window(self) -> None:
-        horizontal_inset = 8
-        taskbar_clearance = 48
-        width = self.window.winfo_reqwidth()
-        height = self.window.winfo_reqheight()
-        screen_width = self.window.winfo_screenwidth()
-        screen_height = self.window.winfo_screenheight()
-        x = max(0, screen_width - width - horizontal_inset)
-        y = max(0, screen_height - height - taskbar_clearance)
-        self.window.geometry(f"+{x}+{y}")
+        self.window.geometry(f"+{self._SCREEN_INSET}+{self._SCREEN_INSET}")
 
     def _start_drag(self, event: tk.Event[tk.Misc]) -> None:
         self._drag_x = event.x_root - self.window.winfo_x()

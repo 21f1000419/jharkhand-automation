@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from core.models import UiEvent
+from ui.automation_status import AutomationStatusWindow
 from ui.main_window import MainWindow
 from ui.run_tab import AutomationTab
 
@@ -229,6 +230,15 @@ class StatusDockRoutingTests(unittest.TestCase):
         )
         dock.set_payment_active.assert_called_once_with("1", False)
         self.assertEqual(first.handle_event.call_count, 2)
+
+    def test_status_dock_stays_topmost_during_payment(self) -> None:
+        dock = AutomationStatusWindow.__new__(AutomationStatusWindow)
+        dock.window = MagicMock()
+
+        dock.set_payment_active("1", True)
+
+        dock.window.attributes.assert_called_once_with("-topmost", True)
+        dock.window.lift.assert_called_once_with()
 
     def test_starting_state_creates_one_colored_card_for_the_id(self) -> None:
         window, first, _second = self.window_with_tabs()

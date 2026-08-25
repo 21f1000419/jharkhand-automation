@@ -25,8 +25,11 @@ def main() -> None:
     )
     ttk.Label(
         frame,
-        text="The borderless dock is anchored at this window's lower-right corner.\n"
-        "Right-click the dock or close this window when you are done.",
+        text=(
+            "The borderless dock is anchored at this window's top-left corner, with ID cards added "
+            "left to right.\n"
+            "Right-click the dock or close this window when you are done."
+        ),
         foreground="#555555",
         justify="left",
     ).pack(anchor="w", pady=(8, 0))
