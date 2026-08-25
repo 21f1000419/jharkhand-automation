@@ -73,6 +73,8 @@ class MainWindow:
         self.run_status_var = tk.StringVar(value="Idle")
         self.summary_var = tk.StringVar(value="0 active | 0 idle")
         self.run_summary_var = self.summary_var
+        self.global_success_count = 0
+        self.global_success_var = tk.StringVar(value="Session downloads: 0")
 
         self._detect_portal_browsers()
         self._build()
@@ -113,8 +115,17 @@ class MainWindow:
             text="Each ID has its own CSV, browser session, credentials, and persistent portal profile.",
         ).grid(row=1, column=0, sticky="w")
         ttk.Label(header, textvariable=self.summary_var, style="Status.TLabel").grid(
-            row=0, column=1, rowspan=2, sticky="e", padx=(12, 0)
+            row=0, column=1, rowspan=1, sticky="e", padx=(12, 0)
         )
+        success_label = ttk.Label(
+            header,
+            textvariable=self.global_success_var,
+            style="Status.TLabel",
+            foreground="#047857",
+        )
+        success_label.grid(row=1, column=1, sticky="e", padx=(12, 0))
+        success_label.bind("<Button-3>", lambda _e: self._reset_global_success_count())
+        success_label.bind("<Button-2>", lambda _e: self._reset_global_success_count())
 
         toolbar = ttk.Frame(container)
         toolbar.pack(fill="x", pady=(0, 8))
@@ -501,6 +512,11 @@ class MainWindow:
         self.controller.record_activity(action)
         self.append_session_log(action.replace("_", " ").title())
 
+    def _reset_global_success_count(self) -> None:
+        self.global_success_count = 0
+        self.global_success_var.set("Session downloads: 0")
+        self.append_session_log("Session download counter reset to zero.")
+
     def _drain_events(self) -> None:
         try:
             while True:
@@ -524,7 +540,13 @@ class MainWindow:
                     event.data.get("current_unit"),
                 )
             elif event.kind == "payment_state":
-                self.update_status_dock_payment(tab, str(event.data.get("state", "")))
+                state = str(event.data.get("state", ""))
+                self.update_status_dock_payment(tab, state)
+                if state == "download_ready":
+                    self.global_success_count += 1
+                    self.global_success_var.set(
+                        f"Session downloads: {self.global_success_count}"
+                    )
             elif event.kind in {
                 "run_completed",
                 "run_stopped",
