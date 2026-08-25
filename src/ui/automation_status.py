@@ -53,6 +53,9 @@ class _RunStatusCard:
         self.error_var = tk.StringVar()
         self.warning_var = tk.StringVar()
         self.checkpoint_var = tk.StringVar()
+        self._download_count = 0
+        self._last_row: int | None = None
+        self._last_quantity: int | None = None
 
         tk.Label(
             body,
@@ -148,6 +151,9 @@ class _RunStatusCard:
 
     def begin(self, title: str, detail: str) -> None:
         self.title_var.set(title)
+        self._download_count = 0
+        self._last_row = None
+        self._last_quantity = None
         self.progress_var.set("Waiting for row")
         self.clear_browser_recovery()
         self.clear_error()
@@ -174,9 +180,23 @@ class _RunStatusCard:
     def set_progress(self, row: int | None, quantity: int | None = None) -> None:
         if row is None:
             return
+        self._last_row = row
+        self._last_quantity = quantity
+        self._refresh_progress()
+
+    def increment_download_count(self) -> None:
+        self._download_count += 1
+        self._refresh_progress()
+
+    def _refresh_progress(self) -> None:
+        row = self._last_row
+        if row is None:
+            return
         text = f"Row {row}"
-        if quantity is not None:
-            text += f"  |  Quantity {quantity}"
+        if self._last_quantity is not None:
+            text += f"  |  Quantity {self._last_quantity}"
+        if self._download_count:
+            text += f"  |  \u2713 {self._download_count} downloaded"
         self.progress_var.set(text)
 
     def set_controls(
@@ -454,6 +474,11 @@ class AutomationStatusWindow:
         card = self.cards.get(run_id)
         if card is not None:
             card.set_progress(row, quantity)
+
+    def increment_download_count(self, run_id: str) -> None:
+        card = self.cards.get(run_id)
+        if card is not None:
+            card.increment_download_count()
 
     def set_controls(
         self,

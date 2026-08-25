@@ -551,6 +551,9 @@ class MainWindow:
                     self.global_success_var.set(
                         f"Session downloads: {self.global_success_count}"
                     )
+                    dock = self.automation_status_window
+                    if dock is not None and dock.exists:
+                        dock.increment_download_count(tab.run_id)
             elif event.kind in {
                 "run_completed",
                 "run_stopped",
