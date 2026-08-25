@@ -470,6 +470,8 @@ class AutomationController:
                     session.options.portal_browser,
                     callback,
                     getattr(session.options, "portal_profile_path", None),
+                    window_accent=getattr(session.options, "portal_window_accent", ""),
+                    window_label=getattr(session.options, "portal_window_label", ""),
                 )
             )
             session.portal_browser = browser

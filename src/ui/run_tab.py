@@ -624,13 +624,15 @@ class AutomationTab:
         profile_slug = re.sub(r"[^a-z0-9]+", "-", browser.name.casefold()).strip("-") or "browser"
         profile_path = Path(self.config.portal_profile_path) / browser.engine.value / profile_slug
         download_text = self.download_var.get().strip()
+        credentials = self.entered_credentials()
+        citizen_id_label = credentials.citizen_username or "not set"
         options = RunOptions(
             csv_path=Path(self.csv_var.get().strip()),
             download_root=Path(download_text) if download_text else None,
             article=self.article_var.get().strip(),
             portal_browser=browser,
             mode=RunMode(self.mode_var.get()),
-            credentials=self.entered_credentials(),
+            credentials=credentials,
             ocr_enabled=self.ocr_enabled_var.get(),
             ocr_engine=OcrEngine(self.ocr_engine_var.get()),
             sms_user_id=self.sms_user_id_var.get().strip(),
@@ -643,6 +645,8 @@ class AutomationTab:
             retry_egras_otp_once=self.retry_egras_otp_once_var.get(),
             run_id=self.run_id,
             portal_profile_path=profile_path,
+            portal_window_accent=self.owner.tab_accent_color(self.tab_id),
+            portal_window_label=f"{self.display_name} | {citizen_id_label}",
         )
         try:
             self.owner.controller.start(self.run_id, options)

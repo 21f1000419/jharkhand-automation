@@ -172,6 +172,8 @@ class RunOptions:
     retry_egras_otp_once: bool = True
     run_id: str = ""
     portal_profile_path: Path | None = None
+    portal_window_accent: str = ""
+    portal_window_label: str = ""
 
 
 @dataclass(frozen=True)

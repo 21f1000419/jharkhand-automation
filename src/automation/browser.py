@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import ctypes
+import json
 import os
 import signal
 import subprocess
@@ -298,12 +299,18 @@ class PortalBrowserSession:
         choice: PortalBrowser,
         on_disconnect: Callable[[PortalBrowserSession], None],
         profile_directory: Path | None = None,
+        *,
+        window_accent: str = "",
+        window_label: str = "",
     ) -> None:
         self.choice = choice
         self.on_disconnect = on_disconnect
         self.profile_directory = profile_directory or (
             app_data_directory() / "portal-browser-profiles" / uuid.uuid4().hex
         )
+        self.window_accent = window_accent
+        self.window_label = window_label
+        self._window_identity_script = _window_identity_script(window_accent, window_label)
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
@@ -324,6 +331,8 @@ class PortalBrowserSession:
         if page is None or page.is_closed():
             page = await context.new_page()
         await page.goto(initial_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        if self._window_identity_script:
+            await page.evaluate(self._window_identity_script)
         return page
 
     async def start(self) -> BrowserContext:
@@ -359,6 +368,8 @@ class PortalBrowserSession:
             self.context = await browser_type.launch_persistent_context(
                 str(self.profile_directory), **launch_options
             )
+            if self._window_identity_script:
+                await self.context.add_init_script(script=self._window_identity_script)
             self.browser = self.context.browser
             if self.browser is not None:
                 self.browser.on("disconnected", self._disconnected)
@@ -429,6 +440,8 @@ class PortalBrowserSession:
         marker = f"eStamp portal {uuid.uuid4().hex}"
         page = self.context.pages[0] if self.context.pages else await self.context.new_page()
         await page.bring_to_front()
+        if self._window_identity_script:
+            await page.evaluate(self._window_identity_script)
         await page.evaluate("title => { document.title = title; }", marker)
         handle = await asyncio.to_thread(_wait_for_window_handle, marker, 10.0)
         if handle is None:
@@ -474,6 +487,63 @@ def _find_window_with_title(marker: str) -> int | None:
 
     user32.EnumWindows(enum_windows(inspect), 0)
     return match[0] if match else None
+
+
+def _window_identity_script(accent: str, label: str) -> str:
+    """Return the visible page badge used to distinguish each portal window."""
+    if not accent.strip() and not label.strip():
+        return ""
+    badge_color = accent.strip() if _is_hex_color(accent) else "#6b7280"
+    badge_label = label.strip() or "Portal"
+    color_literal = json.dumps(badge_color)
+    label_literal = json.dumps(badge_label)
+    return f"""
+(() => {{
+  const mount = () => {{
+    const existing = document.getElementById("__compitcom_window_identity");
+    if (existing) return;
+
+    const badge = document.createElement("div");
+    badge.id = "__compitcom_window_identity";
+    badge.textContent = {label_literal};
+    badge.setAttribute("aria-hidden", "true");
+    Object.assign(badge.style, {{
+      position: "fixed",
+      top: "12px",
+      right: "12px",
+      zIndex: "2147483647",
+      minWidth: "110px",
+      padding: "8px 16px",
+      borderRadius: "6px",
+      backgroundColor: {color_literal},
+      color: "#ffffff",
+      font: "700 18px/1.2 Segoe UI, sans-serif",
+      letterSpacing: "0.5px",
+      textAlign: "center",
+      boxShadow: "0 2px 8px rgba(0, 0, 0, 0.45)",
+      border: "2px solid rgba(255, 255, 255, 0.8)",
+      pointerEvents: "none",
+      userSelect: "none",
+      whiteSpace: "nowrap"
+    }});
+    (document.documentElement || document.body).appendChild(badge);
+  }};
+
+  if (document.documentElement) mount();
+  else document.addEventListener("DOMContentLoaded", mount, {{ once: true }});
+}})();
+"""
+
+
+def _is_hex_color(value: str) -> bool:
+    normalized = value.strip().lstrip("#")
+    if len(normalized) != 6:
+        return False
+    try:
+        int(normalized, 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _restore_and_activate_window(handle: int) -> bool:

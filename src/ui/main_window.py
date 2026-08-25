@@ -218,6 +218,10 @@ class MainWindow:
     def _tab_accent_color(self, tab_id: int) -> str:
         return TAB_ACCENT_COLORS[(tab_id - 1) % len(TAB_ACCENT_COLORS)]
 
+    def tab_accent_color(self, tab_id: int) -> str:
+        """Return the stable visual identity color assigned to an ID tab."""
+        return self._tab_accent_color(tab_id)
+
     def _ensure_status_dock(self) -> AutomationStatusWindow:
         dock = self.automation_status_window
         if dock is None or not dock.exists:
