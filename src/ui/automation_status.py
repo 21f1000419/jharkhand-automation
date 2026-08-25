@@ -20,6 +20,7 @@ class _RunStatusCard:
         on_stop: Callable[[str], None],
         on_error_decision: Callable[[str, str], None],
         on_browser_recovery: Callable[[str, str], None],
+        on_focus_browser: Callable[[str], None],
         on_layout_changed: Callable[[], None],
     ) -> None:
         self.run_id = run_id
@@ -28,6 +29,7 @@ class _RunStatusCard:
         self.on_stop = on_stop
         self.on_error_decision = on_error_decision
         self.on_browser_recovery = on_browser_recovery
+        self.on_focus_browser = on_focus_browser
         self.on_layout_changed = on_layout_changed
         self.paused = False
         self.browser_recovery = False
@@ -99,6 +101,13 @@ class _RunStatusCard:
             width=9,
             command=lambda: self._choose_browser_recovery("next"),
         )
+        self.focus_browser_button = tk.Button(
+            controls,
+            text="Focus browser",
+            command=lambda: self.on_focus_browser(self.run_id),
+            state="disabled",
+        )
+        self.focus_browser_button.pack(side="left", padx=(6, 0))
         self.stop_button = tk.Button(
             controls,
             text="Stop",
@@ -196,6 +205,7 @@ class _RunStatusCard:
                 else "disabled"
             ),
         )
+        self.focus_browser_button.configure(state="normal" if portal_open else "disabled")
         self.stop_button.configure(
             state="normal" if running or starting or portal_open else "disabled"
         )
@@ -323,6 +333,7 @@ class AutomationStatusWindow:
         on_stop: Callable[[str], None],
         on_error_decision: Callable[[str, str], None],
         on_browser_recovery: Callable[[str, str], None],
+        on_focus_browser: Callable[[str], None],
         on_stop_all: Callable[[], None],
     ) -> None:
         self.parent = parent
@@ -331,6 +342,7 @@ class AutomationStatusWindow:
         self.on_stop = on_stop
         self.on_error_decision = on_error_decision
         self.on_browser_recovery = on_browser_recovery
+        self.on_focus_browser = on_focus_browser
         self.cards: dict[str, _RunStatusCard] = {}
         self.payment_ids: set[str] = set()
         self._manually_hidden = False
@@ -541,6 +553,7 @@ class AutomationStatusWindow:
             on_stop=self.on_stop,
             on_error_decision=self.on_error_decision,
             on_browser_recovery=self.on_browser_recovery,
+            on_focus_browser=self.on_focus_browser,
             on_layout_changed=self._refresh_layout,
         )
         self.cards[run_id] = card

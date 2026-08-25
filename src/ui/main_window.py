@@ -217,6 +217,7 @@ class MainWindow:
                 on_stop=self._dock_stop,
                 on_error_decision=self._dock_error_decision,
                 on_browser_recovery=self._dock_browser_recovery,
+                on_focus_browser=self._dock_focus_browser,
                 on_stop_all=self._stop_all,
             )
             self.automation_status_window = dock
@@ -257,6 +258,19 @@ class MainWindow:
         if tab is not None:
             self._record_ui_action(f"id_{run_id}_dock_browser_{action}_clicked")
             tab.recover_browser(action)
+
+    def _dock_focus_browser(self, run_id: str) -> None:
+        self._record_ui_action(f"id_{run_id}_dock_focus_browser_clicked")
+        handle = self.controller.get_portal_window_handle(run_id)
+        if handle is None:
+            self.run_status_var.set("No browser window found for this ID")
+            return
+        import os
+        if os.name != "nt":
+            return
+        from automation.browser import _restore_and_activate_window
+        if not _restore_and_activate_window(handle):
+            self.run_status_var.set("Could not focus the browser window")
 
     def _show_status_dock(self) -> None:
         self._record_ui_action("show_status_dock_clicked")

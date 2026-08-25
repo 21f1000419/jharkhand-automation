@@ -190,6 +190,16 @@ class AutomationController:
     def stop_all(self) -> None:
         self._submit(self._stop_all_runs("Stopped by user"))
 
+    def get_portal_window_handle(self, tab_id: str) -> int | None:
+        """Return the OS window handle for the active portal browser of a tab, or None."""
+        session = self.sessions.get(tab_id)
+        if session is None:
+            return None
+        browser = session.portal_browser
+        if browser is None:
+            return None
+        return browser.window_handle
+
     def reconfigure_browser(self) -> None:
         self._submit(self._close_gemini_browser())
 
