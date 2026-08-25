@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -28,6 +29,21 @@ class _OpeningWorkflow:
     async def run(self, options: RunOptions) -> bool:
         await self.open_portal_page()
         return True
+
+
+class _ConcurrentWorkflow:
+    entered: set[str] = set()
+    both_entered = threading.Event()
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def run(self, options: RunOptions) -> bool:
+        self.entered.add(options.run_id)
+        if len(self.entered) == 2:
+            self.both_entered.set()
+        await asyncio.Event().wait()
+        return False
 
 
 class _PortalSessionAttempt:
@@ -87,6 +103,20 @@ class AutomationControllerTabTests(unittest.TestCase):
                 controller.stop("tab-one")
                 self.wait_for(lambda: "tab-one" not in controller.sessions)
                 self.assertIn("tab-two", controller.sessions)
+            finally:
+                controller.shutdown()
+
+    def test_two_id_runs_enter_their_workflows_in_parallel(self) -> None:
+        _ConcurrentWorkflow.entered = set()
+        _ConcurrentWorkflow.both_entered = threading.Event()
+        with patch("core.controller.WorkflowEngine", _ConcurrentWorkflow):
+            controller = AutomationController(AppConfig())
+            try:
+                controller.start("tab-one", _options("run-one"))
+                controller.start("tab-two", _options("run-two"))
+
+                self.assertTrue(_ConcurrentWorkflow.both_entered.wait(timeout=2))
+                self.assertEqual(_ConcurrentWorkflow.entered, {"run-one", "run-two"})
             finally:
                 controller.shutdown()
 

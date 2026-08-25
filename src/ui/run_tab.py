@@ -611,6 +611,8 @@ class AutomationTab:
             return False
         if self.is_active:
             return False
+        if self.browser_recovery_pending and not self.browser_recovery_ready:
+            return False
         error = self.validation_error()
         if error:
             self.set_state("Needs setup", error)
@@ -655,6 +657,8 @@ class AutomationTab:
             if show_errors:
                 messagebox.showerror("Start automation", str(start_error), parent=self.owner.root)
             return False
+        self.browser_recovery_pending = False
+        self.browser_recovery_ready = False
         self.starting = True
         self.set_state("Starting", f"Opening {browser.name}")
         self._set_buttons()
@@ -916,7 +920,13 @@ class AutomationTab:
 
     def _set_buttons(self) -> None:
         self.start_button.configure(
-            state="disabled" if self.is_active or not self.is_enabled else "normal"
+            state=(
+                "disabled"
+                if self.is_active
+                or not self.is_enabled
+                or (self.browser_recovery_pending and not self.browser_recovery_ready)
+                else "normal"
+            )
         )
         self.pause_button.configure(state="normal" if self.running and not self.paused else "disabled")
         self.resume_button.configure(state="normal" if self.running and self.paused else "disabled")

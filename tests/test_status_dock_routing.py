@@ -58,6 +58,20 @@ class StatusDockRoutingTests(unittest.TestCase):
         second.dismiss_browser_recovery.assert_called_once_with()
         second.stop.assert_not_called()
 
+    def test_start_all_starts_every_enabled_id_without_individual_clicks(self) -> None:
+        window, first, second = self.window_with_tabs()
+        window.run_status_var = MagicMock()
+        first.is_enabled = True
+        second.is_enabled = True
+        first.start.return_value = True
+        second.start.return_value = True
+
+        window._start_all()
+
+        first.start.assert_called_once_with(show_errors=False)
+        second.start.assert_called_once_with(show_errors=False)
+        window.run_status_var.set.assert_called_once_with("Started 2 ID(s); skipped 0 disabled")
+
     def test_recovery_is_only_offered_while_another_run_is_active(self) -> None:
         window, first, second = self.window_with_tabs()
         first.is_active = True
@@ -116,6 +130,30 @@ class StatusDockRoutingTests(unittest.TestCase):
             "Retry this row, skip it and open the next row, or stop this ID.",
             ready=True,
         )
+
+    def test_start_button_waits_for_browser_cleanup(self) -> None:
+        tab = AutomationTab.__new__(AutomationTab)
+        tab.config = MagicMock(enabled=True)
+        tab.running = False
+        tab.starting = False
+        tab.browser_recovery_pending = True
+        tab.browser_recovery_ready = False
+        tab.start_button = MagicMock()
+        tab.pause_button = MagicMock()
+        tab.resume_button = MagicMock()
+        tab.stop_button = MagicMock()
+        tab.toggle_enabled_button = MagicMock()
+        tab.portal_session_open = False
+
+        tab._set_buttons()
+
+        tab.start_button.configure.assert_called_once_with(state="disabled")
+
+        tab.browser_recovery_ready = True
+        tab.start_button.reset_mock()
+        tab._set_buttons()
+
+        tab.start_button.configure.assert_called_once_with(state="normal")
 
     def test_closed_browser_has_no_recovery_card_for_single_run(self) -> None:
         owner = MagicMock()
