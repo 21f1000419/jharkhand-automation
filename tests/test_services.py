@@ -404,6 +404,57 @@ class ServiceTests(unittest.TestCase):
         checkbox.evaluate.assert_awaited_once()
         click.assert_awaited_once()
 
+    def test_egras_unauthorized_page_raises_retryable_error(self) -> None:
+        page = MagicMock()
+        page.url = "https://gras.example.gov/PageNotPermittedtoAccess.aspx"
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal.stage = Stage.EGRAS_LOGIN
+
+        with self.assertRaises(AutomationError) as raised:
+            asyncio.run(portal._raise_if_egras_unauthorized())
+
+        self.assertEqual(raised.exception.code, "egras_unauthorized")
+        self.assertTrue(raised.exception.retryable)
+
+    def test_egras_unauthorized_body_is_detected_without_matching_url(self) -> None:
+        page = MagicMock()
+        page.url = "https://gras.example.gov/error"
+        unauthorized_form = MagicMock()
+        unauthorized_form.count = AsyncMock(return_value=0)
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value=(
+                "Unauthorized It appears that you don't have permission to access this page."
+            )
+        )
+        body.inner_html = AsyncMock(return_value="<div>Unauthorized</div>")
+        page.locator.side_effect = [unauthorized_form, body]
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal.stage = Stage.EGRAS_LOGIN
+
+        with self.assertRaises(AutomationError) as raised:
+            asyncio.run(portal._raise_if_egras_unauthorized())
+
+        self.assertEqual(raised.exception.code, "egras_unauthorized")
+
     def test_upi_qr_uses_javascript_fallback_before_clicking_pay(self) -> None:
         page = MagicMock()
         page.is_closed.return_value = False

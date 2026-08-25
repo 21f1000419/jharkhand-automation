@@ -559,6 +559,7 @@ class PortalAutomation:
 
     async def accept_egras_terms(self) -> None:
         await self._stage(Stage.EGRAS_TERMS)
+        await self._raise_if_egras_unauthorized()
         checkbox = await first_visible(self.page, ["#takenBefore", 'input[name="ch"]'], 20_000)
         if checkbox is None:
             return
@@ -588,6 +589,7 @@ class PortalAutomation:
     async def complete_egras_login(
         self, credentials: Credentials, *, start_from_otp: bool = False
     ) -> None:
+        await self._raise_if_egras_unauthorized()
         if not start_from_otp:
             await self._stage(Stage.EGRAS_LOGIN)
             username = await first_visible(self.page, ["#txtLoginId"], 10_000)
@@ -1119,6 +1121,7 @@ class PortalAutomation:
     async def _poll_for_egras_otp_step(self) -> str:
         while True:
             await self.controls.checkpoint()
+            await self._raise_if_egras_unauthorized()
             if self.page.is_closed():
                 raise AutomationError(
                     "The portal browser was closed while waiting for the eGRAS OTP page.",
@@ -1149,6 +1152,7 @@ class PortalAutomation:
     async def _wait_for_gateway_options(self) -> None:
         while True:
             await self.controls.checkpoint()
+            await self._raise_if_egras_unauthorized()
             if self.page.is_closed():
                 raise AutomationError(
                     "The portal browser was closed while waiting for payment options.",
@@ -1234,6 +1238,37 @@ class PortalAutomation:
                 "is available, or move to the next quantity.",
                 stage=self.stage,
                 code="payment_gateway_suspended",
+            )
+
+    async def _raise_if_egras_unauthorized(self) -> None:
+        """Stop when eGRAS returns its PageNotPermittedtoAccess page."""
+        unauthorized = False
+        try:
+            unauthorized = "pagenotpermittedtoaccess.aspx" in str(self.page.url).casefold()
+            if not unauthorized:
+                unauthorized_form = self.page.locator(
+                    'form[action*="PageNotPermittedtoAccess.aspx"]'
+                )
+                unauthorized = await unauthorized_form.count() > 0
+            if not unauthorized:
+                body = self.page.locator("body")
+                body_text = " ".join((await body.inner_text(timeout=1_000)).casefold().split())
+                body_html = " ".join((await body.inner_html(timeout=1_000)).casefold().split())
+                unauthorized = (
+                    "unauthorized" in body_text
+                    and "permission to access this page" in body_text
+                ) or (
+                    "unauthorized" in body_html
+                    and "permission to access this page" in body_html
+                )
+        except (PlaywrightError, TypeError, AttributeError):
+            return
+        if unauthorized:
+            raise AutomationError(
+                "eGRAS denied access to this page. The account is unauthorized for this service.",
+                stage=self.stage,
+                code="egras_unauthorized",
+                retryable=True,
             )
 
     async def select_upi_qr_and_pay(self) -> None:
@@ -1767,6 +1802,7 @@ class PortalAutomation:
     ) -> str:
         while True:
             await self.controls.checkpoint()
+            await self._raise_if_egras_unauthorized()
             if self.page.is_closed():
                 raise AutomationError(
                     "The portal browser was closed during login.",
@@ -1962,6 +1998,7 @@ class PortalAutomation:
     async def _goto(self, url: str, *, timeout_ms: int = 120_000) -> None:
         await self.controls.checkpoint()
         await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        await self._raise_if_egras_unauthorized()
         self._prepayment_last_url = self._current_page_url()
         self._record_prepayment_activity()
 
