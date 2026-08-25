@@ -198,9 +198,9 @@ class AutomationTab:
         panel.columnconfigure(1, weight=1)
         entries = (
             ("Citizen username", self.citizen_user_var, False),
-            ("Citizen password", self.citizen_password_var, True),
+            ("Citizen password", self.citizen_password_var, False),
             ("eGRAS username", self.egras_user_var, False),
-            ("eGRAS password", self.egras_password_var, True),
+            ("eGRAS password", self.egras_password_var, False),
         )
         for row, (label, variable, secret) in enumerate(entries):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
