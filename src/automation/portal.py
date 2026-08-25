@@ -53,6 +53,8 @@ TRANSACTION_FIELD_NAMES = {
 }
 UPI_QR_READY_TEXT = "scan upi qr"
 UPI_TRANSACTION_TIMER_TEXT = "time left to complete the transaction"
+UPI_QR_WAIT_TIMEOUT_SECONDS = 30
+UPI_QR_EXTERNAL_WAIT_TIMEOUT_SECONDS = 5
 CAPTCHA_FAILURE_TEXT = "captcha validation failed"
 EGRASS_REFERENCE_PATTERN = re.compile(
     r"\bOTP\s+Reference(?:\s+(?:number|no\.?|is))?\s*[:\-]?\s*([A-Z0-9-]+)\b",
@@ -1240,6 +1242,7 @@ class PortalAutomation:
         self._status("Selecting UPI QR and preparing payment…")
         automatic_selection_attempted = False
         manual_takeover = False
+        wait_deadline = time.monotonic() + self._upi_qr_wait_timeout_seconds()
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
@@ -1314,12 +1317,23 @@ class PortalAutomation:
                     self._record_prepayment_activity()
                     self.emit(UiEvent("log", "UPI QR selected and Pay Now clicked."))
                     return
+            if time.monotonic() >= wait_deadline and self.payment_trigger_url:
+                self.emit(
+                    UiEvent(
+                        "log",
+                        "UPI QR selection did not finish in the automation browser in time. "
+                        "Continuing because this payment is using an external browser trigger.",
+                        {"level": "warning"},
+                    )
+                )
+                return
             await self.page.wait_for_timeout(500)
 
     async def wait_for_upi_qr_and_trigger(self) -> None:
         """Wait for SBI's QR payment screen, then call the optional external trigger once."""
         self._status("Waiting for the SBI UPI QR payment screen…")
         body = self.page.locator("body")
+        wait_deadline = time.monotonic() + self._upi_qr_wait_timeout_seconds()
         while True:
             await self.controls.checkpoint()
             if self.page.is_closed():
@@ -1345,11 +1359,26 @@ class PortalAutomation:
                     )
                 )
                 break
+            if time.monotonic() >= wait_deadline:
+                if self.payment_trigger_url:
+                    self.emit(
+                        UiEvent(
+                            "log",
+                            "UPI QR screen did not appear in the automation browser in time. "
+                            "Continuing because this payment is using an external browser trigger.",
+                            {"level": "warning"},
+                        )
+                    )
+                    return
+                raise AutomationError(
+                    "The UPI QR payment screen did not appear in the selected browser.",
+                    stage=self.stage,
+                    code="upi_qr_not_visible",
+                )
             await self.page.wait_for_timeout(250)
 
         self._payment_state("qr_ready")
-        await self.focus_payment_page()
-        self._payment_state("foreground_verified")
+        await self._prepare_upi_payment_observation()
         if not self.payment_trigger_url:
             return
 
@@ -1374,6 +1403,29 @@ class PortalAutomation:
                 f"Payment trigger request sent with {self.payment_trigger_method}; HTTP {status}.",
             )
         )
+
+    def _upi_qr_wait_timeout_seconds(self) -> int:
+        """Use a shorter QR wait when payment is expected outside the portal browser."""
+        if self.payment_trigger_url:
+            return UPI_QR_EXTERNAL_WAIT_TIMEOUT_SECONDS
+        return UPI_QR_WAIT_TIMEOUT_SECONDS
+
+    async def _prepare_upi_payment_observation(self) -> None:
+        """Keep QR monitoring browser-independent while still attempting focus when possible."""
+        await self._check_payment_wait()
+        try:
+            await self.focus_payment_page()
+        except Exception as error:
+            self.emit(
+                UiEvent(
+                    "log",
+                    "UPI QR is ready. Continuing to monitor payment without forcing browser focus: "
+                    f"{error}",
+                    {"level": "warning"},
+                )
+            )
+            return
+        self._payment_state("foreground_verified")
 
     async def find_result_details(self) -> dict[str, str]:
         await self._stage(Stage.RESULT)
@@ -1883,11 +1935,6 @@ class PortalAutomation:
     async def _acquire_payment_slot(self) -> None:
         if self._payment_lease is not None:
             return
-        self._payment_state("queueing")
-        self._payment_lease = await self.payment_coordinator.acquire(
-            self.emit,
-            wait_check=self._check_payment_wait,
-        )
         self._payment_state("pay_now_ready")
 
     async def _release_payment_slot(self) -> None:
