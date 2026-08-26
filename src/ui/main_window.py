@@ -20,7 +20,7 @@ from core.playwright_browsers import (
     install_managed_firefox,
     managed_firefox_is_installed,
 )
-from services.credential_store import WindowsCredentialStore
+from services.credential_store import CredentialStore
 from services.csv_store import CsvBatchStore
 from services.estamp_transactions import export_payment_transactions
 from services.transaction_reconciliation import (
@@ -61,7 +61,7 @@ class MainWindow:
         self.config = config
         self.config_store = config_store
         self.controller = controller
-        self.credential_store = WindowsCredentialStore()
+        self.credential_store = CredentialStore()
         self.tabs: dict[int, AutomationTab] = {}
         self.tab_states: dict[int, str] = {}
         self.tab_accent_images: dict[tuple[int, bool], tk.PhotoImage] = {}

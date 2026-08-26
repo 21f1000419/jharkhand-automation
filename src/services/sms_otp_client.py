@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 from datetime import UTC, datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+
+import certifi
 
 
 class SmsOtpServerError(RuntimeError):
@@ -13,10 +16,14 @@ class SmsOtpServerError(RuntimeError):
 
 
 class SmsOtpClient:
-    """Small, dependency-free client for the local SMS OTP server."""
+    """Small HTTPS client for the local SMS OTP server."""
 
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
+        # The macOS framework Python installation can lack the system CA
+        # bundle. certifi provides a current, portable bundle for the SMS
+        # server without weakening TLS verification.
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     @property
     def is_configured(self) -> bool:
@@ -58,7 +65,7 @@ class SmsOtpClient:
 
     def _get_otp(self, endpoint: str) -> str | None:
         try:
-            with urlopen(endpoint, timeout=8) as response:  # noqa: S310
+            with urlopen(endpoint, timeout=8, context=self._ssl_context) as response:  # noqa: S310
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             if error.code == 404:
@@ -81,7 +88,7 @@ class SmsOtpClient:
             method="DELETE",
         )
         try:
-            with urlopen(request, timeout=8) as response:  # noqa: S310
+            with urlopen(request, timeout=8, context=self._ssl_context) as response:  # noqa: S310
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             # The server keeps a newer OTP instead of deleting it. This is a

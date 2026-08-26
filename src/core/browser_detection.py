@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from core.models import BrowserEngine, PortalBrowser
@@ -33,6 +34,14 @@ def detect_supported_browsers() -> list[PortalBrowser]:
 
 
 def candidate_paths(executable_name: str, relative: tuple[str, ...]) -> list[Path]:
+    if sys.platform == "darwin" and executable_name == "chrome.exe":
+        # macOS application bundles contain the actual executable under
+        # Contents/MacOS. Check both system-wide and per-user installs.
+        return [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+
     candidates = registry_paths(executable_name)
     roots = [
         os.environ.get("LOCALAPPDATA"),

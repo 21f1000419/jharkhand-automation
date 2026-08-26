@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from collections.abc import Callable
 from typing import Literal
@@ -371,10 +372,10 @@ class AutomationStatusWindow:
         self._user_positioned = False
         self._drag_x = 0
         self._drag_y = 0
+        self._macos_floating_style_applied = False
 
         self.window = tk.Toplevel(parent)
         self.window.title("Automation status")
-        self.window.attributes("-topmost", True)
         self.window.overrideredirect(True)
         self.window.resizable(False, False)
         self.window.withdraw()
@@ -443,6 +444,7 @@ class AutomationStatusWindow:
         self.cards_frame = tk.Frame(self.canvas, background="#f3f4f6", padx=7, pady=7)
         self.canvas_item = self.canvas.create_window((0, 0), window=self.cards_frame, anchor="nw")
         self.cards_frame.bind("<Configure>", lambda _event: self._refresh_layout())
+        self.window.bind("<Visibility>", self._restore_topmost_after_visibility, add="+")
 
     @property
     def exists(self) -> bool:
@@ -598,12 +600,37 @@ class AutomationStatusWindow:
             return
         self._apply_topmost_state()
         self.window.deiconify()
+        # Aqua may reset the level of an overrideredirect window as it is
+        # mapped. Reapply it on the next event-loop turn after that happens.
+        self.window.after_idle(self._apply_topmost_state)
         self.window.after_idle(self._refresh_layout)
 
     def _apply_topmost_state(self) -> None:
         if self.exists:
+            self._configure_macos_floating_style()
             self.window.attributes("-topmost", True)
             self.window.lift()
+
+    def _configure_macos_floating_style(self) -> None:
+        """Use Aqua's floating utility-panel level for a persistent status dock."""
+        if sys.platform != "darwin" or getattr(self, "_macos_floating_style_applied", False):
+            return
+        try:
+            self.window.tk.call(
+                "::tk::unsupported::MacWindowStyle",
+                "style",
+                self.window._w,
+                "utility",
+            )
+        except tk.TclError:
+            # Older Tk builds may not expose this private Aqua command. The
+            # standard -topmost attribute below remains the fallback.
+            return
+        self._macos_floating_style_applied = True
+
+    def _restore_topmost_after_visibility(self, _event: tk.Event[tk.Misc]) -> None:
+        if sys.platform == "darwin" and not self._manually_hidden:
+            self.window.after_idle(self._apply_topmost_state)
 
     def _refresh_layout(self) -> None:
         if not self.exists:

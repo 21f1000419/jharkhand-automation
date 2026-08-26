@@ -20,6 +20,7 @@ from core.models import (
     UiEvent,
     available_ocr_engines,
 )
+from services.credential_store import credential_store_label
 from services.csv_store import CsvBatchStore
 from services.windows_notifications import show_windows_notification
 
@@ -71,7 +72,7 @@ class AutomationTab:
         )
         self.credentials_saved = saved_credentials is not None
         self.credentials_status_var = tk.StringVar(
-            value="saved in Windows Credential Manager" if self.credentials_saved else ""
+            value=f"saved in {credential_store_label()}" if self.credentials_saved else ""
         )
         self.sms_user_id_var = tk.StringVar(value=config.sms_user_id)
         self.sms_server_url_var = tk.StringVar(value=config.sms_server_url or DEFAULT_SMS_SERVER_URL)
@@ -455,7 +456,7 @@ class AutomationTab:
             messagebox.showerror("Save credentials", str(error), parent=self.owner.root)
             return
         self.credentials_saved = True
-        self.credentials_status_var.set("saved in Windows Credential Manager")
+        self.credentials_status_var.set(f"saved in {credential_store_label()}")
 
     def _clear_credentials(self) -> None:
         if not messagebox.askyesno(

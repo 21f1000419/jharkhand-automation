@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -319,6 +320,13 @@ def default_portal_profile_path(profile_number: int) -> Path:
 
 def detect_chrome() -> Path | None:
     candidates: list[Path] = []
+    if sys.platform == "darwin":
+        candidates.extend(
+            (
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            )
+        )
     try:
         import winreg
 

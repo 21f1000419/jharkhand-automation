@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from core.models import UiEvent
 from ui.automation_status import AutomationStatusWindow
@@ -239,6 +239,22 @@ class StatusDockRoutingTests(unittest.TestCase):
 
         dock.window.attributes.assert_called_once_with("-topmost", True)
         dock.window.lift.assert_called_once_with()
+
+    def test_macos_dock_uses_a_floating_utility_window(self) -> None:
+        dock = AutomationStatusWindow.__new__(AutomationStatusWindow)
+        dock.window = MagicMock()
+        dock.window._w = ".automation_status"
+        dock._macos_floating_style_applied = False
+
+        with patch("ui.automation_status.sys.platform", "darwin"):
+            dock._configure_macos_floating_style()
+
+        dock.window.tk.call.assert_called_once_with(
+            "::tk::unsupported::MacWindowStyle",
+            "style",
+            ".automation_status",
+            "utility",
+        )
 
     def test_starting_state_creates_one_colored_card_for_the_id(self) -> None:
         window, first, _second = self.window_with_tabs()
