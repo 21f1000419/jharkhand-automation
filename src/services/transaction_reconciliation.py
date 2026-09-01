@@ -17,6 +17,8 @@ _DOWNLOADED_STAMP_NAME = re.compile(
 class MissingPdf:
     transaction_id: str
     values: list[str]
+    estamp_url: str = ""
+    user_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,25 @@ def reconcile_transactions(csv_path: Path, stamps_directory: Path) -> Transactio
     if not stamps_directory.is_dir():
         raise RuntimeError(f"The selected stamp folder does not exist: {stamps_directory}")
 
+    estamp_url_index = next(
+        (
+            i
+            for i, h in enumerate(headers)
+            if "estamp download url" in " ".join(h.casefold().split())
+            or "estamp url" in " ".join(h.casefold().split())
+        ),
+        None,
+    )
+    user_id_index = next(
+        (
+            i
+            for i, h in enumerate(headers)
+            if "user id" in " ".join(h.casefold().split())
+            or "citizen id" in " ".join(h.casefold().split())
+        ),
+        None,
+    )
+
     transaction_by_key = {
         transaction_id.casefold(): (transaction_id, values)
         for transaction_id, values in transactions
@@ -56,11 +77,25 @@ def reconcile_transactions(csv_path: Path, stamps_directory: Path) -> Transactio
         else:
             unmatched_pdfs.append(UnmatchedPdf(pdf_path, transaction_id))
 
-    missing_pdfs = [
-        MissingPdf(transaction_id, values)
-        for transaction_id, values in transactions
-        if transaction_id.casefold() not in found_transaction_ids
-    ]
+    missing_pdfs: list[MissingPdf] = []
+    for transaction_id, values in transactions:
+        if transaction_id.casefold() not in found_transaction_ids:
+            url = (
+                values[estamp_url_index].strip()
+                if estamp_url_index is not None and estamp_url_index < len(values)
+                else ""
+            )
+            if not url:
+                url = f"https://jharnibandhan.gov.in/JHWebService/gras_estamp_download/{transaction_id}"
+            user_id = (
+                values[user_id_index].strip()
+                if user_id_index is not None and user_id_index < len(values)
+                else ""
+            )
+            missing_pdfs.append(
+                MissingPdf(transaction_id, values, estamp_url=url, user_id=user_id)
+            )
+
     return TransactionReconciliation(headers, transaction_id_index, missing_pdfs, unmatched_pdfs)
 
 
@@ -96,6 +131,9 @@ def write_reconciliation_text(output_path: Path, report: TransactionReconciliati
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+_STATUS_HEADER = "status"
+
+
 def _read_transactions(csv_path: Path) -> tuple[list[str], int, list[tuple[str, list[str]]]]:
     if not csv_path.is_file():
         raise RuntimeError(f"The selected transaction CSV does not exist: {csv_path}")
@@ -105,11 +143,19 @@ def _read_transactions(csv_path: Path) -> tuple[list[str], int, list[tuple[str, 
         if not headers:
             raise RuntimeError("The selected transaction CSV has no header row.")
         transaction_id_index = _transaction_id_index(headers)
+        status_index = next(
+            (i for i, h in enumerate(headers) if " ".join(h.casefold().split()) == _STATUS_HEADER),
+            None,
+        )
         transactions: list[tuple[str, list[str]]] = []
         seen: set[str] = set()
         for values in reader:
             if len(values) != len(headers):
                 continue
+            if status_index is not None and status_index < len(values):
+                status_val = values[status_index].strip().casefold()
+                if status_val and status_val != "success":
+                    continue
             transaction_id = values[transaction_id_index].strip()
             key = transaction_id.casefold()
             if not transaction_id or key in seen:

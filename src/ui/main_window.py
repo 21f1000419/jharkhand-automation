@@ -37,6 +37,7 @@ from services.transaction_reconciliation import (
     write_reconciliation_text,
 )
 from ui.automation_status import AutomationStatusWindow
+from ui.download_certificates_dialog import DownloadUndownloadedCertificatesDialog
 from ui.run_tab import CUSTOM_BROWSER_OPTION as TAB_CUSTOM_BROWSER_OPTION
 from ui.run_tab import AutomationTab
 
@@ -178,12 +179,8 @@ class MainWindow:
         self._update_managed_firefox_menu()
         menu.add_command(label="Download CSV format...", command=self._download_template)
         menu.add_command(
-            label="Export eStamp payment transactions...",
-            command=self._export_payment_transactions,
-        )
-        menu.add_command(
-            label="Compare transaction CSV with downloaded stamps...",
-            command=self._compare_transactions_with_stamps,
+            label="Download Undownloaded Certificates...",
+            command=self._open_download_undownloaded_certificates_dialog,
         )
 
         config_menu = tk.Menu(menu, tearoff=False)
@@ -421,77 +418,15 @@ class MainWindow:
                 return tab
         return None
 
+    def _open_download_undownloaded_certificates_dialog(self, initial_tab: int = 0) -> None:
+        self._record_ui_action("download_undownloaded_certificates_clicked")
+        DownloadUndownloadedCertificatesDialog(self, initial_tab=initial_tab)
+
     def _export_payment_transactions(self) -> None:
-        if self.transaction_export_running:
-            messagebox.showinfo(
-                "Export payment transactions",
-                "A payment transaction export is already running.",
-                parent=self.root,
-            )
-            return
-        tab = self._selected_tab()
-        if tab is None:
-            return
-        if tab.is_active or tab.portal_session_open:
-            messagebox.showwarning(
-                "Export payment transactions",
-                f"Stop {tab.display_name} before using its portal profile for this export.",
-                parent=self.root,
-            )
-            return
-        browser = tab._selected_browser()
-        if browser is None:
-            messagebox.showwarning(
-                "Export payment transactions",
-                "Choose an installed portal browser for the selected ID first.",
-                parent=self.root,
-            )
-            return
-        output_path = self._transaction_export_path()
-        if output_path is None:
-            return
+        self._open_download_undownloaded_certificates_dialog(initial_tab=0)
 
-        profile_slug = re.sub(r"[^a-z0-9]+", "-", browser.name.casefold()).strip("-") or "browser"
-        profile_path = Path(tab.config.portal_profile_path) / browser.engine.value / profile_slug
-        self.transaction_export_running = True
-        tab.portal_session_open = True
-        tab._set_buttons()
-        self._record_ui_action(f"id_{tab.run_id}_export_payment_transactions_clicked")
-        self.run_status_var.set(f"{tab.display_name}: waiting for manual Citizen login...")
-
-        def report_status(message: str) -> None:
-            self.root.after(0, lambda: self.run_status_var.set(f"{tab.display_name}: {message}"))
-
-        def run_export() -> None:
-            try:
-                summary = asyncio.run(
-                    export_payment_transactions(browser, profile_path, output_path, report_status)
-                )
-            except Exception as error:
-                error_message = str(error)
-                self.root.after(
-                    0,
-                    lambda: messagebox.showerror(
-                        "Export payment transactions", error_message, parent=self.root
-                    ),
-                )
-                report_status("payment transaction export failed")
-            else:
-                message = (
-                    f"Saved {summary.appended_rows} new transaction(s) to:\n{summary.output_path}\n\n"
-                    f"Skipped {summary.skipped_duplicates} duplicate(s)."
-                )
-                self.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "Export payment transactions", message, parent=self.root
-                    ),
-                )
-                report_status(message)
-            finally:
-                self.root.after(0, lambda: self._finish_transaction_export(tab))
-
-        threading.Thread(target=run_export, name="payment-transaction-export", daemon=True).start()
+    def _compare_transactions_with_stamps(self) -> None:
+        self._open_download_undownloaded_certificates_dialog(initial_tab=1)
 
     def _transaction_export_path(self) -> Path | None:
         configured = self.config.transaction_export_path.strip()
@@ -521,29 +456,6 @@ class MainWindow:
         self.transaction_export_running = False
         tab.portal_session_open = False
         tab._set_buttons()
-
-    def _compare_transactions_with_stamps(self) -> None:
-        self._record_ui_action("compare_transactions_with_stamps_clicked")
-        transaction_csv = filedialog.askopenfilename(
-            title="Choose exported payment transactions CSV",
-            filetypes=[("CSV files", "*.csv")],
-            parent=self.root,
-        )
-        if not transaction_csv:
-            return
-        stamps_directory = filedialog.askdirectory(
-            title="Choose the folder containing downloaded eStamp PDFs",
-            parent=self.root,
-            mustexist=True,
-        )
-        if not stamps_directory:
-            return
-        try:
-            report = reconcile_transactions(Path(transaction_csv), Path(stamps_directory))
-        except Exception as error:
-            messagebox.showerror("Compare transactions and stamps", str(error), parent=self.root)
-            return
-        self._show_transaction_reconciliation(report)
 
     def _show_transaction_reconciliation(self, report: TransactionReconciliation) -> None:
         dialog = tk.Toplevel(self.root)
