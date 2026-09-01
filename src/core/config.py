@@ -57,8 +57,8 @@ class TabConfig:
         defaults = cls.new(tab_id, profile_number)
         allowed = set(asdict(defaults))
         cleaned = {key: value for key, value in values.items() if key in allowed}
-        cleaned.setdefault("tab_id", tab_id)
-        cleaned.setdefault("profile_number", profile_number)
+        cleaned["tab_id"] = tab_id
+        cleaned["profile_number"] = profile_number
         return cls(**cleaned)
 
     def to_dict(self) -> dict[str, Any]:

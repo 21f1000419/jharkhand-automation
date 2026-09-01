@@ -20,6 +20,7 @@ from core.models import (
     UiEvent,
     available_ocr_engines,
 )
+from services.config_package import TabExportData
 from services.credential_store import credential_store_label
 from services.csv_store import CsvBatchStore
 from services.windows_notifications import show_windows_notification
@@ -222,6 +223,13 @@ class AutomationTab:
             ).pack(
                 side="left", padx=(6, 0)
             )
+        ttk.Button(
+            buttons,
+            text="Export ID...",
+            command=self._export_this_tab,
+        ).pack(
+            side="left", padx=(6, 0)
+        )
         ttk.Separator(panel).grid(
             row=5, column=0, columnspan=3, sticky="ew", pady=(8, 3)
         )
@@ -939,6 +947,92 @@ class AutomationTab:
             text="Disable ID" if self.is_enabled else "Enable ID",
             state="disabled" if self.is_active or self.portal_session_open else "normal",
         )
+
+    def _export_this_tab(self) -> None:
+        self.owner._export_specific_tab(self)
+
+    def export_data(self) -> TabExportData:
+        self._save_settings()
+        creds = self.entered_credentials()
+        has_creds = any((
+            creds.citizen_username,
+            creds.citizen_password,
+            creds.egras_username,
+            creds.egras_password,
+        ))
+        if not has_creds:
+            try:
+                loaded = self.owner.credential_store.load(self.tab_id)
+                if loaded is not None:
+                    creds = loaded
+            except Exception:
+                pass
+        return TabExportData(
+            tab_config=self.config.to_dict(),
+            credentials={
+                "citizen_username": creds.citizen_username,
+                "citizen_password": creds.citizen_password,
+                "egras_username": creds.egras_username,
+                "egras_password": creds.egras_password,
+            },
+            credentials_saved=self.credentials_saved,
+        )
+
+    def refresh_from_config(self) -> None:
+        try:
+            saved_credentials = self.owner.credential_store.load(self.tab_id)
+        except Exception:
+            saved_credentials = None
+
+        self.citizen_user_var.set(saved_credentials.citizen_username if saved_credentials else "")
+        self.citizen_password_var.set(saved_credentials.citizen_password if saved_credentials else "")
+        self.egras_user_var.set(saved_credentials.egras_username if saved_credentials else "")
+        self.egras_password_var.set(saved_credentials.egras_password if saved_credentials else "")
+        self.credentials_saved = saved_credentials is not None
+        self.credentials_status_var.set(
+            f"saved in {credential_store_label()}" if self.credentials_saved else ""
+        )
+
+        self.sms_user_id_var.set(self.config.sms_user_id)
+        self.sms_server_url_var.set(self.config.sms_server_url or DEFAULT_SMS_SERVER_URL)
+        self.csv_var.set(self.config.last_csv_path)
+        self.download_var.set(self.config.last_download_path)
+        self.article_var.set(self.config.last_article)
+        self.payment_trigger_url_var.set(self.config.payment_trigger_url)
+        method = self.config.payment_trigger_method.strip().upper()
+        self.payment_trigger_method_var.set(method if method in {"GET", "POST"} else "GET")
+        self.mode_var.set(
+            self.config.last_mode
+            if self.config.last_mode in {mode.value for mode in RunMode}
+            else RunMode.ASSISTED
+        )
+        engines = available_ocr_engines()
+        engine_values = {engine.value for engine in engines}
+        selected_engine = (
+            self.config.ocr_engine if self.config.ocr_engine in engine_values else OcrEngine.PADDLEOCR
+        )
+        self.ocr_engine_var.set(selected_engine)
+        self.ocr_enabled_var.set(getattr(self.config, "ocr_enabled", True))
+        copy_modes = {mode.value for mode in CaptchaCopyMode}
+        copy_mode = (
+            self.config.captcha_copy_mode
+            if self.config.captcha_copy_mode in copy_modes
+            else CaptchaCopyMode.DIRECT
+        )
+        self.captcha_copy_mode_var.set(copy_mode)
+        self.save_captcha_images_var.set(self.config.save_captcha_images)
+        self.fresh_browser_var.set(self.config.fresh_browser_per_unit)
+        self.retry_egras_otp_once_var.set(self.config.retry_egras_otp_once)
+        self.profile_var.set(self.config.portal_profile_path)
+        self.portal_browser_var.set(self._saved_browser_name())
+
+        csv_path = Path(self.config.last_csv_path) if self.config.last_csv_path else None
+        if csv_path and csv_path.is_file():
+            self._load_preview(csv_path, quiet=True)
+        else:
+            self.csv_valid = False
+            self._render_rows([])
+        self._set_buttons()
 
     def destroy(self) -> None:
         if self.error_window is not None and self.error_window.winfo_exists():

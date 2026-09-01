@@ -324,6 +324,7 @@ class ServiceTests(unittest.TestCase):
             CaptchaCopyMode.DIRECT,
             payment_coordinator=payment_coordinator,
         )
+        portal._payment_lease = payment_lease
         for method_name in (
             "ensure_citizen_session",
             "fill_estamp_form",

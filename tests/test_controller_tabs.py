@@ -146,13 +146,15 @@ class AutomationControllerTabTests(unittest.TestCase):
             )
             try:
                 controller.start("tab-one", _options("run-one"))
-                self.wait_for(lambda: len(attempts) == 2)
-                self.wait_for(lambda: "tab-one" not in controller.sessions)
+                events: list[Any] = []
 
+                def session_finished_received() -> bool:
+                    while not controller.events.empty():
+                        events.append(controller.events.get_nowait())
+                    return any(event.kind == "session_finished" for event in events)
+
+                self.wait_for(session_finished_received)
                 self.assertEqual(len(attempts), 2)
-                events = []
-                while not controller.events.empty():
-                    events.append(controller.events.get_nowait())
                 self.assertTrue(
                     any("startup attempt 1 failed" in event.message for event in events)
                 )

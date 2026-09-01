@@ -10,6 +10,7 @@ import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
 from core.browser_detection import detect_supported_browsers
 from core.config import AppConfig, ConfigStore, TabConfig, app_data_directory, default_download_directory
@@ -19,6 +20,12 @@ from core.playwright_browsers import (
     browser_install_directory,
     install_managed_firefox,
     managed_firefox_is_installed,
+)
+from services.config_package import (
+    apply_imported_package,
+    create_export_package,
+    export_package_to_file,
+    import_package_from_file,
 )
 from services.credential_store import CredentialStore
 from services.csv_store import CsvBatchStore
@@ -144,6 +151,9 @@ class MainWindow:
             side="left", padx=(7, 0)
         )
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Button(toolbar, text="Export IDs...", command=self._export_all_configs).pack(side="left")
+        ttk.Button(toolbar, text="Import IDs...", command=self._import_configs).pack(side="left", padx=(7, 0))
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
         ttk.Button(toolbar, text="Start All", command=self._start_all).pack(side="left")
         ttk.Button(toolbar, text="Stop All", command=self._stop_all).pack(side="left", padx=(7, 0))
         ttk.Button(toolbar, text="Show status dock", command=self._show_status_dock).pack(
@@ -175,6 +185,19 @@ class MainWindow:
             label="Compare transaction CSV with downloaded stamps...",
             command=self._compare_transactions_with_stamps,
         )
+
+        config_menu = tk.Menu(menu, tearoff=False)
+        config_menu.add_command(
+            label="Export all IDs & settings...", command=self._export_all_configs
+        )
+        config_menu.add_command(
+            label="Export selected ID configuration...", command=self._export_selected_config
+        )
+        config_menu.add_separator()
+        config_menu.add_command(
+            label="Import IDs & settings...", command=self._import_configs
+        )
+        menu.add_cascade(label="IDs & Settings", menu=config_menu)
 
         profile_menu = tk.Menu(menu, tearoff=False)
         profile_menu.add_command(
@@ -1023,6 +1046,245 @@ class MainWindow:
         directory = app_data_directory() / "captchas"
         directory.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer.exe", str(directory)])
+
+    def _export_all_configs(self) -> None:
+        self._record_ui_action("export_all_configs_clicked")
+        tabs_data = [tab.export_data() for tab in sorted(self.tabs.values(), key=lambda t: t.tab_id)]
+        payload = create_export_package(self.config, tabs_data, include_global_settings=True)
+        selected = filedialog.asksaveasfilename(
+            title="Export All IDs & Settings",
+            defaultextension=".estampcfg",
+            initialfile=f"estamp_all_ids_export_{datetime.now():%Y%m%d_%H%M%S}.estampcfg",
+            filetypes=[("eStamp Config Package (*.estampcfg)", "*.estampcfg;*.ecfg"), ("All files", "*.*")],
+            parent=self.root,
+        )
+        if not selected:
+            return
+        try:
+            exported_path = export_package_to_file(selected, payload)
+            self.append_session_log(f"Exported {len(tabs_data)} ID(s) to: {exported_path.name}")
+            messagebox.showinfo(
+                "Export configuration",
+                f"Successfully exported {len(tabs_data)} ID(s) and settings to:\n{exported_path}",
+                parent=self.root,
+            )
+        except Exception as error:
+            messagebox.showerror("Export configuration", str(error), parent=self.root)
+
+    def _export_selected_config(self) -> None:
+        tab = self._selected_tab()
+        if tab is None:
+            messagebox.showinfo("Export configuration", "No ID tab is currently selected.", parent=self.root)
+            return
+        self._export_specific_tab(tab)
+
+    def _export_specific_tab(self, tab: AutomationTab) -> None:
+        self._record_ui_action(f"id_{tab.run_id}_export_config_clicked")
+        tab_data = tab.export_data()
+        payload = create_export_package(self.config, [tab_data], include_global_settings=False)
+        selected = filedialog.asksaveasfilename(
+            title=f"Export {tab.display_name} Configuration",
+            defaultextension=".estampcfg",
+            initialfile=f"estamp_id_{tab.tab_id}_export_{datetime.now():%Y%m%d_%H%M%S}.estampcfg",
+            filetypes=[("eStamp Config Package (*.estampcfg)", "*.estampcfg;*.ecfg"), ("All files", "*.*")],
+            parent=self.root,
+        )
+        if not selected:
+            return
+        try:
+            exported_path = export_package_to_file(selected, payload)
+            self.append_session_log(f"Exported {tab.display_name} to: {exported_path.name}")
+            messagebox.showinfo(
+                "Export configuration",
+                f"Successfully exported {tab.display_name} configuration to:\n{exported_path}",
+                parent=self.root,
+            )
+        except Exception as error:
+            messagebox.showerror("Export configuration", str(error), parent=self.root)
+
+    def _import_configs(self) -> None:
+        self._record_ui_action("import_configs_clicked")
+        active = [tab.display_name for tab in self.tabs.values() if tab.is_active or tab.portal_session_open]
+        if active:
+            messagebox.showwarning(
+                "Import configuration",
+                f"The following ID(s) are currently active:\n{', '.join(active)}\n\n"
+                "Stop all active IDs and close their portal browsers before importing.",
+                parent=self.root,
+            )
+            return
+
+        selected = filedialog.askopenfilename(
+            title="Import IDs & Settings",
+            filetypes=[
+                ("eStamp Config Package (*.estampcfg, *.ecfg)", "*.estampcfg;*.ecfg"),
+                ("All files", "*.*"),
+            ],
+            parent=self.root,
+        )
+        if not selected:
+            return
+
+        try:
+            package = import_package_from_file(selected)
+        except Exception as error:
+            messagebox.showerror(
+                "Import configuration",
+                f"Could not read configuration package:\n{error}",
+                parent=self.root,
+            )
+            return
+
+        raw_tabs = package.get("tabs", [])
+        num_tabs = len(raw_tabs)
+        if num_tabs == 0:
+            messagebox.showwarning(
+                "Import configuration",
+                "The selected file contains no ID configurations.",
+                parent=self.root,
+            )
+            return
+
+        selected_tab = self._selected_tab()
+        mode, target_tab_id = self._show_import_options_dialog(
+            package, selected_path=Path(selected), current_selected_tab=selected_tab
+        )
+        if not mode:
+            return
+
+        try:
+            updated_config, imported_ids = apply_imported_package(
+                package,
+                self.config,
+                self.credential_store,
+                mode=mode,
+                target_tab_id=target_tab_id,
+            )
+        except Exception as error:
+            messagebox.showerror(
+                "Import configuration",
+                f"Failed to apply configuration:\n{error}",
+                parent=self.root,
+            )
+            return
+
+        if mode == "replace":
+            self._reload_all_tabs_after_replace()
+        elif mode == "merge":
+            for tab_id in imported_ids:
+                tab_cfg = self.config.get_tab(tab_id)
+                self._add_tab_widget(tab_cfg)
+            if imported_ids:
+                first_new = self.tabs.get(imported_ids[0])
+                if first_new is not None:
+                    self.notebook.select(str(first_new.frame))
+        elif mode == "single_tab" and target_tab_id is not None:
+            target_tab = self.tabs.get(target_tab_id)
+            if target_tab is not None:
+                target_tab.refresh_from_config()
+
+        self.save_config()
+        self._update_summary()
+        self.append_session_log(
+            f"Imported {len(imported_ids)} ID(s) ({mode} mode) from {Path(selected).name}."
+        )
+        messagebox.showinfo(
+            "Import configuration",
+            f"Successfully imported {len(imported_ids)} ID(s) into the application.",
+            parent=self.root,
+        )
+
+    def _reload_all_tabs_after_replace(self) -> None:
+        for tab in list(self.tabs.values()):
+            if self.automation_status_window is not None:
+                self.automation_status_window.remove_run(tab.run_id)
+            tab.destroy()
+        self.tabs.clear()
+        self.tab_states.clear()
+        self.tab_accent_images.clear()
+        self.chrome_var.set(self.config.chrome_executable)
+        self.profile_var.set(self.config.chrome_profile_path)
+        self.gemini_ready = bool(self.config.gemini_verified)
+        for tab_config in sorted(self.config.tabs, key=lambda t: t.tab_id):
+            self._add_tab_widget(tab_config)
+        if self.tabs:
+            first_tab = next(iter(self.tabs.values()))
+            self.notebook.select(str(first_tab.frame))
+
+    def _show_import_options_dialog(
+        self,
+        package: dict[str, Any],
+        selected_path: Path,
+        current_selected_tab: AutomationTab | None,
+    ) -> tuple[str | None, int | None]:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Import Options")
+        dialog.geometry("540x340")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        raw_tabs = package.get("tabs", [])
+        num_tabs = len(raw_tabs)
+        exported_at = package.get("exported_at", "Unknown date")
+        if "T" in exported_at:
+            exported_at = exported_at.replace("T", " ").split(".")[0]
+
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text=f"File: {selected_path.name}", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(frame, text=f"Contains: {num_tabs} ID(s) | Exported: {exported_at}").pack(
+            anchor="w", pady=(2, 12)
+        )
+
+        ttk.Label(frame, text="Select import action:").pack(anchor="w", pady=(0, 6))
+
+        default_mode = (
+            "replace" if num_tabs > 1 else ("single_tab" if current_selected_tab else "replace")
+        )
+        mode_var = tk.StringVar(value=default_mode)
+
+        ttk.Radiobutton(
+            frame,
+            text=f"Replace all current IDs ({len(self.tabs)} present) with imported IDs ({num_tabs})",
+            variable=mode_var,
+            value="replace",
+        ).pack(anchor="w", pady=3)
+
+        ttk.Radiobutton(
+            frame,
+            text=f"Add / Merge as new ID(s) (Keep existing {len(self.tabs)} IDs and append {num_tabs})",
+            variable=mode_var,
+            value="merge",
+        ).pack(anchor="w", pady=3)
+
+        if num_tabs == 1 and current_selected_tab is not None:
+            ttk.Radiobutton(
+                frame,
+                text=f"Update currently selected {current_selected_tab.display_name} only",
+                variable=mode_var,
+                value="single_tab",
+            ).pack(anchor="w", pady=3)
+
+        result_mode: list[str | None] = [None]
+        result_tab_id: list[int | None] = [None]
+
+        def on_confirm() -> None:
+            result_mode[0] = mode_var.get()
+            if result_mode[0] == "single_tab" and current_selected_tab:
+                result_tab_id[0] = current_selected_tab.tab_id
+            dialog.destroy()
+
+        def on_cancel() -> None:
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(anchor="e", pady=(18, 0), side="bottom", fill="x")
+        ttk.Button(buttons, text="Cancel", command=on_cancel).pack(side="right", padx=(7, 0))
+        ttk.Button(buttons, text="Import", command=on_confirm).pack(side="right")
+
+        self.root.wait_window(dialog)
+        return result_mode[0], result_tab_id[0]
 
     def _on_close(self) -> None:
         active = [tab for tab in self.tabs.values() if tab.is_active or tab.portal_session_open]
