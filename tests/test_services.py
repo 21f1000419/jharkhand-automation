@@ -25,6 +25,24 @@ from services.downloads import EstampDownloader, extract_reference
 from services.payment_trigger import send_payment_trigger_request
 
 
+def sticky_field(initial_value: str = "") -> MagicMock:
+    """Build a Playwright-like field whose value survives ``fill``."""
+    value = initial_value
+    field = MagicMock()
+    field.count = AsyncMock(return_value=1)
+
+    async def input_value() -> str:
+        return value
+
+    async def fill(new_value: str) -> None:
+        nonlocal value
+        value = new_value
+
+    field.input_value = AsyncMock(side_effect=input_value)
+    field.fill = AsyncMock(side_effect=fill)
+    return field
+
+
 class ServiceTests(unittest.TestCase):
     @staticmethod
     def _watchdog_portal() -> PortalAutomation:
@@ -204,9 +222,7 @@ class ServiceTests(unittest.TestCase):
         portal._wait_for_sms_otp = AsyncMock(  # type: ignore[method-assign]
             return_value="A09AFD"
         )
-        otp_field = MagicMock()
-        otp_field.input_value = AsyncMock(return_value="")
-        otp_field.fill = AsyncMock()
+        otp_field = sticky_field()
         page.locator.return_value.first = otp_field
 
         otp = asyncio.run(
@@ -728,9 +744,7 @@ class ServiceTests(unittest.TestCase):
             CaptchaCopyMode.DIRECT,
         )
         image = MagicMock()
-        field = MagicMock()
-        field.input_value = AsyncMock(return_value="")
-        field.fill = AsyncMock()
+        field = sticky_field()
         portal._capture_captcha_directly = AsyncMock(side_effect=[b"first", b"second"])  # type: ignore[method-assign]
         portal._refresh_captcha = AsyncMock()  # type: ignore[method-assign]
 
@@ -810,10 +824,7 @@ class ServiceTests(unittest.TestCase):
         portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_login_progress = AsyncMock(return_value="otp")  # type: ignore[method-assign]
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
-        otp_field = MagicMock()
-        otp_field.count = AsyncMock(return_value=1)
-        otp_field.input_value = AsyncMock(return_value="")
-        otp_field.fill = AsyncMock()
+        otp_field = sticky_field()
         page.locator.return_value.first = otp_field
         get_otp_button = MagicMock()
         get_otp_button.click = AsyncMock()
@@ -966,10 +977,7 @@ class ServiceTests(unittest.TestCase):
         portal._open_estamp_entry = AsyncMock()  # type: ignore[method-assign]
         portal._wait_for_login_progress = AsyncMock(return_value="otp")  # type: ignore[method-assign]
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
-        otp_field = MagicMock()
-        otp_field.count = AsyncMock(return_value=1)
-        otp_field.input_value = AsyncMock(return_value="")
-        otp_field.fill = AsyncMock()
+        otp_field = sticky_field()
         page.locator.return_value.first = otp_field
 
         async def is_visible(_page: object, selector: str, _timeout: int) -> bool:
@@ -1164,10 +1172,7 @@ class ServiceTests(unittest.TestCase):
         username.fill = AsyncMock()
         proceed = MagicMock()
         proceed.click = AsyncMock()
-        otp_field = MagicMock()
-        otp_field.count = AsyncMock(return_value=1)
-        otp_field.input_value = AsyncMock(return_value="")
-        otp_field.fill = AsyncMock()
+        otp_field = sticky_field()
         page.locator.return_value.first = otp_field
 
         with (
@@ -1219,10 +1224,7 @@ class ServiceTests(unittest.TestCase):
         portal._delete_used_otp_in_background = MagicMock()  # type: ignore[method-assign]
         username = MagicMock()
         username.fill = AsyncMock()
-        otp_field = MagicMock()
-        otp_field.count = AsyncMock(return_value=1)
-        otp_field.input_value = AsyncMock(return_value="")
-        otp_field.fill = AsyncMock()
+        otp_field = sticky_field()
         page.locator.return_value.first = otp_field
 
         with (

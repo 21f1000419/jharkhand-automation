@@ -3,12 +3,33 @@ from __future__ import annotations
 import csv
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
-from services.estamp_transactions import append_unique_transactions
+from services.estamp_transactions import _successful_rows_in_payment_date_range, append_unique_transactions
 
 
 class TransactionExportTests(unittest.TestCase):
+    def test_filters_to_successful_payments_inside_an_inclusive_date_range(self) -> None:
+        headers = ["Name", "Payment Date", "Transaction ID", "Status"]
+        rows = [
+            ["Before", "2026-08-20", "tx-before", "SUCCESS"],
+            ["Created", "", "tx-created", "CREATED"],
+            ["Start", "21/08/2026", "tx-start", "SUCCESS"],
+            ["End", "2026-08-22 09:30:00", "tx-end", "SUCCESS"],
+            ["Failed", "2026-08-22", "tx-failed", "FAILED"],
+            ["After", "2026-08-23", "tx-after", "SUCCESS"],
+        ]
+
+        selected = _successful_rows_in_payment_date_range(
+            rows,
+            headers,
+            payment_date_from=date(2026, 8, 21),
+            payment_date_to=date(2026, 8, 22),
+        )
+
+        self.assertEqual([row[2] for row in selected], ["tx-start", "tx-end"])
+
     def test_appends_only_new_transaction_ids(self) -> None:
         headers = ["Name", "Transaction ID", "Status"]
         first_rows = [["First", "txn-1", "SUCCESS"], ["Second", "txn-2", "CREATED"]]

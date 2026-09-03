@@ -79,6 +79,50 @@ class _LockedSolver:
             await self._solver.cancel_active_response()
 
 
+class _ControllerLoopGeminiSolver:
+    """Use the controller-owned Gemini browser from another asyncio loop.
+
+    Transaction exports run in their own worker thread.  Playwright pages and
+    asyncio locks cannot be awaited from that thread, so this proxy submits all
+    Gemini work back to the controller's automation loop.
+    """
+
+    def __init__(self, controller: AutomationController) -> None:
+        self._controller = controller
+
+    async def _call(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        loop = self._controller.loop
+        if loop is None or self._controller._is_shut_down:
+            coroutine.close()
+            raise RuntimeError("Gemini OCR is unavailable because the automation worker is stopped.")
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except RuntimeError:
+            coroutine.close()
+            raise RuntimeError("Gemini OCR is unavailable because the automation worker is stopped.") from None
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
+    async def verify_ready(self) -> bool:
+        return bool(await self._call(self._controller._verify_gemini_for_external_use()))
+
+    async def solve(self, expected_length: int | None = None) -> str:
+        return str(await self._call(self._controller._solve_gemini_for_external_use(None, expected_length)))
+
+    async def solve_image(self, image_bytes: bytes, expected_length: int | None = None) -> str:
+        return str(
+            await self._call(
+                self._controller._solve_gemini_for_external_use(image_bytes, expected_length)
+            )
+        )
+
+    async def cancel_active_response(self) -> None:
+        await self._call(self._controller._cancel_gemini_for_external_use())
+
+
 class AutomationController:
     """Runs independent tab workflows on one dedicated asyncio worker thread."""
 
@@ -328,6 +372,26 @@ class AutomationController:
             if not await solver.verify_ready():
                 raise RuntimeError(f"{_ocr_engine_label(engine)} is not ready.")
         return _LockedSolver(solver, lock)
+
+    def gemini_solver_for_external_loop(self) -> CaptchaSolver:
+        """Return a thread-safe Gemini solver for transaction-export workers."""
+        return _ControllerLoopGeminiSolver(self)
+
+    async def _verify_gemini_for_external_use(self) -> bool:
+        solver = await self._ensure_ocr_solver(OcrEngine.GEMINI)
+        return await solver.verify_ready()
+
+    async def _solve_gemini_for_external_use(
+        self, image_bytes: bytes | None, expected_length: int | None
+    ) -> str:
+        solver = await self._ensure_ocr_solver(OcrEngine.GEMINI)
+        if image_bytes is None:
+            return await solver.solve(expected_length)
+        return await solver.solve_image(image_bytes, expected_length)
+
+    async def _cancel_gemini_for_external_use(self) -> None:
+        solver = await self._ensure_ocr_solver(OcrEngine.GEMINI)
+        await solver.cancel_active_response()
 
     async def _verify_gemini(self) -> None:
         try:

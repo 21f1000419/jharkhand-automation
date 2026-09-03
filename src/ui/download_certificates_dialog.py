@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import re
+import shutil
 import threading
 import tkinter as tk
 from collections.abc import Sequence
@@ -18,13 +19,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
-from core.config import DEFAULT_SMS_SERVER_URL, default_download_directory
+from tkcalendar import DateEntry
+
+from core.config import DEFAULT_SMS_SERVER_URL, app_data_directory, default_download_directory
 from core.controls import RunControls
 from core.models import BrowserEngine, CaptchaCopyMode, Credentials, OcrEngine, PortalBrowser
 from services.captcha_ocr import CaptchaSolver
 from services.estamp_transactions import (
-    BatchTransactionExportSummary,
-    MissingStampDownloadSummary,
     TransactionExportSummary,
     TransactionExportTarget,
     download_missing_stamps,
@@ -60,14 +61,14 @@ class IdSelectionItem:
 
 
 class DownloadUndownloadedCertificatesDialog:
-    """Side-by-side 2-column dialog offering transaction export and stamp reconciliation."""
+    """Fetch or load transactions, compare them, then recover missing eStamps."""
 
     def __init__(self, owner: MainWindow, initial_tab: int = 0) -> None:
         self.owner = owner
         self.dialog = tk.Toplevel(owner.root)
-        self.dialog.title("Download Undownloaded Certificates")
-        self.dialog.geometry("1180x700")
-        self.dialog.minsize(960, 540)
+        self.dialog.title("Find and Download Missing eStamps")
+        self.dialog.geometry("980x760")
+        self.dialog.minsize(860, 620)
         self.dialog.transient(owner.root)
 
         self.is_running = False
@@ -75,17 +76,17 @@ class DownloadUndownloadedCertificatesDialog:
         self.is_downloading_stamps = False
         self.download_missing_controls: RunControls | None = None
         self.last_reconciliation: TransactionReconciliation | None = None
+        self.fetched_csv_path: Path | None = None
 
-        # Variables - Mode A (Export)
-        self.export_output_var = tk.StringVar(
-            value=self.owner.config.transaction_export_path.strip()
-            or str(default_download_directory() / "estamp_payment_transactions.csv")
-        )
+        self.export_date_from_var = tk.StringVar()
+        self.export_date_to_var = tk.StringVar()
+        self.export_date_filter_enabled_var = tk.BooleanVar(value=False)
+        self.export_date_entries: list[DateEntry] = []
         self.use_chrome_for_all_var = tk.BooleanVar(value=True)
         self.selection_summary_var = tk.StringVar()
         self.export_status_var = tk.StringVar(value="Ready")
+        self.source_mode_var = tk.StringVar(value="fetch")
 
-        # Variables - Mode B (Compare)
         self.reconcile_csv_var = tk.StringVar(
             value=self.owner.config.transaction_export_path.strip()
         )
@@ -110,64 +111,135 @@ class DownloadUndownloadedCertificatesDialog:
     def _build_ui(self) -> None:
         main_frame = ttk.Frame(self.dialog, padding=12)
         main_frame.pack(fill="both", expand=True)
-
-        # 2-Column Content Area
-        cols_container = ttk.Frame(main_frame)
-        cols_container.pack(fill="both", expand=True)
-
-        col_left = ttk.Frame(cols_container)
-        col_left.pack(side="left", fill="both", expand=True, padx=(0, 8))
-
-        separator = ttk.Separator(cols_container, orient="vertical")
-        separator.pack(side="left", fill="y", padx=4)
-
-        col_right = ttk.Frame(cols_container)
-        col_right.pack(side="left", fill="both", expand=True, padx=(8, 0))
-
-        # Build Left and Right columns
-        self._build_export_column(col_left)
-        self._build_reconcile_column(col_right)
-
-        # Bottom Bar
-        bottom_bar = ttk.Frame(main_frame)
-        bottom_bar.pack(fill="x", pady=(10, 0))
-        ttk.Separator(bottom_bar, orient="horizontal").pack(fill="x", pady=(0, 8))
-        ttk.Button(bottom_bar, text="Close", command=self._on_close).pack(side="right")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Column 1: Mode A - Export eStamp Payment Transactions
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _build_export_column(self, parent: ttk.Frame) -> None:
-        # Header
-        header = ttk.Label(
-            parent,
-            text="Mode A: Export eStamp Payment Transactions",
-            font=("Segoe UI", 11, "bold"),
-            foreground="#1e3a8a",
+        source_row = ttk.Frame(main_frame)
+        source_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(source_row, text="Find and download missing eStamps", style="Heading.TLabel").pack(
+            side="left", padx=(0, 24)
         )
-        header.pack(anchor="w", pady=(0, 6))
+        ttk.Label(source_row, text="Transaction source:").pack(side="left")
+        ttk.Radiobutton(
+            source_row,
+            text="Fetch from Citizen IDs",
+            value="fetch",
+            variable=self.source_mode_var,
+            command=self._update_source_mode,
+        ).pack(side="left", padx=(10, 0))
+        ttk.Radiobutton(
+            source_row,
+            text="Use existing CSV",
+            value="existing",
+            variable=self.source_mode_var,
+            command=self._update_source_mode,
+        ).pack(side="left", padx=(12, 0))
 
-        # Group 1: Output CSV Destination
-        csv_group = ttk.LabelFrame(parent, text="1. Save Transactions to CSV", padding=8)
+        self.fetch_frame = ttk.Frame(main_frame)
+        self.fetch_frame.pack(fill="x")
+        self._build_fetch_section(self.fetch_frame)
+
+        self.existing_frame = ttk.LabelFrame(
+            main_frame, text="3. Existing transactions CSV", padding=8
+        )
+        existing_row = ttk.Frame(self.existing_frame)
+        existing_row.pack(fill="x")
+        ttk.Label(existing_row, text="Transactions CSV:").pack(side="left")
+        ttk.Entry(existing_row, textvariable=self.reconcile_csv_var).pack(
+            side="left", fill="x", expand=True, padx=(8, 6)
+        )
+        ttk.Button(existing_row, text="Browse...", command=self._browse_reconcile_csv).pack(
+            side="left"
+        )
+        existing_folder_row = ttk.Frame(self.existing_frame)
+        existing_folder_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(existing_folder_row, text="eStamp PDF folder:").pack(side="left")
+        ttk.Entry(existing_folder_row, textvariable=self.reconcile_folder_var).pack(
+            side="left", fill="x", expand=True, padx=(8, 6)
+        )
+        ttk.Button(
+            existing_folder_row, text="Browse...", command=self._browse_reconcile_folder
+        ).pack(side="left")
+
+        self.action_bar = ttk.Frame(main_frame)
+        self.action_bar.pack(fill="x", pady=(0, 10))
+        self.start_btn = ttk.Button(
+            self.action_bar,
+            text="Fetch, compare and find missing PDFs",
+            style="Accent.TButton",
+            command=self._start_primary_action,
+        )
+        self.start_btn.pack(side="left")
+        self.stop_btn = ttk.Button(
+            self.action_bar, text="Stop", command=self._stop_export, state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(self.action_bar, text="Close", command=self._on_close).pack(side="right")
+
+        self._build_results_section(main_frame)
+        self._update_source_mode()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Fetch transactions from the selected Citizen IDs.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _build_fetch_section(self, parent: ttk.Frame) -> None:
+        csv_group = ttk.LabelFrame(parent, text="3. Transactions to fetch", padding=8)
         csv_group.pack(fill="x", pady=(0, 6))
 
-        ttk.Label(csv_group, text="Destination CSV:").pack(side="left", padx=(0, 6))
-        ttk.Entry(csv_group, textvariable=self.export_output_var).pack(
-            side="left", fill="x", expand=True, padx=(0, 6)
+        folder_row = ttk.Frame(csv_group)
+        folder_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(folder_row, text="eStamp PDF folder:").pack(side="left")
+        ttk.Entry(folder_row, textvariable=self.reconcile_folder_var).pack(
+            side="left", fill="x", expand=True, padx=(8, 6)
         )
-        ttk.Button(csv_group, text="Browse...", command=self._browse_export_output).pack(side="left")
+        ttk.Button(folder_row, text="Browse...", command=self._browse_reconcile_folder).pack(
+            side="left"
+        )
 
-        # Group 2: Target IDs Selection
-        ids_group = ttk.LabelFrame(parent, text="2. Select IDs to Fetch Transactions", padding=8)
-        ids_group.pack(fill="both", expand=True, pady=(0, 6))
+        date_filter = ttk.Frame(csv_group)
+        date_filter.pack(fill="x")
+        ttk.Checkbutton(
+            date_filter,
+            text="Filter by payment date",
+            variable=self.export_date_filter_enabled_var,
+            command=self._update_date_filter_state,
+        ).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            date_filter,
+            text="Only SUCCESS payments are exported. Enable the filter to limit results to this inclusive date range.",
+            foreground="#555555",
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 6))
+        ttk.Label(date_filter, text="From (YYYY-MM-DD)").grid(row=2, column=0, sticky="w")
+        from_date = DateEntry(
+            date_filter,
+            textvariable=self.export_date_from_var,
+            date_pattern="yyyy-mm-dd",
+            width=12,
+            state="readonly",
+        )
+        from_date.grid(
+            row=2, column=1, sticky="w", padx=(6, 18)
+        )
+        ttk.Label(date_filter, text="To (YYYY-MM-DD)").grid(row=2, column=2, sticky="w")
+        to_date = DateEntry(
+            date_filter,
+            textvariable=self.export_date_to_var,
+            date_pattern="yyyy-mm-dd",
+            width=12,
+            state="readonly",
+        )
+        to_date.grid(
+            row=2, column=3, sticky="w", padx=(6, 0)
+        )
+        self.export_date_entries = [from_date, to_date]
+        self._update_date_filter_state()
+
+        ids_group = ttk.LabelFrame(parent, text="Select Citizen IDs", padding=8)
+        ids_group.pack(fill="x", pady=(0, 6))
 
         info_label = ttk.Label(
             ids_group,
-            text=(
-                "• Check the IDs you want to log into and fetch transactions from.\n"
-                "• If 0 checkboxes are selected, a browser opens for manual Citizen login."
-            ),
+            text="Select none to sign in manually in the browser.",
             foreground="#555555",
             wraplength=480,
         )
@@ -194,9 +266,9 @@ class DownloadUndownloadedCertificatesDialog:
 
         # Scrollable checklist
         list_container = ttk.Frame(ids_group)
-        list_container.pack(fill="both", expand=True)
+        list_container.pack(fill="x")
 
-        canvas = tk.Canvas(list_container, borderwidth=0, highlightthickness=0, height=100)
+        canvas = tk.Canvas(list_container, borderwidth=0, highlightthickness=0, height=82)
         scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
@@ -220,41 +292,16 @@ class DownloadUndownloadedCertificatesDialog:
 
         self._populate_id_items(scrollable_frame)
 
-        # Group 3: Progress & Activity Log
-        log_group = ttk.LabelFrame(parent, text="3. Export Progress & Status", padding=8)
-        log_group.pack(fill="x", pady=(0, 6))
-
-        ttk.Label(log_group, textvariable=self.export_status_var, style="Status.TLabel").pack(
-            anchor="w", pady=(0, 4)
-        )
-
-        log_container = ttk.Frame(log_group)
-        log_container.pack(fill="x")
-        self.log_text = tk.Text(log_container, height=4, font=("Consolas", 8), wrap="word")
-        log_scroll = ttk.Scrollbar(log_container, orient="vertical", command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=log_scroll.set)
-        self.log_text.pack(side="left", fill="both", expand=True)
-        log_scroll.pack(side="right", fill="y")
-
-        # Action Buttons
-        btn_bar = ttk.Frame(parent)
-        btn_bar.pack(fill="x", pady=(2, 0))
-
-        self.start_btn = ttk.Button(
-            btn_bar, text="Start Export", style="Accent.TButton", command=self._start_export
-        )
-        self.start_btn.pack(side="left")
-
-        self.stop_btn = ttk.Button(
-            btn_bar, text="Stop", command=self._stop_export, state="disabled"
-        )
-        self.stop_btn.pack(side="left", padx=(8, 0))
 
     def _populate_id_items(self, parent: ttk.Frame) -> None:
         self.id_items.clear()
         seen_usernames: set[str] = set()
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(2, weight=1)
 
         sorted_tabs = sorted(self.owner.tabs.values(), key=lambda t: t.tab_id)
+        visible_index = 0
         for tab in sorted_tabs:
             creds = tab.entered_credentials()
             citizen_user = creds.citizen_username.strip()
@@ -299,7 +346,14 @@ class DownloadUndownloadedCertificatesDialog:
             self.id_items.append(item)
 
             row_frame = ttk.Frame(parent)
-            row_frame.pack(fill="x", pady=2, padx=4)
+            row_frame.grid(
+                row=visible_index // 3,
+                column=visible_index % 3,
+                sticky="ew",
+                pady=2,
+                padx=4,
+            )
+            visible_index += 1
 
             chk = ttk.Checkbutton(
                 row_frame,
@@ -308,15 +362,7 @@ class DownloadUndownloadedCertificatesDialog:
             )
             chk.pack(side="left", padx=(0, 6))
 
-            if citizen_user:
-                label_text = f"{tab.display_name} — Citizen ID: {citizen_user}"
-                if browser:
-                    label_text += f" ({browser.name})"
-            else:
-                label_text = f"{tab.display_name} — (No Citizen username configured)"
-                if browser:
-                    label_text += f" ({browser.name})"
-
+            label_text = f"{tab.tab_id}. {citizen_user or 'No username configured'}"
             ttk.Label(row_frame, text=label_text).pack(side="left")
 
         self._update_selection_summary()
@@ -361,42 +407,64 @@ class DownloadUndownloadedCertificatesDialog:
                 f"{selected_count} of {total_count} IDs selected (Automatic login mode)"
             )
 
-    def _browse_export_output(self) -> None:
-        current = self.export_output_var.get().strip()
-        prev = Path(current).expanduser() if current else None
-        selected = filedialog.asksaveasfilename(
-            title="Choose eStamp payment transactions CSV",
-            initialdir=(
-                prev.parent
-                if prev is not None and prev.parent.is_dir()
-                else default_download_directory()
-            ),
-            initialfile=prev.name if prev is not None else "estamp_payment_transactions.csv",
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            confirmoverwrite=False,
-            parent=self.dialog,
-        )
-        if selected:
-            self.export_output_var.set(selected)
-            self.owner.config.transaction_export_path = selected
-            self.owner.save_config()
+    def _update_source_mode(self) -> None:
+        fetching = self.source_mode_var.get() == "fetch"
+        if fetching:
+            self.existing_frame.pack_forget()
+            self.fetch_frame.pack_forget()
+            self.fetch_frame.pack(fill="x", before=self.action_bar)
+            self.start_btn.configure(text="Fetch, compare and find missing PDFs")
+        else:
+            self.fetch_frame.pack_forget()
+            self.existing_frame.pack_forget()
+            self.existing_frame.pack(fill="x", pady=(0, 8), before=self.action_bar)
+            self.start_btn.configure(text="Compare CSV and find missing PDFs")
+
+    def _start_primary_action(self) -> None:
+        if self.source_mode_var.get() == "existing":
+            self._run_compare()
+            return
+        self._start_export()
 
     def _append_log(self, message: str) -> None:
-        time_str = datetime.datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert("end", f"[{time_str}] {message}\n")
-        self.log_text.see("end")
+        self.owner.append_session_log(message)
 
     def _start_export(self) -> None:
-        output_str = self.export_output_var.get().strip()
-        if not output_str:
+        output_path = self._new_fetched_csv_path()
+        output_str = str(output_path)
+        self.fetched_csv_path = output_path
+
+        folder_path_str = self.reconcile_folder_var.get().strip()
+        if not folder_path_str or not Path(folder_path_str).is_dir():
             messagebox.showwarning(
-                "Export transactions", "Choose a destination CSV file.", parent=self.dialog
+                "Fetch transactions",
+                "Choose a valid folder for comparing and saving eStamp PDFs.",
+                parent=self.dialog,
             )
             return
 
-        self.owner.config.transaction_export_path = output_str
-        self.owner.save_config()
+        payment_date_from: datetime.date | None = None
+        payment_date_to: datetime.date | None = None
+        if self.export_date_filter_enabled_var.get():
+            try:
+                payment_date_from = self._parse_export_date(self.export_date_from_var.get(), "From")
+                payment_date_to = self._parse_export_date(self.export_date_to_var.get(), "To")
+            except ValueError as error:
+                messagebox.showwarning("Export transactions", str(error), parent=self.dialog)
+                return
+        if (
+            payment_date_from is not None
+            and payment_date_to is not None
+            and payment_date_from > payment_date_to
+        ):
+            messagebox.showwarning(
+                "Export transactions",
+                "The From payment date must not be later than the To payment date.",
+                parent=self.dialog,
+            )
+            return
+
+        self.reconcile_csv_var.set(output_str)
 
         if self.owner.transaction_export_running:
             messagebox.showinfo(
@@ -419,7 +487,7 @@ class DownloadUndownloadedCertificatesDialog:
                 return
 
         selected_items = [item for item in self.id_items if item.var.get()]
-        output_path = Path(output_str)
+        stamps_dir = Path(folder_path_str)
 
         # Build list of targets
         targets: list[TransactionExportTarget] = []
@@ -441,19 +509,15 @@ class DownloadUndownloadedCertificatesDialog:
                 )
                 return
 
-            profile_slug = re.sub(r"[^a-z0-9]+", "-", browser.name.casefold()).strip("-") or "browser"
-            profile_base = (
-                active_tab.config.portal_profile_path
-                if active_tab
-                else self.owner.config.chrome_profile_path
-            )
-            profile_path = Path(profile_base) / browser.engine.value / f"manual-export-{profile_slug}"
+            profile_path = self._export_profile_path("manual", browser)
             targets.append(
                 TransactionExportTarget(
                     name="Manual Login",
                     browser=browser,
                     profile_path=profile_path,
                     auto_login=False,
+                    payment_date_from=payment_date_from,
+                    payment_date_to=payment_date_to,
                 )
             )
             self._append_log(
@@ -466,7 +530,7 @@ class DownloadUndownloadedCertificatesDialog:
                 if tab and (tab.is_active or tab.portal_session_open):
                     messagebox.showwarning(
                         "Export transactions",
-                        f"Stop {tab.display_name} before using its profile for this export.",
+                        f"Stop {tab.display_name} before exporting its transaction list.",
                         parent=self.dialog,
                     )
                     return
@@ -485,16 +549,12 @@ class DownloadUndownloadedCertificatesDialog:
                     )
                     return
 
-                tab = self.owner.tabs.get(item.tab_id)
-                base_profile = (
-                    tab.config.portal_profile_path
-                    if tab
-                    else str(item.profile_path.parent.parent)
-                )
-                profile_slug = (
-                    re.sub(r"[^a-z0-9]+", "-", browser.name.casefold()).strip("-") or "browser"
-                )
-                profile_path = Path(base_profile) / browser.engine.value / profile_slug
+                # Transaction export logs in with the selected Citizen
+                # credentials, so it does not need the tab's normal browser
+                # profile.  A separate app-owned profile prevents a saved
+                # profile under another Windows user's folder from blocking
+                # every export with Access Denied.
+                profile_path = self._export_profile_path(f"id-{item.tab_id}", browser)
 
                 solver: CaptchaSolver | None = None
                 if item.ocr_enabled:
@@ -516,6 +576,8 @@ class DownloadUndownloadedCertificatesDialog:
                         window_accent=item.window_accent,
                         window_label=f"{item.display_name} | {item.citizen_username or 'Manual'}",
                         auto_login=bool(item.citizen_username and item.citizen_password),
+                        payment_date_from=payment_date_from,
+                        payment_date_to=payment_date_to,
                     )
                 )
             browser_info = (
@@ -543,10 +605,24 @@ class DownloadUndownloadedCertificatesDialog:
             )
 
         def run_worker() -> None:
+            def refresh_comparison(_result: TransactionExportSummary) -> None:
+                if not output_path.is_file():
+                    return
+                try:
+                    report = reconcile_transactions(output_path, stamps_dir)
+                except Exception as error:
+                    report_status(f"Could not update missing-PDF comparison: {error}")
+                    return
+                self.dialog.after(0, lambda: self._show_reconciliation(report))
+
             try:
                 summary = asyncio.run(
                     export_payment_transactions_batch(
-                        targets, output_path, report_status, self.current_controls
+                        targets,
+                        output_path,
+                        report_status,
+                        self.current_controls,
+                        on_target_finished=refresh_comparison,
                     )
                 )
             except Exception as error:
@@ -559,17 +635,35 @@ class DownloadUndownloadedCertificatesDialog:
                     ),
                 )
             else:
+                refresh_comparison(
+                    TransactionExportSummary(0, 0, 0, output_path, target_name="final")
+                )
+                failed_results = [result for result in summary.results if result.error]
                 msg = (
                     f"Saved {summary.appended_rows} new transaction(s) to:\n{summary.output_path}\n\n"
                     f"Skipped {summary.skipped_duplicates} duplicate(s) across {len(targets)} ID(s)."
                 )
-                report_status("Export completed successfully.")
-                self.dialog.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "Export payment transactions", msg, parent=self.dialog
-                    ),
-                )
+                if failed_results:
+                    error_lines = "\n".join(
+                        f"- {result.target_name}: {result.error}" for result in failed_results
+                    )
+                    report_status(f"Export finished with {len(failed_results)} ID error(s).")
+                    self.dialog.after(
+                        0,
+                        lambda: messagebox.showwarning(
+                            "Export payment transactions",
+                            f"{msg}\n\nFailed IDs:\n{error_lines}",
+                            parent=self.dialog,
+                        ),
+                    )
+                else:
+                    report_status("Export completed successfully.")
+                    self.dialog.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "Export payment transactions", msg, parent=self.dialog
+                        ),
+                    )
             finally:
                 self.dialog.after(0, self._on_export_finished)
 
@@ -585,11 +679,45 @@ class DownloadUndownloadedCertificatesDialog:
                 from services.gemini_ocr import EasyOcrCaptchaSolver
 
                 return EasyOcrCaptchaSolver()
-            elif engine == OcrEngine.GEMINI and self.owner.controller.solver:
-                return self.owner.controller.solver
-        except Exception:
-            pass
+            elif engine == OcrEngine.GEMINI:
+                # The export runs on a separate asyncio loop.  Do not return
+                # controller.solver directly: its browser and asyncio lock
+                # belong to the controller's worker thread.
+                return self.owner.controller.gemini_solver_for_external_loop()
+        except Exception as error:
+            self._append_log(f"Could not start {engine.value} CAPTCHA OCR: {error}")
         return None
+
+    @staticmethod
+    def _parse_export_date(value: str, label: str) -> datetime.date | None:
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return datetime.date.fromisoformat(cleaned)
+        except ValueError as error:
+            raise ValueError(f"{label} payment date must use YYYY-MM-DD.") from error
+
+    def _update_date_filter_state(self) -> None:
+        state = "readonly" if self.export_date_filter_enabled_var.get() else "disabled"
+        for entry in self.export_date_entries:
+            entry.configure(state=state)
+
+    @staticmethod
+    def _export_profile_path(profile_name: str, browser: PortalBrowser) -> Path:
+        browser_slug = re.sub(r"[^a-z0-9]+", "-", browser.name.casefold()).strip("-") or "browser"
+        return (
+            app_data_directory()
+            / "transaction-export-profiles"
+            / profile_name
+            / browser.engine.value
+            / browser_slug
+        )
+
+    @staticmethod
+    def _new_fetched_csv_path() -> Path:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        return app_data_directory() / "transaction-recovery" / f"transactions_{timestamp}.csv"
 
     def _stop_export(self) -> None:
         if self.current_controls is not None:
@@ -604,82 +732,20 @@ class DownloadUndownloadedCertificatesDialog:
         self.stop_btn.configure(state="disabled")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Column 2: Mode B - Compare Transaction CSV with Downloaded Stamps
+    # Comparison results and recovery actions.
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _build_reconcile_column(self, parent: ttk.Frame) -> None:
-        # Header
-        header = ttk.Label(
-            parent,
-            text="Mode B: Compare Transactions with Stamps",
-            font=("Segoe UI", 11, "bold"),
-            foreground="#1e3a8a",
-        )
-        header.pack(anchor="w", pady=(0, 6))
-
-        # Group 1: Input Paths
-        input_group = ttk.LabelFrame(parent, text="1. Input Paths", padding=8)
-        input_group.pack(fill="x", pady=(0, 6))
-
-        # Row 1: CSV path
-        r1 = ttk.Frame(input_group)
-        r1.pack(fill="x", pady=2)
-        ttk.Label(r1, text="Transactions CSV:", width=18, anchor="w").pack(side="left")
-        ttk.Entry(r1, textvariable=self.reconcile_csv_var).pack(
-            side="left", fill="x", expand=True, padx=(0, 6)
-        )
-        ttk.Button(r1, text="Browse...", command=self._browse_reconcile_csv).pack(side="left")
-
-        # Row 2: Stamps directory
-        r2 = ttk.Frame(input_group)
-        r2.pack(fill="x", pady=2)
-        ttk.Label(r2, text="Stamps Folder:", width=18, anchor="w").pack(side="left")
-        ttk.Entry(r2, textvariable=self.reconcile_folder_var).pack(
-            side="left", fill="x", expand=True, padx=(0, 6)
-        )
-        ttk.Button(r2, text="Browse...", command=self._browse_reconcile_folder).pack(side="left")
-
-        # Compare Button
-        ttk.Button(
-            input_group,
-            text="Compare Transactions & Stamps",
-            style="Accent.TButton",
-            command=self._run_compare,
-        ).pack(anchor="w", pady=(6, 0))
-
-        # Group 2: Results
-        results_group = ttk.LabelFrame(parent, text="2. Comparison Results", padding=8)
+    def _build_results_section(self, parent: ttk.Frame) -> None:
+        results_group = ttk.LabelFrame(parent, text="4. Missing eStamp results", padding=8)
         results_group.pack(fill="both", expand=True, pady=(0, 6))
+        self.results_group = results_group
 
         ttk.Label(
             results_group, textvariable=self.reconcile_status_var, style="Status.TLabel"
         ).pack(anchor="w", pady=(0, 4))
 
-        # Results Notebook
-        self.results_notebook = ttk.Notebook(results_group)
-        self.results_notebook.pack(fill="both", expand=True, pady=(0, 6))
-
-        # Missing PDFs tab
-        f_missing = ttk.Frame(self.results_notebook)
-        self.results_notebook.add(f_missing, text="Transactions without PDF (0)")
-        self.missing_text = tk.Text(f_missing, wrap="none", font=("Consolas", 8))
-        s_missing = ttk.Scrollbar(f_missing, orient="vertical", command=self.missing_text.yview)
-        self.missing_text.configure(yscrollcommand=s_missing.set)
-        self.missing_text.pack(side="left", fill="both", expand=True)
-        s_missing.pack(side="right", fill="y")
-
-        # Unmatched PDFs tab
-        f_unmatched = ttk.Frame(self.results_notebook)
-        self.results_notebook.add(f_unmatched, text="PDFs without CSV transaction (0)")
-        self.unmatched_text = tk.Text(f_unmatched, wrap="none", font=("Consolas", 8))
-        s_unmatched = ttk.Scrollbar(f_unmatched, orient="vertical", command=self.unmatched_text.yview)
-        self.unmatched_text.configure(yscrollcommand=s_unmatched.set)
-        self.unmatched_text.pack(side="left", fill="both", expand=True)
-        s_unmatched.pack(side="right", fill="y")
-
-        # Action Buttons
-        r_btns = ttk.Frame(parent)
-        r_btns.pack(fill="x", pady=(2, 0))
+        r_btns = ttk.Frame(results_group)
+        r_btns.pack(fill="x", pady=(0, 8))
 
         self.download_missing_btn = ttk.Button(
             r_btns,
@@ -698,15 +764,48 @@ class DownloadUndownloadedCertificatesDialog:
         )
         self.stop_download_btn.pack(side="left", padx=(0, 8))
 
+        self.export_transactions_btn = ttk.Button(
+            r_btns,
+            text="Export fetched transactions CSV...",
+            command=self._export_fetched_transactions_csv,
+            state="disabled",
+        )
+        self.export_transactions_btn.pack(side="left", padx=(0, 8))
+
         self.export_csv_btn = ttk.Button(
-            r_btns, text="Export CSV...", command=self._export_reconcile_csv, state="disabled"
+            r_btns,
+            text="Export comparison CSV...",
+            command=self._export_reconcile_csv,
+            state="disabled",
         )
         self.export_csv_btn.pack(side="left")
 
         self.export_txt_btn = ttk.Button(
-            r_btns, text="Export text...", command=self._export_reconcile_text, state="disabled"
+            r_btns,
+            text="Export comparison text...",
+            command=self._export_reconcile_text,
+            state="disabled",
         )
         self.export_txt_btn.pack(side="left", padx=(8, 0))
+
+        self.results_notebook = ttk.Notebook(results_group)
+        self.results_notebook.pack(fill="both", expand=True)
+
+        f_missing = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(f_missing, text="Transactions without PDF (0)")
+        self.missing_text = tk.Text(f_missing, wrap="none", font=("Consolas", 8))
+        s_missing = ttk.Scrollbar(f_missing, orient="vertical", command=self.missing_text.yview)
+        self.missing_text.configure(yscrollcommand=s_missing.set)
+        self.missing_text.pack(side="left", fill="both", expand=True)
+        s_missing.pack(side="right", fill="y")
+
+        f_unmatched = ttk.Frame(self.results_notebook)
+        self.results_notebook.add(f_unmatched, text="PDFs without CSV transaction (0)")
+        self.unmatched_text = tk.Text(f_unmatched, wrap="none", font=("Consolas", 8))
+        s_unmatched = ttk.Scrollbar(f_unmatched, orient="vertical", command=self.unmatched_text.yview)
+        self.unmatched_text.configure(yscrollcommand=s_unmatched.set)
+        self.unmatched_text.pack(side="left", fill="both", expand=True)
+        s_unmatched.pack(side="right", fill="y")
 
     def _browse_reconcile_csv(self) -> None:
         selected = filedialog.askopenfilename(
@@ -750,6 +849,9 @@ class DownloadUndownloadedCertificatesDialog:
             messagebox.showerror("Compare error", str(error), parent=self.dialog)
             return
 
+        self._show_reconciliation(report)
+
+    def _show_reconciliation(self, report: TransactionReconciliation) -> None:
         self.last_reconciliation = report
         self.reconcile_status_var.set(
             f"{len(report.missing_pdfs)} transaction(s) without a PDF | "
@@ -790,6 +892,36 @@ class DownloadUndownloadedCertificatesDialog:
 
         self.export_csv_btn.configure(state="normal")
         self.export_txt_btn.configure(state="normal")
+        if self.fetched_csv_path is not None and self.fetched_csv_path.is_file():
+            self.export_transactions_btn.configure(state="normal")
+
+    def _export_fetched_transactions_csv(self) -> None:
+        source = self.fetched_csv_path
+        if source is None or not source.is_file():
+            messagebox.showinfo(
+                "Export fetched transactions",
+                "Fetch transactions first. There is no fetched CSV to export yet.",
+                parent=self.dialog,
+            )
+            return
+        selected = filedialog.asksaveasfilename(
+            title="Export fetched transactions CSV",
+            initialdir=default_download_directory(),
+            initialfile=source.name,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self.dialog,
+        )
+        if not selected:
+            return
+        try:
+            shutil.copy2(source, selected)
+        except OSError as error:
+            messagebox.showerror("Export fetched transactions", str(error), parent=self.dialog)
+            return
+        self.owner.config.transaction_export_path = selected
+        self.owner.save_config()
+        self._append_log(f"Exported fetched transactions CSV to: {selected}")
 
     def _start_download_missing_stamps(self) -> None:
         if self.last_reconciliation is None or not self.last_reconciliation.missing_pdfs:

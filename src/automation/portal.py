@@ -296,13 +296,13 @@ class PortalAutomation:
             await self._goto(CITIZEN_LOGIN_URL, timeout_ms=30_000)
         await self._wait_for_login_element("#username")
         await self.page.wait_for_timeout(1_500)
-        # Start watching before CAPTCHA handling.  The watcher does not poll the
-        # SMS server until the portal exposes the OTP field, so a manually
-        # entered CAPTCHA (and the user's later Get OTP click) cannot delay
-        # automatic OTP handling.
-        citizen_otp_task = self._start_otp_watcher("main", "#otp")
+        # Start the OTP watcher only after this attempt requests an OTP.  A
+        # watcher left over from a rejected CAPTCHA can otherwise collect an
+        # old code and fill it into a later attempt.
+        citizen_otp_task: asyncio.Task[str | None] | None = None
         captcha_entered_manually = True
         form_reset_count = 0
+        outcome = ""
         while True:
             # Refill every time the portal resets the form; resets have no retry limit.
             await self._prepare_citizen_login_attempt(credentials)
@@ -317,8 +317,24 @@ class PortalAutomation:
             if not captcha_entered_manually and not await visible(self.page, "#otp", 500):
                 otp_button = await first_visible(self.page, ["#btnotp"], 5_000)
                 if otp_button is not None:
-                    await otp_button.click()
+                    # Record the freshness boundary immediately before the
+                    # request.  Capturing it only after #otp appears can miss
+                    # a fast SMS and can allow a previous OTP through.
+                    requested_at = self._capture_main_otp_request_time()
+                    citizen_otp_task = self._start_otp_watcher(
+                        "main", "#otp", not_before=requested_at
+                    )
+                    try:
+                        await otp_button.click()
+                    except Exception:
+                        await self._cancel_otp_watcher(citizen_otp_task)
+                        citizen_otp_task = None
+                        raise
                     self._record_prepayment_activity()
+            elif captcha_entered_manually:
+                # A user may click Get OTP at any point after manually solving
+                # the CAPTCHA, so begin watching before waiting for the field.
+                citizen_otp_task = self._start_otp_watcher("main", "#otp")
 
             outcome = await self._wait_for_login_progress(
                 otp_selector="#otp",
@@ -327,6 +343,8 @@ class PortalAutomation:
             )
             if outcome not in ("captcha_failed", "form_reset"):
                 break
+            await self._cancel_otp_watcher(citizen_otp_task)
+            citizen_otp_task = None
             if outcome == "form_reset":
                 form_reset_count += 1
                 self.emit(
@@ -348,18 +366,19 @@ class PortalAutomation:
                     )
                 )
         try:
-            await self._wait_for_login_element("#otp")
-            otp = await self._await_otp_watcher(citizen_otp_task)
-            if otp is not None:
-                # Manual CAPTCHA does not imply manual OTP/login.  Only a
-                # manual OTP takes ownership of the final Login action.
-                await click_first(self.page, ["#btnSubmit", 'button:has-text("Login")'])
-                self._record_prepayment_activity()
-                self.emit(UiEvent("log", "Citizen OTP login submitted automatically."))
-            else:
-                self.emit(
-                    UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
-                )
+            if outcome != "success":
+                await self._wait_for_login_element("#otp")
+                otp = await self._await_otp_watcher(citizen_otp_task)
+                if otp is not None:
+                    # Manual CAPTCHA does not imply manual OTP/login.  Only a
+                    # manual OTP takes ownership of the final Login action.
+                    await click_first(self.page, ["#btnSubmit", 'button:has-text("Login")'])
+                    self._record_prepayment_activity()
+                    self.emit(UiEvent("log", "Citizen OTP login submitted automatically."))
+                else:
+                    self.emit(
+                        UiEvent("otp_manual", "Use the manually entered Citizen OTP, then click Login.")
+                    )
         finally:
             await self._cancel_otp_watcher(citizen_otp_task)
 
@@ -727,7 +746,7 @@ class PortalAutomation:
         return self.sms_otp_client.request_time()
 
     def _start_otp_watcher(
-        self, otp_type: str, field_selector: str
+        self, otp_type: str, field_selector: str, *, not_before: str | None = None
     ) -> asyncio.Task[str | None] | None:
         """Start an OTP watcher without coupling it to CAPTCHA entry."""
         if not self.sms_otp_client.is_configured:
@@ -738,7 +757,9 @@ class PortalAutomation:
             MAIN_OTP_POLL_TIMEOUT_SECONDS if otp_type == "main" else EGRASS_OTP_POLL_TIMEOUT_SECONDS
         )
         return asyncio.create_task(
-            self._watch_and_fill_sms_otp(otp_type, field_selector, timeout_seconds)
+            self._watch_and_fill_sms_otp(
+                otp_type, field_selector, timeout_seconds, not_before=not_before
+            )
         )
 
     async def _await_otp_watcher(self, task: asyncio.Task[str | None] | None) -> str | None:
@@ -856,13 +877,17 @@ class PortalAutomation:
             await asyncio.gather(task, return_exceptions=True)
 
     async def _watch_and_fill_sms_otp(
-        self, otp_type: str, field_selector: str, timeout_seconds: float
+        self,
+        otp_type: str,
+        field_selector: str,
+        timeout_seconds: float,
+        *,
+        not_before: str | None = None,
     ) -> str | None:
         """Wait for the portal OTP field, then retrieve and fill an untouched OTP."""
         await self._wait_for_login_element(field_selector)
         field = self.page.locator(field_selector).first
         reference_number: str | None = None
-        not_before: str | None = None
         if otp_type == "egrass":
             reference_number = await self._wait_for_egrass_otp_reference()
             if not reference_number:
@@ -877,7 +902,7 @@ class PortalAutomation:
                 f"Waiting for eGRAS OTP reference {reference_number} from the SMS server..."
             )
         else:
-            not_before = self._capture_main_otp_request_time()
+            not_before = not_before or self._capture_main_otp_request_time()
             if not_before is None:
                 return None
             waiting_message = "Waiting for Citizen OTP from the SMS server..."
@@ -900,7 +925,14 @@ class PortalAutomation:
                     UiEvent("otp_manual", "Manual OTP input detected; automatic OTP entry is disabled.")
                 )
                 return None
-            await field.fill(otp)
+            if not await self._fill_and_confirm(field, otp):
+                self.emit(
+                    UiEvent(
+                        "otp_fill_failed",
+                        "The portal cleared the OTP field after automatic entry. Enter the OTP manually.",
+                    )
+                )
+                return None
             self._record_prepayment_activity()
         except PlaywrightError:
             return None
@@ -915,6 +947,18 @@ class PortalAutomation:
             message = "OTP received from the SMS server and filled in eGRAS."
         self.emit(UiEvent("otp_filled", message))
         return otp
+
+    async def _fill_and_confirm(self, field: Locator, value: str) -> bool:
+        """Fill a portal input and verify that client-side code kept the value."""
+        await field.fill(value)
+        for _ in range(3):
+            try:
+                if (await field.input_value()).strip().casefold() == value.strip().casefold():
+                    return True
+            except PlaywrightError:
+                return False
+            await self.page.wait_for_timeout(100)
+        return False
 
     async def _wait_for_egrass_otp_reference(self, timeout_seconds: float = 10) -> str | None:
         """Read the reference shown by e-GRAS after it creates an OTP."""
@@ -1683,7 +1727,8 @@ class PortalAutomation:
                     await self._manual_captcha_entered()
                     return True
                 if len(code) == expected_length:
-                    await field.fill(code)
+                    if not await self._fill_and_confirm(field, code):
+                        raise RuntimeError("The portal cleared the CAPTCHA field after it was filled.")
                     self._record_prepayment_activity()
                     self._status("CAPTCHA filled; continuing with the portal...")
                     self.emit(UiEvent("log", f"CAPTCHA solved by OCR on attempt {attempt}."))

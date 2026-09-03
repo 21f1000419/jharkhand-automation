@@ -10,6 +10,7 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -83,6 +84,8 @@ class TransactionExportTarget:
     window_accent: str = ""
     window_label: str = ""
     auto_login: bool = True
+    payment_date_from: date | None = None
+    payment_date_to: date | None = None
 
 
 @dataclass(frozen=True)
@@ -185,7 +188,12 @@ async def export_payment_transactions_for_target(
         await page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded", timeout=60_000)
         await page.locator(_TABLE_SELECTOR).wait_for(state="visible", timeout=120_000)
         headers, rows = await _collect_table_pages(
-            page, lambda msg: report_status(f"{target.name}: {msg}"), user_id, controls
+            page,
+            lambda msg: report_status(f"{target.name}: {msg}"),
+            user_id,
+            controls,
+            payment_date_from=target.payment_date_from,
+            payment_date_to=target.payment_date_to,
         )
         appended_rows = append_unique_transactions(output_path, headers, rows)
         return TransactionExportSummary(
@@ -224,6 +232,7 @@ async def export_payment_transactions_batch(
     output_path: Path,
     report_status: Callable[[str], None],
     controls: RunControls | None = None,
+    on_target_finished: Callable[[TransactionExportSummary], None] | None = None,
 ) -> BatchTransactionExportSummary:
     """Fetch transactions for each target ID sequentially, opening/closing the browser for each."""
     controls = controls or RunControls(lambda _e: None)
@@ -247,6 +256,9 @@ async def export_payment_transactions_batch(
             report_status(
                 f"{prefix}: Finished ({summary.scraped_rows} found, {summary.appended_rows} new)."
             )
+            if on_target_finished is not None:
+                with suppress(Exception):
+                    on_target_finished(summary)
         except WorkflowStopped:
             raise
         except Exception as error:
@@ -280,6 +292,9 @@ async def _collect_table_pages(
     report_status: Callable[[str], None],
     user_id: str = "",
     controls: RunControls | None = None,
+    *,
+    payment_date_from: date | None = None,
+    payment_date_to: date | None = None,
 ) -> tuple[list[str], list[list[str]]]:
     if controls is not None:
         await controls.checkpoint()
@@ -297,8 +312,17 @@ async def _collect_table_pages(
         if controls is not None:
             await controls.checkpoint()
         current_rows = await _read_current_page(page, len(raw_headers), user_id)
-        rows.extend(current_rows)
-        report_status(f"Collected {len(rows)} transaction row(s), page {page_number}...")
+        matching_rows = _successful_rows_in_payment_date_range(
+            current_rows,
+            raw_headers,
+            payment_date_from=payment_date_from,
+            payment_date_to=payment_date_to,
+        )
+        rows.extend(matching_rows)
+        report_status(
+            f"Collected {len(rows)} successful transaction(s), page {page_number} "
+            f"({len(matching_rows)} matched on this page)..."
+        )
 
         next_page = page.locator(_NEXT_PAGE_SELECTOR)
         classes = (await next_page.get_attribute("class") or "").casefold()
@@ -310,6 +334,63 @@ async def _collect_table_pages(
         await _wait_for_page_change(page, previous_info)
         page_number += 1
     return headers, rows
+
+
+def _successful_rows_in_payment_date_range(
+    rows: Sequence[Sequence[str]],
+    headers: Sequence[str],
+    *,
+    payment_date_from: date | None,
+    payment_date_to: date | None,
+) -> list[list[str]]:
+    """Keep only successful payments inside the optional inclusive date range."""
+    status_index = _header_index(headers, "status")
+    payment_date_index = _header_index(headers, "payment date")
+    selected: list[list[str]] = []
+    for row in rows:
+        if len(row) <= max(status_index, payment_date_index):
+            continue
+        if _clean_cell(row[status_index]).casefold() != "success":
+            continue
+        payment_date = _parse_payment_date(row[payment_date_index])
+        if payment_date is None:
+            continue
+        if payment_date_from is not None and payment_date < payment_date_from:
+            continue
+        if payment_date_to is not None and payment_date > payment_date_to:
+            continue
+        selected.append(list(row))
+    return selected
+
+
+def _header_index(headers: Sequence[str], expected_header: str) -> int:
+    expected = _normalize_header(expected_header)
+    for index, header in enumerate(headers):
+        if _normalize_header(header) == expected:
+            return index
+    raise RuntimeError(
+        f"The payment transaction table does not include a {expected_header.title()} column."
+    )
+
+
+def _parse_payment_date(value: str) -> date | None:
+    cleaned = _clean_cell(value)
+    if not cleaned:
+        return None
+    candidates = [cleaned, cleaned.split(" ", 1)[0]]
+    for candidate in candidates:
+        with suppress(ValueError):
+            return date.fromisoformat(candidate)
+        for date_format in (
+            "%d/%m/%Y",
+            "%d-%m-%Y",
+            "%d.%m.%Y",
+            "%d-%b-%Y",
+            "%d %b %Y",
+        ):
+            with suppress(ValueError):
+                return datetime.strptime(candidate, date_format).date()
+    return None
 
 
 async def _select_page_size(page: Page) -> None:
