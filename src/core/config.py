@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -70,6 +71,30 @@ class TabConfig:
         for name in _TAB_FIELDS:
             if name not in preserved:
                 setattr(self, name, getattr(source, name))
+
+    def reset_portal_profile(self) -> tuple[Path, str]:
+        """Repair this ID's local profile path or delete its local profile directory.
+
+        An imported path is only replaced. It is never deleted because it may
+        point to another machine or an unrelated local directory.
+        """
+        profile_root = (app_data_directory() / "portal-profiles").resolve()
+        expected_path = default_portal_profile_path(self.profile_number).resolve()
+        try:
+            expected_path.relative_to(profile_root)
+        except ValueError as error:
+            raise OSError("The generated portal profile path is outside the local profile folder.") from error
+        configured_path = self.portal_profile_path.strip()
+        configured_key = os.path.normcase(os.path.abspath(configured_path)) if configured_path else ""
+        expected_key = os.path.normcase(os.path.abspath(expected_path))
+        if configured_key != expected_key:
+            self.portal_profile_path = str(expected_path)
+            return expected_path, "path_reset"
+
+        if expected_path.is_dir():
+            shutil.rmtree(expected_path)
+            return expected_path, "deleted"
+        return expected_path, "not_found"
 
 
 _TAB_FIELDS = tuple(asdict(TabConfig()).keys())

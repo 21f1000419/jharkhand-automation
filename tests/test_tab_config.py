@@ -4,8 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from core.config import ConfigStore
+from core.config import ConfigStore, TabConfig
 from core.models import UiEvent
 from services.credential_store import TARGET_NAME, tab_target_name
 
@@ -71,6 +72,44 @@ class TabConfigTests(unittest.TestCase):
                 (target.tab_id, target.profile_number, target.portal_profile_path),
                 identity,
             )
+
+    def test_reset_portal_profile_repairs_an_imported_path_without_deleting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            imported_path = root / "imported-profile"
+            imported_path.mkdir()
+            expected_path = root / "portal-profiles" / "profile-3"
+            tab = TabConfig.new(3, 3)
+            tab.portal_profile_path = str(imported_path)
+
+            with (
+                patch("core.config.app_data_directory", return_value=root),
+                patch("core.config.default_portal_profile_path", return_value=expected_path),
+            ):
+                profile_path, result = tab.reset_portal_profile()
+
+            self.assertEqual(profile_path, expected_path)
+            self.assertEqual(result, "path_reset")
+            self.assertEqual(tab.portal_profile_path, str(expected_path))
+            self.assertTrue(imported_path.is_dir())
+
+    def test_reset_portal_profile_deletes_the_correct_local_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            expected_path = Path(directory) / "portal-profiles" / "profile-3"
+            expected_path.mkdir(parents=True)
+            (expected_path / "browser-data").write_text("temporary profile", encoding="utf-8")
+            tab = TabConfig.new(3, 3)
+            tab.portal_profile_path = str(expected_path)
+
+            with (
+                patch("core.config.app_data_directory", return_value=Path(directory)),
+                patch("core.config.default_portal_profile_path", return_value=expected_path),
+            ):
+                profile_path, result = tab.reset_portal_profile()
+
+            self.assertEqual(profile_path, expected_path)
+            self.assertEqual(result, "deleted")
+            self.assertFalse(expected_path.exists())
 
     def test_tab_settings_are_the_persisted_source_of_truth(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

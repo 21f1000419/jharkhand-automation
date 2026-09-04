@@ -144,6 +144,12 @@ class AutomationTab:
         ttk.Entry(status, textvariable=self.profile_var, state="readonly", width=48).pack(
             side="left", fill="x", expand=True
         )
+        self.delete_profile_button = ttk.Button(
+            status,
+            text="Delete profile",
+            command=self._delete_portal_profile,
+        )
+        self.delete_profile_button.pack(side="left", padx=(8, 0))
 
         settings = ttk.Frame(self.frame)
         settings.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -947,6 +953,31 @@ class AutomationTab:
             text="Disable ID" if self.is_enabled else "Enable ID",
             state="disabled" if self.is_active or self.portal_session_open else "normal",
         )
+        self.delete_profile_button.configure(
+            state="disabled" if self.is_active or self.portal_session_open else "normal"
+        )
+
+    def _delete_portal_profile(self) -> None:
+        try:
+            profile_path, result = self.config.reset_portal_profile()
+        except OSError as error:
+            messagebox.showerror(
+                "Delete profile",
+                f"Could not delete this ID's local browser profile:\n{error}",
+                parent=self.owner.root,
+            )
+            return
+
+        self.profile_var.set(str(profile_path))
+        self.owner.save_config()
+        if result == "deleted":
+            message = "Portal browser profile deleted. It will be recreated when this ID starts."
+        elif result == "path_reset":
+            message = "Portal profile path reset to this ID's local profile path."
+        else:
+            message = "No saved portal browser profile folder was found."
+        self.owner.append_session_log(f"{self.display_name}: {message}")
+        messagebox.showinfo("Delete profile", message, parent=self.owner.root)
 
     def _export_this_tab(self) -> None:
         self.owner._export_specific_tab(self)
