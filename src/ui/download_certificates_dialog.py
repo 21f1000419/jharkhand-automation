@@ -81,6 +81,7 @@ class DownloadUndownloadedCertificatesDialog:
         self.export_date_from_var = tk.StringVar()
         self.export_date_to_var = tk.StringVar()
         self.export_date_filter_enabled_var = tk.BooleanVar(value=False)
+        self.export_name_filter_var = tk.StringVar()
         self.export_date_entries: list[DateEntry] = []
         self.use_chrome_for_all_var = tk.BooleanVar(value=True)
         self.selection_summary_var = tk.StringVar()
@@ -204,12 +205,7 @@ class DownloadUndownloadedCertificatesDialog:
         ).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(
-            date_filter,
-            text="Only SUCCESS payments are exported. Enable the filter to limit results to this inclusive date range.",
-            foreground="#555555",
-        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 6))
-        ttk.Label(date_filter, text="From (YYYY-MM-DD)").grid(row=2, column=0, sticky="w")
+        ttk.Label(date_filter, text="From").grid(row=0, column=1, sticky="w", padx=(12, 0))
         from_date = DateEntry(
             date_filter,
             textvariable=self.export_date_from_var,
@@ -218,9 +214,9 @@ class DownloadUndownloadedCertificatesDialog:
             state="readonly",
         )
         from_date.grid(
-            row=2, column=1, sticky="w", padx=(6, 18)
+            row=0, column=2, sticky="w", padx=(6, 12)
         )
-        ttk.Label(date_filter, text="To (YYYY-MM-DD)").grid(row=2, column=2, sticky="w")
+        ttk.Label(date_filter, text="To").grid(row=0, column=3, sticky="w")
         to_date = DateEntry(
             date_filter,
             textvariable=self.export_date_to_var,
@@ -229,8 +225,13 @@ class DownloadUndownloadedCertificatesDialog:
             state="readonly",
         )
         to_date.grid(
-            row=2, column=3, sticky="w", padx=(6, 0)
+            row=0, column=4, sticky="w", padx=(6, 12)
         )
+        ttk.Label(date_filter, text="Name contains").grid(row=0, column=5, sticky="w")
+        ttk.Entry(date_filter, textvariable=self.export_name_filter_var, width=26).grid(
+            row=0, column=6, sticky="ew", padx=(6, 0)
+        )
+        date_filter.columnconfigure(6, weight=1)
         self.export_date_entries = [from_date, to_date]
         self._update_date_filter_state()
 
@@ -443,6 +444,8 @@ class DownloadUndownloadedCertificatesDialog:
             )
             return
 
+        payment_name_filter = self.export_name_filter_var.get().strip()
+
         payment_date_from: datetime.date | None = None
         payment_date_to: datetime.date | None = None
         if self.export_date_filter_enabled_var.get():
@@ -518,6 +521,7 @@ class DownloadUndownloadedCertificatesDialog:
                     auto_login=False,
                     payment_date_from=payment_date_from,
                     payment_date_to=payment_date_to,
+                    payment_name_filter=payment_name_filter,
                 )
             )
             self._append_log(
@@ -578,6 +582,7 @@ class DownloadUndownloadedCertificatesDialog:
                         auto_login=bool(item.citizen_username and item.citizen_password),
                         payment_date_from=payment_date_from,
                         payment_date_to=payment_date_to,
+                        payment_name_filter=payment_name_filter,
                     )
                 )
             browser_info = (

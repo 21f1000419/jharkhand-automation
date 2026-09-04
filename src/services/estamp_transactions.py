@@ -33,8 +33,37 @@ _TABLE_SELECTOR = "#translist"
 _PAGE_INFO_SELECTOR = "#translist_info"
 _NEXT_PAGE_SELECTOR = "#translist_next"
 _PAGE_SIZE_SELECTOR = "select[name='translist_length']"
+_TRANSACTION_SEARCH_SELECTOR = "#translist_filter input[type='search']"
+_UPDATE_STATUS_LINK_SELECTOR = "a[href*='gras_payment_entry_estamp']"
 _TRANSACTION_ID_HEADER = "transaction id"
 _LOGIN_TIMEOUT_MS = 30 * 60 * 1_000
+
+_FIND_TRANSACTION_ROW_SCRIPT = """(args) => {
+    const { transactionId, transactionIdIndex } = args;
+    const table = document.querySelector('#translist');
+    if (!table) return null;
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    return rows.findIndex(tr => {
+        const cells = Array.from(tr.querySelectorAll('td'));
+        const value = (cells[transactionIdIndex]?.textContent || '')
+            .trim()
+            .replace(/\\s+/g, ' ');
+        return value === transactionId;
+    });
+}"""
+
+_TRANSACTION_ROW_VISIBLE_SCRIPT = """(args) => {
+    const { transactionId, transactionIdIndex } = args;
+    const table = document.querySelector('#translist');
+    if (!table) return false;
+    return Array.from(table.querySelectorAll('tbody tr')).some(tr => {
+        const cells = Array.from(tr.querySelectorAll('td'));
+        const value = (cells[transactionIdIndex]?.textContent || '')
+            .trim()
+            .replace(/\\s+/g, ' ');
+        return value === transactionId;
+    });
+}"""
 
 _READ_ROWS_SCRIPT = """(args) => {
     const { expectedColCount, userId } = args;
@@ -86,6 +115,7 @@ class TransactionExportTarget:
     auto_login: bool = True
     payment_date_from: date | None = None
     payment_date_to: date | None = None
+    payment_name_filter: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,6 +217,14 @@ async def export_payment_transactions_for_target(
         report_status(f"{target.name}: Opening eStamp payment transactions...")
         await page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded", timeout=60_000)
         await page.locator(_TABLE_SELECTOR).wait_for(state="visible", timeout=120_000)
+        await _resolve_pending_payment_statuses(
+            page,
+            lambda msg: report_status(f"{target.name}: {msg}"),
+            controls,
+            payment_date_from=target.payment_date_from,
+            payment_date_to=target.payment_date_to,
+            payment_name_filter=target.payment_name_filter,
+        )
         headers, rows = await _collect_table_pages(
             page,
             lambda msg: report_status(f"{target.name}: {msg}"),
@@ -194,6 +232,7 @@ async def export_payment_transactions_for_target(
             controls,
             payment_date_from=target.payment_date_from,
             payment_date_to=target.payment_date_to,
+            payment_name_filter=target.payment_name_filter,
         )
         appended_rows = append_unique_transactions(output_path, headers, rows)
         return TransactionExportSummary(
@@ -287,6 +326,274 @@ async def export_payment_transactions_batch(
     )
 
 
+async def _resolve_pending_payment_statuses(
+    page: Page,
+    report_status: Callable[[str], None],
+    controls: RunControls | None = None,
+    *,
+    payment_date_from: date | None = None,
+    payment_date_to: date | None = None,
+    payment_name_filter: str = "",
+) -> None:
+    """Refresh pending rows in range before collecting successful transactions.
+
+    The portal reloads after every status refresh, which resets DataTables. Each
+    click therefore finds its row again by transaction ID through the table's
+    search field instead of relying on a page number or row position.
+    """
+    raw_headers = await _payment_table_headers(page, payment_name_filter)
+    pending_ids = await _collect_pending_status_transaction_ids(
+        page,
+        raw_headers,
+        controls,
+        payment_date_from=payment_date_from,
+        payment_date_to=payment_date_to,
+        payment_name_filter=payment_name_filter,
+    )
+    if pending_ids:
+        report_status(f"Found {len(pending_ids)} transaction(s) awaiting a status update.")
+
+    previous_count: int | None = None
+    while pending_ids:
+        if controls is not None:
+            await controls.checkpoint()
+        if previous_count is not None and len(pending_ids) >= previous_count:
+            report_status(
+                f"{len(pending_ids)} transaction(s) still need a status update and did not change. "
+                "Only rows that become SUCCESS will be exported."
+            )
+            break
+
+        previous_count = len(pending_ids)
+        for index, transaction_id in enumerate(pending_ids, start=1):
+            if controls is not None:
+                await controls.checkpoint()
+            report_status(
+                f"Updating pending transaction {index}/{len(pending_ids)}: {transaction_id}..."
+            )
+            updated_status = await _click_update_status_for_transaction(
+                page, raw_headers, transaction_id
+            )
+            report_status(
+                f"Update result for {transaction_id}: {updated_status or 'no status returned'}."
+            )
+
+        await _open_transactions_first_page(page)
+        raw_headers = await _payment_table_headers(page, payment_name_filter)
+        pending_ids = await _collect_pending_status_transaction_ids(
+            page,
+            raw_headers,
+            controls,
+            payment_date_from=payment_date_from,
+            payment_date_to=payment_date_to,
+            payment_name_filter=payment_name_filter,
+        )
+        if pending_ids:
+            report_status(f"{len(pending_ids)} transaction(s) still await a status update.")
+
+    # The status scan can end on any DataTables page. Start the export pass at page one.
+    await _open_transactions_first_page(page)
+
+
+async def _open_transactions_first_page(page: Page) -> None:
+    await page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded", timeout=60_000)
+    await page.locator(_TABLE_SELECTOR).wait_for(state="visible", timeout=120_000)
+
+
+async def _payment_table_headers(page: Page, payment_name_filter: str = "") -> list[str]:
+    await _select_page_size(page)
+    await _apply_payment_name_filter(page, payment_name_filter)
+    header_values = await page.locator(f"{_TABLE_SELECTOR} thead th").all_inner_texts()
+    raw_headers = [_clean_cell(value) for value in header_values]
+    if not raw_headers:
+        raise RuntimeError("The payment transaction table has no column headers.")
+    return raw_headers
+
+
+async def _apply_payment_name_filter(page: Page, payment_name_filter: str) -> None:
+    """Keep DataTables narrowed to the entered name during normal table scans."""
+    name_filter = payment_name_filter.strip()
+    if not name_filter:
+        return
+    await _set_table_search(page, name_filter)
+
+
+async def _set_table_search(page: Page, search_value: str) -> None:
+    search = page.locator(_TRANSACTION_SEARCH_SELECTOR)
+    await search.wait_for(state="visible", timeout=30_000)
+    await search.fill(search_value)
+    await page.locator(f"{_TABLE_SELECTOR} tbody tr").first.wait_for(
+        state="visible", timeout=30_000
+    )
+
+
+async def _collect_pending_status_transaction_ids(
+    page: Page,
+    headers: Sequence[str],
+    controls: RunControls | None = None,
+    *,
+    payment_date_from: date | None,
+    payment_date_to: date | None,
+    payment_name_filter: str,
+) -> list[str]:
+    """Return pending transaction IDs in the selected date range.
+
+    The portal defaults to payment-date descending order. Once a page contains
+    a date before the lower bound, all following pages are outside the range.
+    """
+    pending_ids: list[str] = []
+    while True:
+        if controls is not None:
+            await controls.checkpoint()
+        current_rows = await _read_current_page(page, len(headers), "")
+        pending_ids.extend(
+            _pending_status_transaction_ids_in_payment_date_range(
+                current_rows,
+                headers,
+                payment_date_from=payment_date_from,
+                payment_date_to=payment_date_to,
+                payment_name_filter=payment_name_filter,
+            )
+        )
+        if _has_reached_payment_date_lower_bound(current_rows, headers, payment_date_from):
+            break
+
+        next_page = page.locator(_NEXT_PAGE_SELECTOR)
+        classes = (await next_page.get_attribute("class") or "").casefold()
+        if "disabled" in classes:
+            break
+
+        previous_info = await _page_info(page)
+        await next_page.locator("a").click()
+        await _wait_for_page_change(page, previous_info)
+    return list(dict.fromkeys(pending_ids))
+
+
+def _pending_status_transaction_ids_in_payment_date_range(
+    rows: Sequence[Sequence[str]],
+    headers: Sequence[str],
+    *,
+    payment_date_from: date | None,
+    payment_date_to: date | None,
+    payment_name_filter: str = "",
+) -> list[str]:
+    """Find in-range rows that expose the portal's Update Status action."""
+    transaction_id_index = _header_index(headers, _TRANSACTION_ID_HEADER)
+    payment_date_index = _header_index(headers, "payment date")
+    name_index = 0 if payment_name_filter.strip() else None
+    pending_ids: list[str] = []
+    for row in rows:
+        if len(row) <= max(transaction_id_index, payment_date_index):
+            continue
+        if name_index is not None and (
+            len(row) <= name_index or not _name_matches_filter(row[name_index], payment_name_filter)
+        ):
+            continue
+        payment_date = _parse_payment_date(row[payment_date_index])
+        if not _payment_date_is_in_range(payment_date, payment_date_from, payment_date_to):
+            continue
+        has_update_status = any("update status" in _clean_cell(cell).casefold() for cell in row)
+        transaction_id = _clean_cell(row[transaction_id_index])
+        if has_update_status and transaction_id:
+            pending_ids.append(transaction_id)
+    return pending_ids
+
+
+def _has_reached_payment_date_lower_bound(
+    rows: Sequence[Sequence[str]],
+    headers: Sequence[str],
+    payment_date_from: date | None,
+) -> bool:
+    """Return whether a descending payment-date table has passed the lower bound."""
+    if payment_date_from is None:
+        return False
+    payment_date_index = _header_index(headers, "payment date")
+    for row in rows:
+        if len(row) <= payment_date_index:
+            continue
+        payment_date = _parse_payment_date(row[payment_date_index])
+        if payment_date is not None and payment_date < payment_date_from:
+            return True
+    return False
+
+
+def _payment_date_is_in_range(
+    payment_date: date | None,
+    payment_date_from: date | None,
+    payment_date_to: date | None,
+) -> bool:
+    if payment_date is None:
+        return False
+    if payment_date_from is not None and payment_date < payment_date_from:
+        return False
+    return payment_date_to is None or payment_date <= payment_date_to
+
+
+def _name_matches_filter(value: str, name_filter: str) -> bool:
+    """Match a trimmed, case-insensitive name fragment from the first table column."""
+    return name_filter.strip().lower() in value.strip().lower()
+
+
+async def _click_update_status_for_transaction(
+    page: Page,
+    headers: Sequence[str],
+    transaction_id: str,
+) -> str:
+    transaction_id_index = _header_index(headers, _TRANSACTION_ID_HEADER)
+    status_index = _header_index(headers, "status")
+    await _set_table_search(page, transaction_id)
+    await page.wait_for_function(
+        _TRANSACTION_ROW_VISIBLE_SCRIPT,
+        arg={
+            "transactionId": transaction_id,
+            "transactionIdIndex": transaction_id_index,
+        },
+        timeout=30_000,
+    )
+    row_index = await page.evaluate(
+        _FIND_TRANSACTION_ROW_SCRIPT,
+        {"transactionId": transaction_id, "transactionIdIndex": transaction_id_index},
+    )
+    if not isinstance(row_index, int) or row_index < 0:
+        raise RuntimeError(f"Could not find transaction {transaction_id} after searching the table.")
+
+    update_link = (
+        page.locator(f"{_TABLE_SELECTOR} tbody tr")
+        .nth(row_index)
+        .locator(_UPDATE_STATUS_LINK_SELECTOR)
+        .filter(has_text=re.compile(r"update\s+status", re.IGNORECASE))
+        .first
+    )
+    if await update_link.count() == 0:
+        raise RuntimeError(f"Transaction {transaction_id} no longer has an Update Status action.")
+    async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000):
+        await update_link.click()
+    await page.locator(_TABLE_SELECTOR).wait_for(state="visible", timeout=120_000)
+    await _set_table_search(page, transaction_id)
+    await page.wait_for_function(
+        _TRANSACTION_ROW_VISIBLE_SCRIPT,
+        arg={
+            "transactionId": transaction_id,
+            "transactionIdIndex": transaction_id_index,
+        },
+        timeout=30_000,
+    )
+    row_index = await page.evaluate(
+        _FIND_TRANSACTION_ROW_SCRIPT,
+        {"transactionId": transaction_id, "transactionIdIndex": transaction_id_index},
+    )
+    if not isinstance(row_index, int) or row_index < 0:
+        raise RuntimeError(f"Could not validate transaction {transaction_id} after updating its status.")
+    updated_status = _clean_cell(
+        await page.locator(f"{_TABLE_SELECTOR} tbody tr")
+        .nth(row_index)
+        .locator("td")
+        .nth(status_index)
+        .inner_text()
+    )
+    return updated_status
+
+
 async def _collect_table_pages(
     page: Page,
     report_status: Callable[[str], None],
@@ -295,14 +602,11 @@ async def _collect_table_pages(
     *,
     payment_date_from: date | None = None,
     payment_date_to: date | None = None,
+    payment_name_filter: str = "",
 ) -> tuple[list[str], list[list[str]]]:
     if controls is not None:
         await controls.checkpoint()
-    await _select_page_size(page)
-    header_values = await page.locator(f"{_TABLE_SELECTOR} thead th").all_inner_texts()
-    raw_headers = [_clean_cell(value) for value in header_values]
-    if not raw_headers:
-        raise RuntimeError("The payment transaction table has no column headers.")
+    raw_headers = await _payment_table_headers(page, payment_name_filter)
 
     headers = [*raw_headers, "eStamp Download URL", "User ID"]
 
@@ -317,12 +621,19 @@ async def _collect_table_pages(
             raw_headers,
             payment_date_from=payment_date_from,
             payment_date_to=payment_date_to,
+            payment_name_filter=payment_name_filter,
         )
         rows.extend(matching_rows)
         report_status(
             f"Collected {len(rows)} successful transaction(s), page {page_number} "
             f"({len(matching_rows)} matched on this page)..."
         )
+
+        if _has_reached_payment_date_lower_bound(
+            current_rows, raw_headers, payment_date_from
+        ):
+            report_status("Reached the lower payment-date filter bound.")
+            break
 
         next_page = page.locator(_NEXT_PAGE_SELECTOR)
         classes = (await next_page.get_attribute("class") or "").casefold()
@@ -342,13 +653,19 @@ def _successful_rows_in_payment_date_range(
     *,
     payment_date_from: date | None,
     payment_date_to: date | None,
+    payment_name_filter: str = "",
 ) -> list[list[str]]:
     """Keep only successful payments inside the optional inclusive date range."""
     status_index = _header_index(headers, "status")
     payment_date_index = _header_index(headers, "payment date")
+    name_index = 0 if payment_name_filter.strip() else None
     selected: list[list[str]] = []
     for row in rows:
         if len(row) <= max(status_index, payment_date_index):
+            continue
+        if name_index is not None and (
+            len(row) <= name_index or not _name_matches_filter(row[name_index], payment_name_filter)
+        ):
             continue
         if _clean_cell(row[status_index]).casefold() != "success":
             continue
