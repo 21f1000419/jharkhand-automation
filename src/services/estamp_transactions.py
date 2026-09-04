@@ -224,8 +224,6 @@ async def export_payment_transactions_for_target(
             page,
             lambda msg: report_status(f"{target.name}: {msg}"),
             controls,
-            payment_date_from=target.payment_date_from,
-            payment_date_to=target.payment_date_to,
             payment_name_filter=target.payment_name_filter,
         )
         headers, rows = await _collect_table_pages(
@@ -334,27 +332,34 @@ async def _resolve_pending_payment_statuses(
     report_status: Callable[[str], None],
     controls: RunControls | None = None,
     *,
-    payment_date_from: date | None = None,
-    payment_date_to: date | None = None,
     payment_name_filter: str = "",
 ) -> None:
-    """Refresh pending rows in range before collecting successful transactions.
+    """Refresh every pending row before collecting successful transactions.
 
     The portal reloads after every status refresh, which resets DataTables. Each
     click therefore finds its row again by transaction ID through the table's
     search field instead of relying on a page number or row position.
     """
+    scan_scope = (
+        f"transactions matching name '{payment_name_filter.strip()}'"
+        if payment_name_filter.strip()
+        else "transactions"
+    )
+    report_status(
+        f"Scanning all pages of {scan_scope} for Update Status actions before applying "
+        "the date filter..."
+    )
     raw_headers = await _payment_table_headers(page, payment_name_filter)
     pending_ids = await _collect_pending_status_transaction_ids(
         page,
         raw_headers,
         controls,
-        payment_date_from=payment_date_from,
-        payment_date_to=payment_date_to,
         payment_name_filter=payment_name_filter,
     )
     if pending_ids:
         report_status(f"Found {len(pending_ids)} transaction(s) awaiting a status update.")
+    else:
+        report_status("No transactions currently require a status update.")
 
     previous_count: int | None = None
     while pending_ids:
@@ -387,8 +392,6 @@ async def _resolve_pending_payment_statuses(
             page,
             raw_headers,
             controls,
-            payment_date_from=payment_date_from,
-            payment_date_to=payment_date_to,
             payment_name_filter=payment_name_filter,
         )
         if pending_ids:
@@ -396,6 +399,7 @@ async def _resolve_pending_payment_statuses(
 
     # The status scan can end on any DataTables page. Start the export pass at page one.
     await _open_transactions_first_page(page)
+    report_status("Status update pass finished. Applying export filters...")
 
 
 async def _open_transactions_first_page(page: Page) -> None:
@@ -435,31 +439,21 @@ async def _collect_pending_status_transaction_ids(
     headers: Sequence[str],
     controls: RunControls | None = None,
     *,
-    payment_date_from: date | None,
-    payment_date_to: date | None,
-    payment_name_filter: str,
+    payment_name_filter: str = "",
 ) -> list[str]:
-    """Return pending transaction IDs in the selected date range.
-
-    The portal defaults to payment-date descending order. Once a page contains
-    a date before the lower bound, all following pages are outside the range.
-    """
+    """Return every pending transaction ID across all DataTables pages."""
     pending_ids: list[str] = []
     while True:
         if controls is not None:
             await controls.checkpoint()
         current_rows = await _read_current_page(page, len(headers), "")
         pending_ids.extend(
-            _pending_status_transaction_ids_in_payment_date_range(
+            _pending_status_transaction_ids(
                 current_rows,
                 headers,
-                payment_date_from=payment_date_from,
-                payment_date_to=payment_date_to,
                 payment_name_filter=payment_name_filter,
             )
         )
-        if _has_reached_payment_date_lower_bound(current_rows, headers, payment_date_from):
-            break
 
         next_page = page.locator(_NEXT_PAGE_SELECTOR)
         classes = (await next_page.get_attribute("class") or "").casefold()
@@ -472,28 +466,22 @@ async def _collect_pending_status_transaction_ids(
     return list(dict.fromkeys(pending_ids))
 
 
-def _pending_status_transaction_ids_in_payment_date_range(
+def _pending_status_transaction_ids(
     rows: Sequence[Sequence[str]],
     headers: Sequence[str],
     *,
-    payment_date_from: date | None,
-    payment_date_to: date | None,
     payment_name_filter: str = "",
 ) -> list[str]:
-    """Find in-range rows that expose the portal's Update Status action."""
+    """Find every row that exposes the portal's Update Status action."""
     transaction_id_index = _header_index(headers, _TRANSACTION_ID_HEADER)
-    payment_date_index = _header_index(headers, "payment date")
     name_index = 0 if payment_name_filter.strip() else None
     pending_ids: list[str] = []
     for row in rows:
-        if len(row) <= max(transaction_id_index, payment_date_index):
+        if len(row) <= transaction_id_index:
             continue
         if name_index is not None and (
             len(row) <= name_index or not _name_matches_filter(row[name_index], payment_name_filter)
         ):
-            continue
-        payment_date = _parse_payment_date(row[payment_date_index])
-        if not _payment_date_is_in_range(payment_date, payment_date_from, payment_date_to):
             continue
         has_update_status = any("update status" in _clean_cell(cell).casefold() for cell in row)
         transaction_id = _clean_cell(row[transaction_id_index])
@@ -518,18 +506,6 @@ def _has_reached_payment_date_lower_bound(
         if payment_date is not None and payment_date < payment_date_from:
             return True
     return False
-
-
-def _payment_date_is_in_range(
-    payment_date: date | None,
-    payment_date_from: date | None,
-    payment_date_to: date | None,
-) -> bool:
-    if payment_date is None:
-        return False
-    if payment_date_from is not None and payment_date < payment_date_from:
-        return False
-    return payment_date_to is None or payment_date <= payment_date_to
 
 
 def _name_matches_filter(value: str, name_filter: str) -> bool:

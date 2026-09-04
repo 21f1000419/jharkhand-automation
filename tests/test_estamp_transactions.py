@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.estamp_transactions import (
+    _collect_pending_status_transaction_ids,
     _has_reached_payment_date_lower_bound,
-    _pending_status_transaction_ids_in_payment_date_range,
+    _pending_status_transaction_ids,
     _successful_rows_in_payment_date_range,
     append_unique_transactions,
 )
@@ -45,34 +48,71 @@ class TransactionExportTests(unittest.TestCase):
 
         self.assertEqual([row[2] for row in name_selected], ["tx-start"])
 
-    def test_finds_pending_rows_with_update_status_only_inside_date_range(self) -> None:
+    def test_finds_name_filtered_pending_rows_regardless_of_blank_dates(self) -> None:
         headers = ["Name", "Payment Date", "Transaction ID", "Status", "Actions"]
         rows = [
             ["Too new", "2026-08-23", "tx-new", "CREATED", "Update Status"],
             [
                 "  Aditya Birla Housing Finance Limited  ",
-                "2026-08-22",
+                "",
                 "tx-pending",
                 "CREATED",
                 "Update Status",
             ],
             ["Another Name", "2026-08-22", "tx-other", "CREATED", "Update Status"],
             ["Success", "2026-08-22", "tx-success", "SUCCESS", "Download eStamp"],
-            ["Too old", "2026-08-20", "tx-old", "CREATED", "Update Status"],
+            [
+                "Aditya Birla Housing Finance Limited",
+                "2026-01-01",
+                "tx-old",
+                "CREATED",
+                "Update Status",
+            ],
         ]
 
-        pending_ids = _pending_status_transaction_ids_in_payment_date_range(
+        pending_ids = _pending_status_transaction_ids(
             rows,
             headers,
-            payment_date_from=date(2026, 8, 21),
-            payment_date_to=date(2026, 8, 22),
             payment_name_filter="aditya",
         )
 
-        self.assertEqual(pending_ids, ["tx-pending"])
+        self.assertEqual(pending_ids, ["tx-pending", "tx-old"])
         self.assertTrue(
             _has_reached_payment_date_lower_bound(rows, headers, date(2026, 8, 21))
         )
+
+    def test_pending_status_scan_visits_every_table_page(self) -> None:
+        headers = ["Name", "Payment Date", "Transaction ID", "Status", "Actions"]
+        first_page = [["First", "", "tx-1", "CREATED", "Update Status"]]
+        second_page = [["Second", "", "tx-2", "CREATED", "Update Status"]]
+        page = MagicMock()
+        next_page = MagicMock()
+        next_page.get_attribute = AsyncMock(side_effect=["paginate_button", "disabled"])
+        next_link = MagicMock()
+        next_link.click = AsyncMock()
+        next_page.locator.return_value = next_link
+        page.locator.return_value = next_page
+
+        with (
+            patch(
+                "services.estamp_transactions._read_current_page",
+                new=AsyncMock(side_effect=[first_page, second_page]),
+            ),
+            patch(
+                "services.estamp_transactions._page_info",
+                new=AsyncMock(return_value="Showing page 1"),
+            ),
+            patch(
+                "services.estamp_transactions._wait_for_page_change",
+                new=AsyncMock(),
+            ),
+        ):
+            pending_ids = asyncio.run(
+                _collect_pending_status_transaction_ids(page, headers)
+            )
+
+        self.assertEqual(pending_ids, ["tx-1", "tx-2"])
+        next_link.click.assert_awaited_once_with()
 
     def test_appends_only_new_transaction_ids(self) -> None:
         headers = ["Name", "Transaction ID", "Status"]
