@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from core.config import AppConfig
 from core.controller import AutomationController, PortalSessionFactory
-from core.models import BrowserEngine, Credentials, PortalBrowser, RunMode, RunOptions
+from core.models import BrowserEngine, Credentials, OcrEngine, PortalBrowser, RunMode, RunOptions
 
 
 class _BlockingWorkflow:
@@ -61,6 +61,30 @@ class _PortalSessionAttempt:
 
     async def close(self) -> None:
         self.is_active = False
+
+
+class _RecordingSolver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def verify_ready(self) -> bool:
+        self.calls.append(("verify", threading.current_thread().name))
+        return True
+
+    async def solve(self, expected_length: int | None = None) -> str:
+        self.calls.append(("solve", threading.current_thread().name, expected_length))
+        return "ABCDEF"
+
+    async def solve_image(
+        self, image_bytes: bytes, expected_length: int | None = None
+    ) -> str:
+        self.calls.append(
+            ("solve_image", threading.current_thread().name, image_bytes, expected_length)
+        )
+        return "ABCDEF"
+
+    async def cancel_active_response(self) -> None:
+        self.calls.append(("cancel", threading.current_thread().name))
 
 
 def _options(run_id: str) -> RunOptions:
@@ -130,6 +154,30 @@ class AutomationControllerTabTests(unittest.TestCase):
                     controller.start("tab-one", _options("second-run"))
             finally:
                 controller.shutdown()
+
+    def test_external_ocr_proxy_runs_local_ocr_on_controller_loop(self) -> None:
+        controller = AutomationController(AppConfig())
+        recording_solver = _RecordingSolver()
+        requested_engines: list[OcrEngine] = []
+
+        async def ensure_solver(engine: OcrEngine) -> _RecordingSolver:
+            requested_engines.append(engine)
+            return recording_solver
+
+        try:
+            with patch.object(controller, "_ensure_ocr_solver", new=ensure_solver):
+                proxy = controller.ocr_solver_for_external_loop(OcrEngine.PADDLEOCR)
+                self.assertTrue(asyncio.run(proxy.verify_ready()))
+                result = asyncio.run(proxy.solve_image(b"captcha", 6))
+
+            self.assertEqual(result, "ABCDEF")
+            self.assertEqual(requested_engines, [OcrEngine.PADDLEOCR, OcrEngine.PADDLEOCR])
+            self.assertEqual(
+                recording_solver.calls,
+                [("solve_image", "automation-worker", b"captcha", 6)],
+            )
+        finally:
+            controller.shutdown()
 
     def test_portal_startup_retries_once_for_only_the_affected_tab(self) -> None:
         attempts: list[_PortalSessionAttempt] = []

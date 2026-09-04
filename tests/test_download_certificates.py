@@ -8,7 +8,7 @@ import tkinter as tk
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.config import AppConfig, TabConfig
 from core.controls import RunControls
@@ -21,6 +21,7 @@ from services.estamp_transactions import (
     append_unique_transactions,
     download_missing_stamps,
     export_payment_transactions_batch,
+    export_payment_transactions_for_target,
 )
 from services.transaction_reconciliation import (
     MissingPdf,
@@ -44,6 +45,39 @@ class DownloadCertificatesTests(unittest.TestCase):
         self.assertEqual(target.name, "ID 1")
         self.assertEqual(target.credentials.citizen_username, "")
         self.assertTrue(target.auto_login)
+
+    def test_target_prewarms_ocr_before_opening_browser(self) -> None:
+        browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)
+        solver = MagicMock()
+        solver.verify_ready = AsyncMock(return_value=True)
+        target = TransactionExportTarget(
+            name="ID 1",
+            browser=browser,
+            profile_path=Path("/tmp/profile"),
+            solver=solver,
+        )
+        statuses: list[str] = []
+
+        def create_session(*_args: object, **_kwargs: object) -> object:
+            solver.verify_ready.assert_awaited_once_with()
+            raise RuntimeError("browser construction reached")
+
+        with (
+            patch(
+                "services.estamp_transactions.PortalBrowserSession",
+                side_effect=create_session,
+            ),
+            self.assertRaisesRegex(RuntimeError, "browser construction reached"),
+        ):
+            asyncio.run(
+                export_payment_transactions_for_target(
+                    target,
+                    Path("transactions.csv"),
+                    statuses.append,
+                )
+            )
+
+        self.assertEqual(statuses, ["ID 1: Preparing CAPTCHA OCR..."])
 
     def test_export_payment_transactions_batch_aggregates_results(self) -> None:
         browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)

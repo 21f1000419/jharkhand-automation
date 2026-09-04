@@ -676,19 +676,9 @@ class DownloadUndownloadedCertificatesDialog:
 
     def _get_solver_for_engine(self, engine: OcrEngine) -> CaptchaSolver | None:
         try:
-            if engine == OcrEngine.PADDLEOCR:
-                from services.paddleocr_ocr import PaddleOcrCaptchaSolver
-
-                return PaddleOcrCaptchaSolver()
-            elif engine == OcrEngine.EASYOCR:
-                from services.gemini_ocr import EasyOcrCaptchaSolver
-
-                return EasyOcrCaptchaSolver()
-            elif engine == OcrEngine.GEMINI:
-                # The export runs on a separate asyncio loop.  Do not return
-                # controller.solver directly: its browser and asyncio lock
-                # belong to the controller's worker thread.
-                return self.owner.controller.gemini_solver_for_external_loop()
+            # The export has its own asyncio loop. Keep every OCR engine on
+            # the controller loop where its model and lock were created.
+            return self.owner.controller.ocr_solver_for_external_loop(engine)
         except Exception as error:
             self._append_log(f"Could not start {engine.value} CAPTCHA OCR: {error}")
         return None

@@ -10,6 +10,7 @@ from PIL import Image
 
 from core.resources import bundled_path
 from services.captcha_ocr import normalize_captcha
+from services.windows_qos import high_performance_thread
 
 MODEL_NAME = "PP-OCRv6_medium_rec"
 MODEL_DIRECTORY = "assets/paddleocr/PP-OCRv6_medium_rec"
@@ -46,48 +47,50 @@ class PaddleOcrCaptchaSolver:
 
     @staticmethod
     def _create_model() -> Any:
-        model_path = bundled_path(MODEL_DIRECTORY)
-        if not model_path.is_dir():
-            raise RuntimeError(f"Bundled PaddleOCR model is missing: {model_path}")
+        with high_performance_thread():
+            model_path = bundled_path(MODEL_DIRECTORY)
+            if not model_path.is_dir():
+                raise RuntimeError(f"Bundled PaddleOCR model is missing: {model_path}")
 
-        # Do not allow PaddleX to start host availability checks or downloads.
-        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-        os.environ.setdefault("OMP_NUM_THREADS", "1")
-        os.environ.setdefault("MKL_NUM_THREADS", "1")
-        try:
-            from paddleocr import TextRecognition  # type: ignore[import-untyped]
-        except ImportError as error:  # pragma: no cover - environment-dependent dependency
-            raise RuntimeError(f"PaddleOCR could not be imported: {error}") from error
+            # Do not allow PaddleX to start host availability checks or downloads.
+            os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+            os.environ.setdefault("OMP_NUM_THREADS", "1")
+            os.environ.setdefault("MKL_NUM_THREADS", "1")
+            try:
+                from paddleocr import TextRecognition  # type: ignore[import-untyped]
+            except ImportError as error:  # pragma: no cover - environment-dependent dependency
+                raise RuntimeError(f"PaddleOCR could not be imported: {error}") from error
 
-        try:
-            return TextRecognition(
-                model_name=MODEL_NAME,
-                model_dir=str(model_path),
-                device="cpu",
-                engine="paddle_static",
-            )
-        except RuntimeError as error:
-            # PaddleOCR replaces PaddleX's useful DependencyError with a
-            # generic message. Preserve the underlying detail in our log/UI
-            # so a future packaging omission can be diagnosed directly.
-            if error.__cause__ is not None:
-                raise RuntimeError(
-                    f"PaddleOCR predictor setup failed: {error.__cause__}"
-                ) from error
-            raise
+            try:
+                return TextRecognition(
+                    model_name=MODEL_NAME,
+                    model_dir=str(model_path),
+                    device="cpu",
+                    engine="paddle_static",
+                )
+            except RuntimeError as error:
+                # PaddleOCR replaces PaddleX's useful DependencyError with a
+                # generic message. Preserve the underlying detail in our log/UI
+                # so a future packaging omission can be diagnosed directly.
+                if error.__cause__ is not None:
+                    raise RuntimeError(
+                        f"PaddleOCR predictor setup failed: {error.__cause__}"
+                    ) from error
+                raise
 
     @staticmethod
     def _solve_image_sync(model: Any, image_bytes: bytes, expected_length: int | None) -> str:
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            image_data = np.asarray(image.convert("RGB"))
-        output = model.predict(input=image_data, batch_size=1)
-        try:
-            item = next(iter(output))
-            json_value = item.json
-            payload = json_value() if callable(json_value) else json_value
-            raw = str(payload["res"]["rec_text"])
-        except (KeyError, StopIteration, TypeError, ValueError) as error:
-            raise RuntimeError("PaddleOCR did not return a usable CAPTCHA value.") from error
+        with high_performance_thread():
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                image_data = np.asarray(image.convert("RGB"))
+            output = model.predict(input=image_data, batch_size=1)
+            try:
+                item = next(iter(output))
+                json_value = item.json
+                payload = json_value() if callable(json_value) else json_value
+                raw = str(payload["res"]["rec_text"])
+            except (KeyError, StopIteration, TypeError, ValueError) as error:
+                raise RuntimeError("PaddleOCR did not return a usable CAPTCHA value.") from error
 
         result = normalize_captcha(raw, expected_length)
         if not result:

@@ -174,6 +174,9 @@ async def export_payment_transactions_for_target(
 ) -> TransactionExportSummary:
     """Open a browser for a target ID, sign in (automatically or manually), and export transactions."""
     controls = controls or RunControls(lambda _e: None)
+    if target.solver is not None:
+        report_status(f"{target.name}: Preparing CAPTCHA OCR...")
+        await target.solver.verify_ready()
     session = PortalBrowserSession(
         target.browser,
         lambda _session: None,
