@@ -117,6 +117,27 @@ function sendOtp(response, entry) {
   return sendJson(response, 200, payload);
 }
 
+function lookupClient(request) {
+  return request.socket.remoteAddress || "unknown";
+}
+
+function logMainOtpLookup(request, userId, rawNotBefore, notBeforeTimestamp, entry, result) {
+  const timestamp = new Date().toISOString();
+  const notBefore =
+    notBeforeTimestamp === null ? "<not set>" : new Date(notBeforeTimestamp).toISOString();
+  const entryDetails = entry
+    ? `stored OTP: ${entry.otp}, receivedAt: ${entry.receivedAt}, ` +
+      `receivedAtMs: ${entry.receivedAtMs}, deltaMs: ${
+        notBeforeTimestamp === null ? "n/a" : entry.receivedAtMs - notBeforeTimestamp
+      }`
+    : "stored OTP: <none>";
+  console.log(
+    `[${timestamp}] Main OTP lookup - User ID: ${userId}, Client: ${lookupClient(request)}, ` +
+      `notBefore raw: ${rawNotBefore || "<not set>"}, notBefore parsed: ${notBefore}, ` +
+      `${entryDetails}, Result: ${result}`,
+  );
+}
+
 async function deleteMatchingOtp(request, response, pendingOtps, key) {
   const body = await getJsonBody(request);
   const otp = cleanText(body.otp).toUpperCase();
@@ -226,12 +247,19 @@ function createRequestHandler(pendingOtps = new Map()) {
       }
 
       removeExpiredOtps(pendingOtps);
+      const rawNotBefore = url.searchParams.get("notBefore");
       const notBefore = readNotBefore(url, response);
       if (!notBefore.valid) return;
       const entry = pendingOtps.get(mainKey(userId));
-      if (!entry || (notBefore.timestamp !== null && entry.receivedAtMs < notBefore.timestamp)) {
+      if (!entry) {
+        logMainOtpLookup(request, userId, rawNotBefore, notBefore.timestamp, null, "not found");
         return sendJson(response, 404, { found: false });
       }
+      if (notBefore.timestamp !== null && entry.receivedAtMs < notBefore.timestamp) {
+        logMainOtpLookup(request, userId, rawNotBefore, notBefore.timestamp, entry, "rejected as stale");
+        return sendJson(response, 404, { found: false });
+      }
+      logMainOtpLookup(request, userId, rawNotBefore, notBefore.timestamp, entry, "found");
       return sendOtp(response, entry);
     }
 
