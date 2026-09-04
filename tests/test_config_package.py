@@ -82,10 +82,13 @@ class ConfigPackageTests(TestCase):
             credentials_saved=True,
         )
         package = create_export_package(app_config, [tab_data])
-        self.assertEqual(package["version"], 1)
-        self.assertEqual(package["global_config"]["chrome_executable"], "C:\\chrome.exe")
+        self.assertEqual(package["version"], 2)
+        self.assertNotIn("global_config", package)
         self.assertEqual(len(package["tabs"]), 1)
         self.assertEqual(package["tabs"][0]["credentials"]["citizen_username"], "citizen_user")
+        self.assertNotIn("tab_id", package["tabs"][0]["tab_config"])
+        self.assertNotIn("portal_profile_path", package["tabs"][0]["tab_config"])
+        self.assertNotIn("profile_number", package["tabs"][0]["tab_config"])
 
     def test_apply_imported_package_replace_mode(self) -> None:
         cred_store = MagicMock()
@@ -101,7 +104,7 @@ class ConfigPackageTests(TestCase):
             "tabs": [
                 {
                     "tab_config": {
-                        "tab_id": 1,
+                        "tab_id": 99,
                         "profile_number": 1,
                         "sms_user_id": "sms1",
                         "last_mode": "continuous",
@@ -127,11 +130,46 @@ class ConfigPackageTests(TestCase):
         )
         self.assertEqual(imported_ids, [1, 2])
         self.assertEqual(len(updated_config.tabs), 2)
-        self.assertEqual(updated_config.chrome_executable, "C:\\Custom\\chrome.exe")
+        self.assertNotEqual(updated_config.chrome_executable, "C:\\Custom\\chrome.exe")
         self.assertEqual(updated_config.get_tab(1).sms_user_id, "sms1")
         self.assertEqual(updated_config.get_tab(1).last_mode, "continuous")
         self.assertEqual(updated_config.get_tab(2).sms_user_id, "sms2")
         self.assertEqual(cred_store.save.call_count, 2)
+
+    def test_old_package_profile_paths_are_ignored_and_local_paths_are_retained(self) -> None:
+        cred_store = MagicMock()
+        local_tab = TabConfig.new(1, 7)
+        local_tab.portal_profile_path = "C:\\Local\\portal-profile-7"
+        app_config = AppConfig(
+            chrome_profile_path="C:\\Local\\ocr-profile",
+            tabs=[local_tab],
+        )
+        package = {
+            "version": 1,
+            "global_config": {"chrome_profile_path": "C:\\Imported\\ocr-profile"},
+            "tabs": [
+                {
+                    "tab_config": {
+                        "tab_id": 1,
+                        "profile_number": 99,
+                        "portal_profile_path": "C:\\Imported\\portal-profile",
+                        "sms_user_id": "imported-sms",
+                    }
+                }
+            ],
+        }
+
+        updated_config, imported_ids = apply_imported_package(
+            package, app_config, cred_store, mode="replace"
+        )
+
+        self.assertEqual(imported_ids, [1])
+        self.assertEqual(updated_config.chrome_profile_path, "C:\\Local\\ocr-profile")
+        self.assertEqual(updated_config.get_tab(1).profile_number, 7)
+        self.assertEqual(
+            updated_config.get_tab(1).portal_profile_path, "C:\\Local\\portal-profile-7"
+        )
+        self.assertEqual(updated_config.get_tab(1).sms_user_id, "imported-sms")
 
     def test_apply_imported_package_merge_mode(self) -> None:
         cred_store = MagicMock()

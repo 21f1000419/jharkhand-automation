@@ -8,7 +8,7 @@ import os
 import secrets
 import struct
 import zlib
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,9 +25,37 @@ HEADER_LEN = MAGIC_LEN + SALT_LEN + MAC_LEN
 DEFAULT_APP_SECRET = b"Compitcom::eStampAutomation::ConfigPackage::Key::v1"
 PBKDF2_ROUNDS = 50_000
 
+# These are the settings a user can fill in on an ID's automation form.  Profile
+# identities intentionally do not travel with an export: they belong to this
+# Windows installation and may contain an active signed-in browser session.
+EXPORTED_TAB_CONFIG_FIELDS = frozenset(
+    {
+        "last_download_path",
+        "last_mode",
+        "last_portal_browser_path",
+        "sms_user_id",
+        "sms_server_url",
+        "payment_trigger_url",
+        "payment_trigger_method",
+        "captcha_copy_mode",
+        "ocr_engine",
+        "ocr_enabled",
+        "last_article",
+        "last_csv_path",
+        "save_captcha_images",
+        "fresh_browser_per_unit",
+        "retry_egras_otp_once",
+    }
+)
+
 
 class ConfigPackageError(Exception):
     """Base exception for config package export and import errors."""
+
+
+def _portable_tab_config(values: dict[str, Any]) -> dict[str, Any]:
+    """Return only the form settings that may move between installations."""
+    return {key: value for key, value in values.items() if key in EXPORTED_TAB_CONFIG_FIELDS}
 
 
 @dataclass
@@ -132,22 +160,24 @@ def create_export_package(
     *,
     include_global_settings: bool = True,
 ) -> dict[str, Any]:
-    """Build a complete export dictionary ready for encryption."""
+    """Build a portable, user-configurable export dictionary ready for encryption.
+
+    ``include_global_settings`` remains accepted for callers from older releases,
+    but global settings are intentionally local and are no longer exported.
+    """
     package: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "app_name": "eStampAutomation",
         "exported_at": datetime.now(UTC).isoformat(),
-        "tabs": [tab.to_dict() for tab in tabs_data],
+        "tabs": [
+            TabExportData(
+                tab_config=_portable_tab_config(tab.tab_config),
+                credentials=tab.credentials,
+                credentials_saved=tab.credentials_saved,
+            ).to_dict()
+            for tab in tabs_data
+        ],
     }
-    if include_global_settings:
-        package["global_config"] = {
-            "chrome_executable": app_config.chrome_executable,
-            "chrome_profile_path": app_config.chrome_profile_path,
-            "gemini_verified": app_config.gemini_verified,
-            "debug_port": app_config.debug_port,
-            "transaction_export_path": app_config.transaction_export_path,
-            "next_profile_number": app_config.next_profile_number,
-        }
     return package
 
 
@@ -220,45 +250,35 @@ def apply_imported_package(
         imported_ids.append(tab.tab_id)
 
     elif mode == "replace":
-        # Overwrite all tabs and global config
-        global_config = package.get("global_config")
-        if isinstance(global_config, dict):
-            if "chrome_executable" in global_config:
-                app_config.chrome_executable = str(global_config["chrome_executable"])
-            if "chrome_profile_path" in global_config:
-                app_config.chrome_profile_path = str(global_config["chrome_profile_path"])
-            if "gemini_verified" in global_config:
-                app_config.gemini_verified = bool(global_config["gemini_verified"])
-            if "debug_port" in global_config:
-                app_config.debug_port = int(global_config["debug_port"])
-            if "transaction_export_path" in global_config:
-                app_config.transaction_export_path = str(global_config["transaction_export_path"])
+        # Global browser and profile settings are local.  Do not restore them
+        # from either current or older package versions.
+        local_profiles_by_id = {
+            tab.tab_id: (tab.profile_number, tab.portal_profile_path)
+            for tab in app_config.tabs
+        }
 
-        # Reconstruct tabs
+        # Reconstruct the tabs, retaining the local browser profile for an ID
+        # when it already exists.  Older packages may include profile fields;
+        # they are intentionally ignored here.
         new_tabs: list[TabConfig] = []
-        seen_ids: set[int] = set()
         seen_profiles: set[int] = set()
 
-        for tab_data in imported_tabs_data:
-            raw_cfg = tab_data.tab_config
-            try:
-                tab_id = int(raw_cfg.get("tab_id", 0))
-                profile_number = int(raw_cfg.get("profile_number", 0))
-            except (ValueError, TypeError):
-                tab_id = 0
-                profile_number = 0
-
-            if tab_id <= 0 or tab_id in seen_ids:
-                tab_id = max(seen_ids, default=0) + 1
-            if profile_number <= 0 or profile_number in seen_profiles:
+        for position, tab_data in enumerate(imported_tabs_data, start=1):
+            raw_cfg = _portable_tab_config(tab_data.tab_config)
+            # IDs are local UI slots.  The package order determines the slot,
+            # so legacy tab_id values are deliberately ignored.
+            tab_id = position
+            local_profile = local_profiles_by_id.get(tab_id)
+            if local_profile is not None and local_profile[0] not in seen_profiles:
+                profile_number, profile_path = local_profile
+            else:
                 profile_number = max(seen_profiles, default=0) + 1
+                profile_path = str(default_portal_profile_path(profile_number))
 
-            seen_ids.add(tab_id)
             seen_profiles.add(profile_number)
 
             tab = TabConfig.from_dict(raw_cfg, tab_id=tab_id, profile_number=profile_number)
-            if not tab.portal_profile_path:
-                tab.portal_profile_path = str(default_portal_profile_path(profile_number))
+            tab.portal_profile_path = profile_path
             new_tabs.append(tab)
             _apply_credentials(tab_data, tab.tab_id, credential_store)
             imported_ids.append(tab.tab_id)
@@ -275,7 +295,7 @@ def apply_imported_package(
         used_profiles = {tab.profile_number for tab in app_config.tabs}
 
         for tab_data in imported_tabs_data:
-            raw_cfg = tab_data.tab_config
+            raw_cfg = _portable_tab_config(tab_data.tab_config)
             # Allocate fresh unused tab_id
             next_id = 1
             while next_id in used_ids:
@@ -305,11 +325,8 @@ def apply_imported_package(
 
 def _apply_tab_dict_to_tab(values: dict[str, Any], target: TabConfig) -> None:
     """Update non-identity fields of a target tab from dictionary values."""
-    preserved = {"tab_id", "profile_number", "portal_profile_path"}
-    allowed = set(asdict(TabConfig()))
-    for key, val in values.items():
-        if key in allowed and key not in preserved:
-            setattr(target, key, val)
+    for key, val in _portable_tab_config(values).items():
+        setattr(target, key, val)
 
 
 def _apply_credentials(
