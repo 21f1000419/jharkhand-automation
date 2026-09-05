@@ -15,6 +15,7 @@ import threading
 import tkinter as tk
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from services.estamp_transactions import (
     TransactionExportTarget,
     download_missing_stamps,
     export_payment_transactions_batch,
+    parse_payment_amount,
 )
 from services.transaction_reconciliation import (
     TransactionReconciliation,
@@ -82,6 +84,7 @@ class DownloadUndownloadedCertificatesDialog:
         self.export_date_to_var = tk.StringVar()
         self.export_date_filter_enabled_var = tk.BooleanVar(value=False)
         self.export_name_filter_var = tk.StringVar()
+        self.export_amount_filter_var = tk.StringVar()
         self.export_date_entries: list[DateEntry] = []
         self.use_chrome_for_all_var = tk.BooleanVar(value=True)
         self.selection_summary_var = tk.StringVar()
@@ -230,6 +233,12 @@ class DownloadUndownloadedCertificatesDialog:
         ttk.Label(date_filter, text="Name contains").grid(row=0, column=5, sticky="w")
         ttk.Entry(date_filter, textvariable=self.export_name_filter_var, width=26).grid(
             row=0, column=6, sticky="ew", padx=(6, 0)
+        )
+        ttk.Label(date_filter, text="Amount").grid(
+            row=0, column=7, sticky="w", padx=(12, 0)
+        )
+        ttk.Entry(date_filter, textvariable=self.export_amount_filter_var, width=14).grid(
+            row=0, column=8, sticky="w", padx=(6, 0)
         )
         date_filter.columnconfigure(6, weight=1)
         self.export_date_entries = [from_date, to_date]
@@ -445,6 +454,13 @@ class DownloadUndownloadedCertificatesDialog:
             return
 
         payment_name_filter = self.export_name_filter_var.get().strip()
+        try:
+            payment_amount_filter = self._parse_export_amount(
+                self.export_amount_filter_var.get()
+            )
+        except ValueError as error:
+            messagebox.showwarning("Export transactions", str(error), parent=self.dialog)
+            return
 
         payment_date_from: datetime.date | None = None
         payment_date_to: datetime.date | None = None
@@ -522,6 +538,7 @@ class DownloadUndownloadedCertificatesDialog:
                     payment_date_from=payment_date_from,
                     payment_date_to=payment_date_to,
                     payment_name_filter=payment_name_filter,
+                    payment_amount_filter=payment_amount_filter,
                 )
             )
             self._append_log(
@@ -583,6 +600,7 @@ class DownloadUndownloadedCertificatesDialog:
                         payment_date_from=payment_date_from,
                         payment_date_to=payment_date_to,
                         payment_name_filter=payment_name_filter,
+                        payment_amount_filter=payment_amount_filter,
                     )
                 )
             browser_info = (
@@ -692,6 +710,16 @@ class DownloadUndownloadedCertificatesDialog:
             return datetime.date.fromisoformat(cleaned)
         except ValueError as error:
             raise ValueError(f"{label} payment date must use YYYY-MM-DD.") from error
+
+    @staticmethod
+    def _parse_export_amount(value: str) -> Decimal | None:
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        amount = parse_payment_amount(cleaned)
+        if amount is None or amount < 0:
+            raise ValueError("Amount must be a valid number, such as 500 or 1,000.00.")
+        return amount
 
     def _update_date_filter_state(self) -> None:
         state = "readonly" if self.export_date_filter_enabled_var.get() else "disabled"

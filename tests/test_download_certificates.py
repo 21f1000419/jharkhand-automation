@@ -91,6 +91,7 @@ class DownloadCertificatesTests(unittest.TestCase):
             output_path: Path,
             report_status: Any,
             controls: RunControls | None = None,
+            append_lock: asyncio.Lock | None = None,
         ) -> TransactionExportSummary:
             if target.name == "ID 1":
                 return TransactionExportSummary(
@@ -140,6 +141,7 @@ class DownloadCertificatesTests(unittest.TestCase):
             output_path: Path,
             report_status: Any,
             controls: RunControls | None = None,
+            append_lock: asyncio.Lock | None = None,
         ) -> TransactionExportSummary:
             if target.name == "ID 1":
                 raise RuntimeError("Login failed")

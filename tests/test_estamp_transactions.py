@@ -5,6 +5,7 @@ import csv
 import tempfile
 import unittest
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,10 +15,47 @@ from services.estamp_transactions import (
     _pending_status_transaction_ids,
     _successful_rows_in_payment_date_range,
     append_unique_transactions,
+    parse_payment_amount,
 )
 
 
 class TransactionExportTests(unittest.TestCase):
+    def test_filters_amount_by_column_value_without_using_table_search(self) -> None:
+        # The live portal places the amount in the third td, at index 2. The fallback covers
+        # layouts where that column's heading does not contain the word Amount.
+        headers = [
+            "Name",
+            "Payment Date",
+            "Stamp value",
+            "Transaction ID",
+            "GRN",
+            "CIN",
+            "Status",
+            "Actions",
+        ]
+        rows = [
+            ["First", "2026-08-22", "Rs. 1,000/-", "tx-1", "", "", "SUCCESS", "Download"],
+            ["Second", "", "1000.00", "tx-2", "", "", "CREATED", "Update Status"],
+            ["Third", "2026-08-22", "999", "tx-3", "", "", "SUCCESS", "Download"],
+        ]
+
+        selected = _successful_rows_in_payment_date_range(
+            rows,
+            headers,
+            payment_date_from=None,
+            payment_date_to=None,
+            payment_amount_filter=Decimal("1000"),
+        )
+        pending_ids = _pending_status_transaction_ids(
+            rows,
+            headers,
+            payment_amount_filter=Decimal("1000.00"),
+        )
+
+        self.assertEqual([row[3] for row in selected], ["tx-1"])
+        self.assertEqual(pending_ids, ["tx-2"])
+        self.assertEqual(parse_payment_amount("₹ 1,000.00"), Decimal("1000.00"))
+
     def test_filters_to_successful_payments_inside_an_inclusive_date_range(self) -> None:
         headers = ["Name", "Payment Date", "Transaction ID", "Status"]
         rows = [

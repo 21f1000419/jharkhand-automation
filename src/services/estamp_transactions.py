@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -116,6 +117,7 @@ class TransactionExportTarget:
     payment_date_from: date | None = None
     payment_date_to: date | None = None
     payment_name_filter: str = ""
+    payment_amount_filter: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +228,7 @@ async def export_payment_transactions_for_target(
             lambda msg: report_status(f"{target.name}: {msg}"),
             controls,
             payment_name_filter=target.payment_name_filter,
+            payment_amount_filter=target.payment_amount_filter,
         )
         headers, rows = await _collect_table_pages(
             page,
@@ -235,6 +238,7 @@ async def export_payment_transactions_for_target(
             payment_date_from=target.payment_date_from,
             payment_date_to=target.payment_date_to,
             payment_name_filter=target.payment_name_filter,
+            payment_amount_filter=target.payment_amount_filter,
         )
         if append_lock is None:
             appended_rows = append_unique_transactions(output_path, headers, rows)
@@ -339,6 +343,7 @@ async def _resolve_pending_payment_statuses(
     controls: RunControls | None = None,
     *,
     payment_name_filter: str = "",
+    payment_amount_filter: Decimal | None = None,
 ) -> None:
     """Refresh every pending row before collecting successful transactions.
 
@@ -346,11 +351,12 @@ async def _resolve_pending_payment_statuses(
     click therefore finds its row again by transaction ID through the table's
     search field instead of relying on a page number or row position.
     """
-    scan_scope = (
-        f"transactions matching name '{payment_name_filter.strip()}'"
-        if payment_name_filter.strip()
-        else "transactions"
-    )
+    filters: list[str] = []
+    if payment_name_filter.strip():
+        filters.append(f"name '{payment_name_filter.strip()}'")
+    if payment_amount_filter is not None:
+        filters.append(f"amount {payment_amount_filter}")
+    scan_scope = f"transactions matching {' and '.join(filters)}" if filters else "transactions"
     report_status(
         f"Scanning all pages of {scan_scope} for Update Status actions before applying "
         "the date filter..."
@@ -361,6 +367,7 @@ async def _resolve_pending_payment_statuses(
         raw_headers,
         controls,
         payment_name_filter=payment_name_filter,
+        payment_amount_filter=payment_amount_filter,
     )
     if pending_ids:
         report_status(f"Found {len(pending_ids)} transaction(s) awaiting a status update.")
@@ -399,6 +406,7 @@ async def _resolve_pending_payment_statuses(
             raw_headers,
             controls,
             payment_name_filter=payment_name_filter,
+            payment_amount_filter=payment_amount_filter,
         )
         if pending_ids:
             report_status(f"{len(pending_ids)} transaction(s) still await a status update.")
@@ -446,6 +454,7 @@ async def _collect_pending_status_transaction_ids(
     controls: RunControls | None = None,
     *,
     payment_name_filter: str = "",
+    payment_amount_filter: Decimal | None = None,
 ) -> list[str]:
     """Return every pending transaction ID across all DataTables pages."""
     pending_ids: list[str] = []
@@ -458,6 +467,7 @@ async def _collect_pending_status_transaction_ids(
                 current_rows,
                 headers,
                 payment_name_filter=payment_name_filter,
+                payment_amount_filter=payment_amount_filter,
             )
         )
 
@@ -477,6 +487,7 @@ def _pending_status_transaction_ids(
     headers: Sequence[str],
     *,
     payment_name_filter: str = "",
+    payment_amount_filter: Decimal | None = None,
 ) -> list[str]:
     """Find every row that exposes the portal's Update Status action."""
     transaction_id_index = _header_index(headers, _TRANSACTION_ID_HEADER)
@@ -489,6 +500,12 @@ def _pending_status_transaction_ids(
             len(row) <= name_index or not _name_matches_filter(row[name_index], payment_name_filter)
         ):
             continue
+        if payment_amount_filter is not None:
+            amount_index = _amount_column_index(headers)
+            if len(row) <= amount_index or not _amount_matches_filter(
+                row[amount_index], payment_amount_filter
+            ):
+                continue
         has_update_status = any("update status" in _clean_cell(cell).casefold() for cell in row)
         transaction_id = _clean_cell(row[transaction_id_index])
         if has_update_status and transaction_id:
@@ -588,6 +605,7 @@ async def _collect_table_pages(
     payment_date_from: date | None = None,
     payment_date_to: date | None = None,
     payment_name_filter: str = "",
+    payment_amount_filter: Decimal | None = None,
 ) -> tuple[list[str], list[list[str]]]:
     if controls is not None:
         await controls.checkpoint()
@@ -607,6 +625,7 @@ async def _collect_table_pages(
             payment_date_from=payment_date_from,
             payment_date_to=payment_date_to,
             payment_name_filter=payment_name_filter,
+            payment_amount_filter=payment_amount_filter,
         )
         rows.extend(matching_rows)
         report_status(
@@ -639,8 +658,9 @@ def _successful_rows_in_payment_date_range(
     payment_date_from: date | None,
     payment_date_to: date | None,
     payment_name_filter: str = "",
+    payment_amount_filter: Decimal | None = None,
 ) -> list[list[str]]:
-    """Keep only successful payments inside the optional inclusive date range."""
+    """Keep successful payments that match the optional date, name, and amount filters."""
     status_index = _header_index(headers, "status")
     payment_date_index = _header_index(headers, "payment date")
     name_index = 0 if payment_name_filter.strip() else None
@@ -652,6 +672,12 @@ def _successful_rows_in_payment_date_range(
             len(row) <= name_index or not _name_matches_filter(row[name_index], payment_name_filter)
         ):
             continue
+        if payment_amount_filter is not None:
+            amount_index = _amount_column_index(headers)
+            if len(row) <= amount_index or not _amount_matches_filter(
+                row[amount_index], payment_amount_filter
+            ):
+                continue
         if _clean_cell(row[status_index]).casefold() != "success":
             continue
         payment_date = _parse_payment_date(row[payment_date_index])
@@ -673,6 +699,35 @@ def _header_index(headers: Sequence[str], expected_header: str) -> int:
     raise RuntimeError(
         f"The payment transaction table does not include a {expected_header.title()} column."
     )
+
+
+def _amount_column_index(headers: Sequence[str]) -> int:
+    """Find the amount column, falling back to the portal's third cell."""
+    for index, header in enumerate(headers):
+        if "amount" in _normalize_header(header):
+            return index
+    if len(headers) > 2:
+        return 2
+    raise RuntimeError("The payment transaction table does not include an Amount column.")
+
+
+def _amount_matches_filter(value: str, expected: Decimal) -> bool:
+    amount = parse_payment_amount(value)
+    return amount is not None and amount == expected
+
+
+def parse_payment_amount(value: str) -> Decimal | None:
+    """Parse plain and currency-formatted rupee amounts for exact comparison."""
+    cleaned = _clean_cell(value).replace(",", "")
+    if not cleaned:
+        return None
+    cleaned = re.sub(r"^(?:rs\.?|inr|₹)\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*(?:/-|rs\.?|inr|₹)$", "", cleaned, flags=re.IGNORECASE)
+    try:
+        amount = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    return amount if amount.is_finite() else None
 
 
 def _parse_payment_date(value: str) -> date | None:
