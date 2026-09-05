@@ -171,6 +171,7 @@ async def export_payment_transactions_for_target(
     output_path: Path,
     report_status: Callable[[str], None],
     controls: RunControls | None = None,
+    append_lock: asyncio.Lock | None = None,
 ) -> TransactionExportSummary:
     """Open a browser for a target ID, sign in (automatically or manually), and export transactions."""
     controls = controls or RunControls(lambda _e: None)
@@ -235,7 +236,11 @@ async def export_payment_transactions_for_target(
             payment_date_to=target.payment_date_to,
             payment_name_filter=target.payment_name_filter,
         )
-        appended_rows = append_unique_transactions(output_path, headers, rows)
+        if append_lock is None:
+            appended_rows = append_unique_transactions(output_path, headers, rows)
+        else:
+            async with append_lock:
+                appended_rows = append_unique_transactions(output_path, headers, rows)
         return TransactionExportSummary(
             scraped_rows=len(rows),
             appended_rows=appended_rows,
@@ -274,49 +279,50 @@ async def export_payment_transactions_batch(
     controls: RunControls | None = None,
     on_target_finished: Callable[[TransactionExportSummary], None] | None = None,
 ) -> BatchTransactionExportSummary:
-    """Fetch transactions for each target ID sequentially, opening/closing the browser for each."""
+    """Fetch transactions for all target IDs concurrently while serializing CSV writes."""
     controls = controls or RunControls(lambda _e: None)
-    results: list[TransactionExportSummary] = []
-    total_scraped = 0
-    total_appended = 0
-    total_skipped = 0
+    append_lock = asyncio.Lock()
 
-    for index, target in enumerate(targets, start=1):
+    async def run_target(index: int, target: TransactionExportTarget) -> TransactionExportSummary:
         await controls.checkpoint()
         prefix = f"[{index}/{len(targets)}] {target.name}"
         report_status(f"{prefix}: Starting transaction fetch...")
         try:
             summary = await export_payment_transactions_for_target(
-                target, output_path, report_status, controls
+                target,
+                output_path,
+                report_status,
+                controls,
+                append_lock=append_lock,
             )
-            results.append(summary)
-            total_scraped += summary.scraped_rows
-            total_appended += summary.appended_rows
-            total_skipped += summary.skipped_duplicates
             report_status(
                 f"{prefix}: Finished ({summary.scraped_rows} found, {summary.appended_rows} new)."
             )
             if on_target_finished is not None:
                 with suppress(Exception):
                     on_target_finished(summary)
+            return summary
         except WorkflowStopped:
             raise
         except Exception as error:
             error_msg = str(error)
-            results.append(
-                TransactionExportSummary(
-                    scraped_rows=0,
-                    appended_rows=0,
-                    skipped_duplicates=0,
-                    output_path=output_path,
-                    target_name=target.name,
-                    error=error_msg,
-                )
-            )
             report_status(f"{prefix}: Error - {error_msg}")
+            return TransactionExportSummary(
+                scraped_rows=0,
+                appended_rows=0,
+                skipped_duplicates=0,
+                output_path=output_path,
+                target_name=target.name,
+                error=error_msg,
+            )
 
-        if index < len(targets):
-            await asyncio.sleep(0.5)
+    results = await asyncio.gather(
+        *(run_target(index, target) for index, target in enumerate(targets, start=1))
+    )
+
+    total_scraped = sum(summary.scraped_rows for summary in results)
+    total_appended = sum(summary.appended_rows for summary in results)
+    total_skipped = sum(summary.skipped_duplicates for summary in results)
 
     return BatchTransactionExportSummary(
         scraped_rows=total_scraped,
