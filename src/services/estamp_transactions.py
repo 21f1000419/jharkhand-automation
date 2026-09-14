@@ -118,6 +118,7 @@ class TransactionExportTarget:
     payment_date_to: date | None = None
     payment_name_filter: str = ""
     payment_amount_filter: Decimal | None = None
+    skip_status_updates: bool = False
 
 
 @dataclass(frozen=True)
@@ -223,13 +224,18 @@ async def export_payment_transactions_for_target(
         report_status(f"{target.name}: Opening eStamp payment transactions...")
         await page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded", timeout=60_000)
         await page.locator(_TABLE_SELECTOR).wait_for(state="visible", timeout=120_000)
-        await _resolve_pending_payment_statuses(
-            page,
-            lambda msg: report_status(f"{target.name}: {msg}"),
-            controls,
-            payment_name_filter=target.payment_name_filter,
-            payment_amount_filter=target.payment_amount_filter,
-        )
+        if target.skip_status_updates:
+            report_status(
+                f"{target.name}: Skipping Update Status checks. Collecting successful transactions only..."
+            )
+        else:
+            await _resolve_pending_payment_statuses(
+                page,
+                lambda msg: report_status(f"{target.name}: {msg}"),
+                controls,
+                payment_name_filter=target.payment_name_filter,
+                payment_amount_filter=target.payment_amount_filter,
+            )
         headers, rows = await _collect_table_pages(
             page,
             lambda msg: report_status(f"{target.name}: {msg}"),

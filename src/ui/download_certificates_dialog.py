@@ -85,6 +85,7 @@ class DownloadUndownloadedCertificatesDialog:
         self.export_date_filter_enabled_var = tk.BooleanVar(value=False)
         self.export_name_filter_var = tk.StringVar()
         self.export_amount_filter_var = tk.StringVar()
+        self.skip_status_updates_var = tk.BooleanVar(value=False)
         self.export_date_entries: list[DateEntry] = []
         self.use_chrome_for_all_var = tk.BooleanVar(value=True)
         self.selection_summary_var = tk.StringVar()
@@ -240,6 +241,16 @@ class DownloadUndownloadedCertificatesDialog:
         ttk.Entry(date_filter, textvariable=self.export_amount_filter_var, width=14).grid(
             row=0, column=8, sticky="w", padx=(6, 0)
         )
+        ttk.Checkbutton(
+            date_filter,
+            text="Skip Update Status checks",
+            variable=self.skip_status_updates_var,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(
+            date_filter,
+            text="Only existing SUCCESS transactions will be checked for missing PDFs.",
+            foreground="#555555",
+        ).grid(row=1, column=4, columnspan=5, sticky="w", pady=(6, 0))
         date_filter.columnconfigure(6, weight=1)
         self.export_date_entries = [from_date, to_date]
         self._update_date_filter_state()
@@ -454,6 +465,7 @@ class DownloadUndownloadedCertificatesDialog:
             return
 
         payment_name_filter = self.export_name_filter_var.get().strip()
+        skip_status_updates = self.skip_status_updates_var.get()
         try:
             payment_amount_filter = self._parse_export_amount(
                 self.export_amount_filter_var.get()
@@ -539,6 +551,7 @@ class DownloadUndownloadedCertificatesDialog:
                     payment_date_to=payment_date_to,
                     payment_name_filter=payment_name_filter,
                     payment_amount_filter=payment_amount_filter,
+                    skip_status_updates=skip_status_updates,
                 )
             )
             self._append_log(
@@ -601,6 +614,7 @@ class DownloadUndownloadedCertificatesDialog:
                         payment_date_to=payment_date_to,
                         payment_name_filter=payment_name_filter,
                         payment_amount_filter=payment_amount_filter,
+                        skip_status_updates=skip_status_updates,
                     )
                 )
             browser_info = (

@@ -45,6 +45,18 @@ class DownloadCertificatesTests(unittest.TestCase):
         self.assertEqual(target.name, "ID 1")
         self.assertEqual(target.credentials.citizen_username, "")
         self.assertTrue(target.auto_login)
+        self.assertFalse(target.skip_status_updates)
+
+    def test_target_can_skip_status_updates(self) -> None:
+        browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)
+        target = TransactionExportTarget(
+            name="ID 1",
+            browser=browser,
+            profile_path=Path("/tmp/profile"),
+            skip_status_updates=True,
+        )
+
+        self.assertTrue(target.skip_status_updates)
 
     def test_target_prewarms_ocr_before_opening_browser(self) -> None:
         browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)
@@ -78,6 +90,49 @@ class DownloadCertificatesTests(unittest.TestCase):
             )
 
         self.assertEqual(statuses, ["ID 1: Preparing CAPTCHA OCR..."])
+
+    def test_target_skips_status_updates_when_requested(self) -> None:
+        browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)
+        target = TransactionExportTarget(
+            name="ID 1",
+            browser=browser,
+            profile_path=Path("/tmp/profile"),
+            auto_login=False,
+            skip_status_updates=True,
+        )
+        table = MagicMock()
+        table.wait_for = AsyncMock()
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.locator.return_value = table
+        session = MagicMock()
+        session.new_portal_page = AsyncMock(return_value=page)
+        session.close = AsyncMock()
+        headers = ["Transaction ID", "Status", "eStamp Download URL", "User ID"]
+        rows = [["tx-1", "SUCCESS", "https://example.test/tx-1", "ID 1"]]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "transactions.csv"
+            with (
+                patch("services.estamp_transactions.PortalBrowserSession", return_value=session),
+                patch("services.estamp_transactions._wait_for_manual_login", new=AsyncMock()),
+                patch(
+                    "services.estamp_transactions._resolve_pending_payment_statuses",
+                    new=AsyncMock(),
+                ) as resolve_statuses,
+                patch(
+                    "services.estamp_transactions._collect_table_pages",
+                    new=AsyncMock(return_value=(headers, rows)),
+                ) as collect_pages,
+            ):
+                summary = asyncio.run(
+                    export_payment_transactions_for_target(target, output_path, lambda _message: None)
+                )
+
+            resolve_statuses.assert_not_awaited()
+            collect_pages.assert_awaited_once()
+            self.assertEqual(summary.scraped_rows, 1)
+            self.assertEqual(summary.appended_rows, 1)
 
     def test_export_payment_transactions_batch_aggregates_results(self) -> None:
         browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)
