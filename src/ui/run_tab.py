@@ -105,6 +105,7 @@ class AutomationTab:
         self.save_captcha_images_var = tk.BooleanVar(value=config.save_captcha_images)
         self.fresh_browser_var = tk.BooleanVar(value=config.fresh_browser_per_unit)
         self.retry_egras_otp_once_var = tk.BooleanVar(value=config.retry_egras_otp_once)
+        self.browser_count_var = tk.IntVar(value=min(20, max(1, config.browser_count)))
         self.portal_browser_var = tk.StringVar(value=self._saved_browser_name())
         self.run_status_var = tk.StringVar(value="Idle" if config.enabled else "Disabled")
         self.profile_var = tk.StringVar(value=config.portal_profile_path)
@@ -324,6 +325,14 @@ class AutomationTab:
             state="readonly",
             width=12,
         ).pack(side="left")
+        ttk.Label(options, text="Browsers").pack(side="left", padx=(8, 3))
+        ttk.Spinbox(
+            options,
+            from_=1,
+            to=20,
+            textvariable=self.browser_count_var,
+            width=4,
+        ).pack(side="left")
         ttk.Checkbutton(options, text="New browser per unit", variable=self.fresh_browser_var).pack(
             side="left", padx=(8, 0)
         )
@@ -350,6 +359,7 @@ class AutomationTab:
             self.ocr_engine_var,
             self.captcha_copy_mode_var,
             self.fresh_browser_var,
+            self.browser_count_var,
             self.save_captcha_images_var,
             self.retry_egras_otp_once_var,
         ):
@@ -434,6 +444,10 @@ class AutomationTab:
         self.config.save_captcha_images = self.save_captcha_images_var.get()
         self.config.fresh_browser_per_unit = self.fresh_browser_var.get()
         self.config.retry_egras_otp_once = self.retry_egras_otp_once_var.get()
+        try:
+            self.config.browser_count = min(20, max(1, int(self.browser_count_var.get())))
+        except (tk.TclError, ValueError):
+            self.config.browser_count = 1
         browser = self._selected_browser()
         if browser is not None:
             self.config.last_portal_browser_path = str(browser.executable)
@@ -525,6 +539,7 @@ class AutomationTab:
         self.save_captcha_images_var.set(self.config.save_captcha_images)
         self.fresh_browser_var.set(self.config.fresh_browser_per_unit)
         self.retry_egras_otp_once_var.set(self.config.retry_egras_otp_once)
+        self.browser_count_var.set(self.config.browser_count)
 
         browser_name = self._saved_browser_name()
         if self.config.custom_portal_browser_path:
@@ -615,6 +630,12 @@ class AutomationTab:
             return "Choose or type an Article."
         if self._selected_browser() is None:
             return "Choose an installed portal browser."
+        try:
+            browser_count = int(self.browser_count_var.get())
+        except (tk.TclError, ValueError):
+            return "Browser count must be a whole number from 1 to 20."
+        if not 1 <= browser_count <= 20:
+            return "Browser count must be from 1 to 20."
         duplicate = self.owner.active_tab_for_csv(csv_path, excluding=self.tab_id)
         if duplicate is not None:
             return f"The same CSV is already active in {duplicate.display_name}."
@@ -664,6 +685,7 @@ class AutomationTab:
             portal_profile_path=profile_path,
             portal_window_accent=self.owner.tab_accent_color(self.tab_id),
             portal_window_label=f"{self.display_name} | {citizen_id_label}",
+            browser_count=self.config.browser_count,
         )
         try:
             self.owner.controller.start(self.run_id, options)
@@ -675,7 +697,9 @@ class AutomationTab:
         self.browser_recovery_pending = False
         self.browser_recovery_ready = False
         self.starting = True
-        self.set_state("Starting", f"Opening {browser.name}")
+        count = self.config.browser_count
+        browser_label = "browser" if count == 1 else "browsers"
+        self.set_state("Starting", f"Opening {count} {browser.name} {browser_label}")
         self._set_buttons()
         return True
 
@@ -705,9 +729,28 @@ class AutomationTab:
         self._set_buttons()
 
     def handle_event(self, event: UiEvent) -> None:
+        try:
+            browser_count = int(event.data.get("browser_count", 1))
+        except (TypeError, ValueError):
+            browser_count = 1
+        worker_label = str(event.data.get("worker_label", "") or "").strip()
+        dock_id = str(event.data.get("dock_id", "") or "").strip() or None
+        if browser_count > 1 and worker_label:
+            log_prefix = f"{self.display_name} {worker_label}"
+        else:
+            log_prefix = self.display_name
         if event.message:
-            self.owner.append_session_log(f"{self.display_name}: {event.message}")
+            self.owner.append_session_log(f"{log_prefix}: {event.message}")
         kind = event.kind
+        group_finished = kind in {
+            "run_started",
+            "run_completed",
+            "run_stopped",
+            "portal_closed",
+            "fatal_error",
+            "session_finished",
+        }
+        state_dock_id = None if group_finished else dock_id
         if kind == "run_started":
             self.browser_recovery_pending = False
             self.browser_recovery_ready = False
@@ -715,23 +758,23 @@ class AutomationTab:
             self.running = True
             self.portal_session_open = True
             self.paused = False
-            self.set_state("Running", event.message)
+            self.set_state("Running", event.message, dock_id=state_dock_id)
         elif kind == "stage":
             stage = event.message.replace("_", " ").title()
-            self.set_state("Running", stage)
+            self.set_state("Running", stage, dock_id=state_dock_id)
         elif kind == "status":
-            self.set_state("Running", event.message)
+            self.set_state("Running", event.message, dock_id=state_dock_id)
         elif kind in {"manual_checkpoint", "paused"}:
             self.paused = True
             self.auto_waiting = bool(event.data.get("auto_continue"))
-            self.set_state("Paused", event.message)
+            self.set_state("Paused", event.message, dock_id=state_dock_id)
         elif kind == "resumed":
             self.paused = False
             self.auto_waiting = False
-            self.set_state("Running", event.message)
+            self.set_state("Running", event.message, dock_id=state_dock_id)
         elif kind == "payment_queue":
             position = event.data.get("position", "?")
-            self.set_state(f"Queued #{position}", event.message)
+            self.set_state(f"Queued #{position}", event.message, dock_id=state_dock_id)
         elif kind == "payment_state":
             state = event.data.get("state")
             if state in {
@@ -740,9 +783,9 @@ class AutomationTab:
                 "qr_ready",
                 "foreground_verified",
             }:
-                self.set_state("Payment", event.message)
+                self.set_state("Payment", event.message, dock_id=state_dock_id)
             elif state == "slot_released" and self.running:
-                self.set_state("Running", event.message)
+                self.set_state("Running", event.message, dock_id=state_dock_id)
         elif kind == "batch_update":
             current_row = event.data.get("current_row")
             current_unit = event.data.get("current_unit")
@@ -756,10 +799,24 @@ class AutomationTab:
             self.auto_waiting = True
             if not self.owner.show_tab_error_in_dock(self, event):
                 self._show_error(event)
-            self.set_state("Error", event.message)
+            self.set_state("Error", event.message, dock_id=state_dock_id)
         elif kind == "notification":
-            show_windows_notification(event.data.get("title", self.display_name), event.message)
+            if browser_count > 1 and worker_label:
+                title = f"{self.display_name} {worker_label}"
+            else:
+                title = event.data.get("title", self.display_name)
+            show_windows_notification(title, event.message)
+        elif kind in {"worker_stopped", "worker_finished"}:
+            # One browser ended while others continue: leave the ID group running.
+            # The dock card for dock_id is removed by the main window handler.
+            return
         elif kind == "browser_closed":
+            if browser_count > 1 and dock_id:
+                # One parallel browser closed; others continue. Show it on that
+                # card only and wait for worker_stopped to remove the card.
+                # No group recovery prompt while the ID is still active.
+                self.set_state("Browser closed", event.message, dock_id=dock_id)
+                return
             offer_recovery = self.owner.should_offer_browser_recovery(self)
             self.starting = False
             self.running = False
@@ -770,16 +827,16 @@ class AutomationTab:
             self.browser_recovery_ready = False
             if offer_recovery:
                 message = "This browser was closed. Finishing cleanup before it can restart..."
-                self.set_state("Browser closed", message)
-                self.owner.show_browser_recovery(self, message, ready=False)
+                self.set_state("Browser closed", message, dock_id=state_dock_id)
+                self.owner.show_browser_recovery(self, message, ready=False, dock_id=state_dock_id)
             else:
-                self.set_state("Stopped", event.message)
+                self.set_state("Stopped", event.message, dock_id=state_dock_id)
         elif kind == "session_finished":
             if self.browser_recovery_pending:
                 self.browser_recovery_ready = True
                 message = "Retry this row, skip it and open the next row, or stop this ID."
-                self.set_state("Browser closed", message)
-                self.owner.show_browser_recovery(self, message, ready=True)
+                self.set_state("Browser closed", message, dock_id=state_dock_id)
+                self.owner.show_browser_recovery(self, message, ready=True, dock_id=state_dock_id)
         elif kind in {"run_completed", "run_stopped", "portal_closed", "fatal_error"}:
             browser_closed = kind == "run_stopped" and bool(event.data.get("browser_closed"))
             if browser_closed and not self.browser_recovery_pending:
@@ -792,8 +849,8 @@ class AutomationTab:
             self.portal_session_open = False
             if kind == "run_stopped" and self.browser_recovery_pending:
                 message = "This browser was closed. Finishing cleanup before it can restart..."
-                self.set_state("Browser closed", message)
-                self.owner.show_browser_recovery(self, message, ready=False)
+                self.set_state("Browser closed", message, dock_id=state_dock_id)
+                self.owner.show_browser_recovery(self, message, ready=False, dock_id=state_dock_id)
             else:
                 self.browser_recovery_pending = False
                 self.browser_recovery_ready = False
@@ -802,9 +859,13 @@ class AutomationTab:
                     if kind == "run_completed"
                     else "Error" if kind == "fatal_error" else "Stopped"
                 )
-                self.set_state(state, event.message)
+                self.set_state(state, event.message, dock_id=state_dock_id)
             if kind == "fatal_error":
-                show_windows_notification(f"{self.display_name} automation error", event.message)
+                if browser_count > 1 and worker_label:
+                    title = f"{self.display_name} {worker_label} automation error"
+                else:
+                    title = f"{self.display_name} automation error"
+                show_windows_notification(title, event.message)
         self._set_buttons()
 
     def _show_error(self, event: UiEvent) -> None:
@@ -812,7 +873,13 @@ class AutomationTab:
             self.error_window.destroy()
         window = tk.Toplevel(self.owner.root)
         self.error_window = window
-        window.title(f"{self.display_name} needs attention")
+        try:
+            parallel = int(event.data.get("browser_count", 1)) > 1
+        except (TypeError, ValueError):
+            parallel = False
+        worker = str(event.data.get("worker_label", "") or "").strip()
+        title_name = f"{self.display_name} {worker}" if parallel and worker else self.display_name
+        window.title(f"{title_name} needs attention")
         window.attributes("-topmost", True)
         frame = ttk.Frame(window, padding=14)
         frame.pack(fill="both", expand=True)
@@ -929,9 +996,9 @@ class AutomationTab:
                 ),
             )
 
-    def set_state(self, state: str, detail: str = "") -> None:
+    def set_state(self, state: str, detail: str = "", dock_id: str | None = None) -> None:
         self.run_status_var.set(f"{state}: {detail}" if detail else state)
-        self.owner.update_tab_state(self, state, detail)
+        self.owner.update_tab_state(self, state, detail, dock_id=dock_id)
 
     def _set_buttons(self) -> None:
         self.start_button.configure(
@@ -1054,6 +1121,7 @@ class AutomationTab:
         self.save_captcha_images_var.set(self.config.save_captcha_images)
         self.fresh_browser_var.set(self.config.fresh_browser_per_unit)
         self.retry_egras_otp_once_var.set(self.config.retry_egras_otp_once)
+        self.browser_count_var.set(self.config.browser_count)
         self.profile_var.set(self.config.portal_profile_path)
         self.portal_browser_var.set(self._saved_browser_name())
 

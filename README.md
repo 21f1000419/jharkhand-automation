@@ -44,9 +44,11 @@ The dedicated Gemini profile and non-secret tab settings are stored under `%LOCA
 
 Each tab has a different color marker and can use its own CSV, Article, browser, OCR choice, SMS settings, payment trigger, download folder, and operating mode. **Disable ID** keeps that tab and its settings but excludes it from **Start All** and grays its tab marker; **Enable ID** includes it again. Its Start, Pause, Resume, and Stop controls affect only that run. **Start All** starts every valid enabled tab and reports tabs that still need configuration; **Stop All** stops every active run. The same CSV cannot be active in two tabs at once.
 
+The **Browsers** count selects 1 to 20 parallel browser workers for that ID. Workers share one quantity queue and one CSV state, so rows and quantities are claimed once even when transactions finish out of order. Citizen login is one-by-one per ID, but each browser starts working right after its own login without waiting for the other browsers to finish logging in. Each worker gets its own persistent browser profile. When there is more than one browser, the existing ID name is kept and B3.1, B3.2, B3.3 is appended with a separator too (for example ID 3 shows ID 3 | B3.1, ID 3 | B3.2), and the status dock shows one panel per browser instead of wrapping them into one. Stopping one browser panel stops only that browser; the remaining browsers continue working.
+
 ## Browser selection
 
-The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, and Yandex Browser. It also always lists **Firefox (managed automation)**. Use the top-level **Download managed Firefox** menu item once to install the Playwright Firefox build required for Firefox-based automation. The item changes to **Managed Firefox downloaded** after a successful download. It is stored in `%LOCALAPPDATA%\Compitcom\eStampAutomation\playwright-browsers`, not beside the executable, so it remains available when the `.exe` is moved to the Desktop or updated. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Every ID launches a separate visible browser process with its own persistent profile; custom-browser profiles are further separated by browser name. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing one portal browser stops only that ID's automation.
+The **Portal browser** picker automatically finds installed Google Chrome, Microsoft Edge, Brave, Opera/Opera GX, Vivaldi, and Yandex Browser. It also always lists **Firefox (managed automation)**. Use the top-level **Download managed Firefox** menu item once to install the Playwright Firefox build required for Firefox-based automation. The item changes to **Managed Firefox downloaded** after a successful download. It is stored in `%LOCALAPPDATA%\Compitcom\eStampAutomation\playwright-browsers`, not beside the executable, so it remains available when the `.exe` is moved to the Desktop or updated. For an unlisted browser or a browser installed on another drive, choose **Custom browser...** and select its `.exe`; an inline selector then appears for Chromium- or Firefox-based. Zen defaults to Firefox-based. Every browser worker uses its own persistent profile; custom-browser profiles are further separated by browser name. Gemini runs headlessly from its dedicated signed-in Chromium profile during a batch. Closing one portal browser stops that ID's worker group.
 
 ## CSV batches
 
@@ -67,7 +69,7 @@ district,first_party_name,second_party_name,stamp_duty_paid_by,stamp_purpose,pan
 The application adds and constantly updates:
 
 ```text
-status,completed_quantity,processed_quantity,attempt_count,error_count,last_stage,last_error,updated_at,transaction_refs,transaction_details,estamp_files,skipped_quantities
+status,completed_quantity,processed_quantity,completed_units,processed_units,attempt_count,error_count,last_stage,last_error,updated_at,transaction_refs,transaction_details,estamp_files,skipped_quantities
 ```
 
 Every quantity is tracked separately. Retry stays on the current quantity; Move to Next Quantity records that

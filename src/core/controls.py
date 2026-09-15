@@ -15,6 +15,7 @@ class RunControls:
         self.stop_event = threading.Event()
         self.decisions: queue.Queue[str] = queue.Queue()
         self.stop_reason = "Stopped by user"
+        self.waiting_for_decision = False
         self.run_gate.set()
 
     def reset(self) -> None:
@@ -60,10 +61,14 @@ class RunControls:
         await self.checkpoint()
 
     async def wait_for_decision(self) -> str:
-        while True:
-            if self.stop_event.is_set():
-                raise WorkflowStopped
-            try:
-                return self.decisions.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.1)
+        self.waiting_for_decision = True
+        try:
+            while True:
+                if self.stop_event.is_set():
+                    raise WorkflowStopped
+                try:
+                    return self.decisions.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+        finally:
+            self.waiting_for_decision = False

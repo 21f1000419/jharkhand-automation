@@ -19,7 +19,7 @@ from core.config import AppConfig
 from core.controls import RunControls
 from core.models import OcrEngine, PortalBrowser, RunOptions, UiEvent
 from core.resources import bundled_path
-from core.workflow import WorkflowEngine
+from core.workflow import ParallelBatchRuntime, WorkflowEngine
 from services.captcha_ocr import CaptchaSolver
 from services.gemini_web_ocr import GeminiWebCaptchaSolver
 
@@ -34,6 +34,35 @@ def _ocr_engine_label(engine: OcrEngine) -> str:
     }[engine]
 
 
+def worker_short_label(group_id: str, worker_number: int, browser_count: int) -> str:
+    """Concise per-browser name like B3.1, B3.2 for ID 3 with 3 browsers."""
+    if browser_count <= 1:
+        return f"ID {group_id}" if str(group_id).isdigit() else str(group_id)
+    return f"B{group_id}.{worker_number}"
+
+
+def worker_dock_id(group_id: str, worker_number: int, browser_count: int) -> str:
+    """Stable dock key: '3' for a single browser, '3.1'/'3.2' for parallel."""
+    if browser_count <= 1:
+        return str(group_id)
+    return f"{group_id}.{worker_number}"
+
+
+def split_worker_id(tab_id: str) -> tuple[str, int | None]:
+    """Split '3.2' into ('3', 2); plain ids return (id, None)."""
+    text = str(tab_id)
+    if "::" in text:
+        base, _, suffix = text.partition("::")
+        if suffix.startswith("browser-") and suffix[len("browser-"):].isdigit():
+            return base, int(suffix[len("browser-"):])
+        return base, None
+    if "." in text:
+        base, _, worker = text.rpartition(".")
+        if base and worker.isdigit():
+            return base, int(worker)
+    return text, None
+
+
 class PortalSessionFactory(Protocol):
     def __call__(
         self, choice: PortalBrowser, on_disconnect: Callable[[PortalBrowserSession], None]
@@ -42,9 +71,10 @@ class PortalSessionFactory(Protocol):
 
 @dataclass
 class RunSession:
-    """Resources belonging to one UI tab and no other tab."""
+    """Resources belonging to one browser worker within a UI tab."""
 
     tab_id: str
+    group_id: str
     run_id: str
     options: RunOptions
     controls: RunControls
@@ -53,6 +83,8 @@ class RunSession:
     portal_page: Page | None = None
     watchdog_task: asyncio.Task[None] | None = None
     portal_browser_closed: bool = False
+    parallel_runtime: ParallelBatchRuntime | None = None
+    worker_number: int = 1
 
 
 class _LockedSolver:
@@ -190,6 +222,22 @@ class AutomationController:
         self.events.put(event)
 
     def _emit_session(self, session: RunSession, event: UiEvent) -> None:
+        browser_count = min(20, max(1, int(getattr(session.options, "browser_count", 1))))
+        data = dict(event.data)
+        data.setdefault("worker_number", session.worker_number)
+        data.setdefault("browser_count", browser_count)
+        data.setdefault(
+            "worker_label",
+            worker_short_label(session.group_id, session.worker_number, browser_count),
+        )
+        data.setdefault(
+            "dock_id",
+            worker_dock_id(session.group_id, session.worker_number, browser_count),
+        )
+        data.setdefault("group_id", session.group_id)
+        if event.run_id:
+            data.setdefault("run_id", event.run_id)
+        event = replace(event, data=data)
         self.emit(event, run_id=session.run_id)
 
     @staticmethod
@@ -249,14 +297,32 @@ class AutomationController:
         self._submit(self._stop_all_runs("Stopped by user"))
 
     def get_portal_window_handle(self, tab_id: str) -> int | None:
-        """Return the OS window handle for the active portal browser of a tab, or None."""
-        session = self.sessions.get(tab_id)
-        if session is None:
+        """Return the OS window handle for one browser (dock id) or a tab group, or None."""
+        direct = self.sessions.get(str(tab_id))
+        if direct is not None:
+            browser = direct.portal_browser
+            if browser is not None and browser.window_handle is not None:
+                return browser.window_handle
+        base = str(tab_id).split("::")[0]
+        worker_number: int | None = None
+        if "." in base:
+            maybe_base, _, maybe_worker = base.rpartition(".")
+            if maybe_base and maybe_worker.isdigit():
+                base = maybe_base
+                worker_number = int(maybe_worker)
+        sessions = self._sessions_for(base)
+        if worker_number is not None:
+            for session in sessions:
+                if session.worker_number == worker_number:
+                    browser = session.portal_browser
+                    if browser is not None and browser.window_handle is not None:
+                        return browser.window_handle
             return None
-        browser = session.portal_browser
-        if browser is None:
-            return None
-        return browser.window_handle
+        for session in sessions:
+            browser = session.portal_browser
+            if browser is not None and browser.window_handle is not None:
+                return browser.window_handle
+        return None
 
     def reconfigure_browser(self) -> None:
         self._submit(self._close_gemini_browser())
@@ -305,53 +371,141 @@ class AutomationController:
         self.loop.call_soon_threadsafe(callback, *args)
 
     def _start_run(self, tab_id: str, options: RunOptions) -> None:
-        if tab_id in self.sessions:
+        if self._sessions_for(tab_id):
             self.emit(
                 self._event("fatal_error", "This tab already has an active automation run."),
                 run_id=self._run_id(tab_id, options),
             )
             return
-        session: RunSession
-        session = RunSession(
-            tab_id=tab_id,
-            run_id=self._run_id(tab_id, options),
-            options=options,
-            controls=RunControls(lambda event: self._emit_session(session, event)),
-        )
-        self.sessions[tab_id] = session
-        session.run_task = asyncio.create_task(self._run(session), name=f"automation:{tab_id}")
+        browser_count = min(20, max(1, int(getattr(options, "browser_count", 1))))
+        runtime = ParallelBatchRuntime(options.csv_path) if browser_count > 1 else None
+        for worker_index in range(browser_count):
+            internal_id = tab_id if worker_index == 0 else f"{tab_id}::browser-{worker_index + 1}"
+            worker_options = replace(
+                options,
+                browser_count=browser_count,
+                worker_index=worker_index,
+                portal_profile_path=self._worker_profile_path(
+                    options.portal_profile_path, browser_count, worker_index
+                ),
+                portal_window_label=self._worker_window_label(
+                    options.portal_window_label, browser_count, worker_index, tab_id
+                ),
+            )
+            controls = RunControls(
+                lambda event, key=internal_id: self._emit_session_by_key(key, event)
+            )
+            session = RunSession(
+                tab_id=internal_id,
+                group_id=tab_id,
+                run_id=self._run_id(tab_id, options),
+                options=worker_options,
+                controls=controls,
+                parallel_runtime=runtime,
+                worker_number=worker_index + 1,
+            )
+            self.sessions[internal_id] = session
+            session.run_task = asyncio.create_task(
+                self._run(session), name=f"automation:{internal_id}"
+            )
+
+    def _sessions_for(self, tab_id: str) -> list[RunSession]:
+        base, _ = split_worker_id(tab_id)
+        return [session for session in self.sessions.values() if session.group_id == base]
+
+    def _worker_session(self, tab_id: str) -> RunSession | None:
+        base, worker = split_worker_id(tab_id)
+        if worker is None:
+            return None
+        for session in self._sessions_for(base):
+            if session.worker_number == worker:
+                return session
+        return None
+
+    def _emit_session_by_key(self, key: str, event: UiEvent) -> None:
+        session = self.sessions.get(key)
+        if session is not None:
+            self._emit_session(session, event)
+
+    @staticmethod
+    def _worker_profile_path(
+        profile_path: Path | None, browser_count: int, worker_index: int
+    ) -> Path | None:
+        if profile_path is None or browser_count == 1:
+            return profile_path
+        return profile_path / f"browser-{worker_index + 1}"
+
+    @staticmethod
+    def _worker_window_label(
+        label: str, browser_count: int, worker_index: int, group_id: str = ""
+    ) -> str:
+        if browser_count == 1:
+            return label
+        short = worker_short_label(
+            str(group_id) if str(group_id) else "", worker_index + 1, browser_count
+        ) if str(group_id) else f"B{worker_index + 1}"
+        return f"{label} | {short}" if label.strip() else short
 
     def _pause_run(self, tab_id: str) -> None:
-        session = self.sessions.get(tab_id)
-        if session is not None:
+        single = self._worker_session(tab_id)
+        sessions = [single] if single is not None else self._sessions_for(tab_id)
+        for session in sessions:
             session.controls.pause()
+        for session in sessions:
             self._emit_session(session, self._event("paused", "Automation paused."))
 
     def _resume_run(self, tab_id: str) -> None:
-        session = self.sessions.get(tab_id)
-        if session is not None:
+        single = self._worker_session(tab_id)
+        sessions = [single] if single is not None else self._sessions_for(tab_id)
+        for session in sessions:
             session.controls.resume()
+        for session in sessions:
             self._emit_session(session, self._event("resumed", "Automation resumed."))
 
     def _decide_error(self, tab_id: str, action: str) -> None:
-        session = self.sessions.get(tab_id)
-        if session is not None:
+        single = self._worker_session(tab_id)
+        if single is not None:
+            single.controls.decide(action)
+            return
+        sessions = self._sessions_for(tab_id)
+        waiting = [session for session in sessions if session.controls.waiting_for_decision]
+        for session in waiting or sessions[:1]:
             session.controls.decide(action)
 
     async def _stop_run(self, tab_id: str, reason: str) -> None:
-        session = self.sessions.get(tab_id)
-        if session is None:
+        single = self._worker_session(tab_id)
+        if single is not None:
+            await self._stop_single_worker(single, reason)
+            return
+        sessions = self._sessions_for(tab_id)
+        if not sessions:
+            return
+        for session in sessions:
+            session.controls.stop(reason)
+            task = session.run_task
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(self._close_portal_browser(session) for session in sessions),
+            return_exceptions=True,
+        )
+        self._emit_session(sessions[0], self._event("portal_closed", "Portal browsers closed."))
+
+    async def _stop_single_worker(self, session: RunSession, reason: str) -> None:
+        """Stop one browser worker; remaining workers keep their queue and browsers."""
+        if self.sessions.get(session.tab_id) is not session:
             return
         session.controls.stop(reason)
         task = session.run_task
-        if task is not None and not task.done():
+        current = asyncio.current_task()
+        if task is not None and task is not current and not task.done():
             task.cancel()
         await self._close_portal_browser(session)
-        self._emit_session(session, self._event("portal_closed", "Portal browser closed."))
 
     async def _stop_all_runs(self, reason: str) -> None:
         await asyncio.gather(
-            *(self._stop_run(tab_id, reason) for tab_id in list(self.sessions)), return_exceptions=True
+            *(self._stop_run(tab_id, reason) for tab_id in {s.group_id for s in self.sessions.values()}),
+            return_exceptions=True,
         )
 
     async def _ensure_gemini_services(self) -> tuple[BrowserSession, GeminiWebCaptchaSolver]:
@@ -454,21 +608,32 @@ class AutomationController:
             self.ocr_test_task = None
 
     async def _run(self, session: RunSession) -> None:
+        result = False
+        parallel_runtime = session.parallel_runtime
         try:
             solver: CaptchaSolver | None = None
             if session.options.ocr_enabled:
                 solver = await self._ensure_ocr_solver(session.options.ocr_engine)
-                self._emit_session(
-                    session,
-                    self._event(
-                        "gemini_verified", f"{_ocr_engine_label(session.options.ocr_engine)} is ready."
-                    ),
-                )
-            else:
+                if session.worker_number == 1:
+                    self._emit_session(
+                        session,
+                        self._event(
+                            "gemini_verified",
+                            f"{_ocr_engine_label(session.options.ocr_engine)} is ready.",
+                        ),
+                    )
+            elif session.worker_number == 1:
                 self._emit_session(
                     session, self._event("ocr_manual_mode", "OCR is inactive; CAPTCHAs require manual entry.")
                 )
-            self._emit_session(session, self._event("run_started", "Automation started."))
+            if session.worker_number == 1:
+                count = session.options.browser_count
+                message = (
+                    "Automation started."
+                    if count == 1
+                    else f"Automation started with {count} parallel browsers."
+                )
+                self._emit_session(session, self._event("run_started", message))
 
             async def open_portal_page() -> Page:
                 return await self._open_fresh_portal_page(session)
@@ -501,13 +666,29 @@ class AutomationController:
                 open_portal_page=open_portal_page,
                 close_portal_page=close_portal_page,
                 focus_payment_page=focus_payment_page,
+                parallel_runtime=session.parallel_runtime,
             )
-            await engine.run(session.options)
+            result = await engine.run(session.options)
         except asyncio.CancelledError:
-            self._emit_session(session, self._event("run_stopped", "Automation stopped."))
+            if parallel_runtime is not None:
+                parallel_runtime.failed = True
+            else:
+                self._emit_session(session, self._event("run_stopped", "Automation stopped."))
         except Exception as error:
-            self._emit_session(session, self._event("fatal_error", f"Automation stopped: {error}"))
+            if parallel_runtime is not None:
+                first_fatal = not parallel_runtime.fatal
+                parallel_runtime.fatal = True
+                parallel_runtime.failed = True
+                self._cancel_group_peers(session, "A parallel browser failed")
+                if first_fatal:
+                    self._emit_session(
+                        session, self._event("fatal_error", f"Automation stopped: {error}")
+                    )
+            else:
+                self._emit_session(session, self._event("fatal_error", f"Automation stopped: {error}"))
         finally:
+            if parallel_runtime is not None and not result:
+                parallel_runtime.failed = True
             watchdog = session.watchdog_task
             session.watchdog_task = None
             if watchdog is not None:
@@ -516,12 +697,63 @@ class AutomationController:
             await self._close_portal_browser(session)
             if self.sessions.get(session.tab_id) is session:
                 del self.sessions[session.tab_id]
-            with self._session_lock:
-                self._reserved_tabs.discard(session.tab_id)
-            self._emit_session(
-                session,
-                self._event("session_finished", "Automation session is ready to restart."),
-            )
+            group_finished = not self._sessions_for(session.group_id)
+            if group_finished:
+                with self._session_lock:
+                    self._reserved_tabs.discard(session.group_id)
+                if parallel_runtime is not None:
+                    if not parallel_runtime.fatal:
+                        if parallel_runtime.failed:
+                            self._emit_session(
+                                session,
+                                self._event(
+                                    "run_stopped",
+                                    "Parallel automation stopped. Unfinished work remains retryable.",
+                                ),
+                            )
+                        else:
+                            self._emit_session(
+                                session,
+                                self._event(
+                                    "run_completed",
+                                    "Batch pass finished across all parallel browsers. "
+                                    "Skipped quantities and PDF issues are recorded in the CSV.",
+                                ),
+                            )
+                self._emit_session(
+                    session,
+                    self._event("session_finished", "Automation session is ready to restart."),
+                )
+            elif parallel_runtime is not None:
+                short = worker_short_label(
+                    session.group_id,
+                    session.worker_number,
+                    int(getattr(session.options, "browser_count", 1)),
+                )
+                if result:
+                    self._emit_session(
+                        session,
+                        self._event(
+                            "worker_finished",
+                            f"{short} finished. Remaining browsers continue.",
+                        ),
+                    )
+                else:
+                    self._emit_session(
+                        session,
+                        self._event(
+                            "worker_stopped",
+                            f"{short} stopped. Remaining browsers continue.",
+                        ),
+                    )
+
+    def _cancel_group_peers(self, failed_session: RunSession, reason: str) -> None:
+        current_task = asyncio.current_task()
+        for session in self._sessions_for(failed_session.group_id):
+            session.controls.stop(reason)
+            task = session.run_task
+            if task is not None and task is not current_task and not task.done():
+                task.cancel()
 
     def _can_reuse_portal(self, session: RunSession, choice: PortalBrowser) -> bool:
         return (
@@ -540,11 +772,19 @@ class AutomationController:
 
         last_error: Exception | None = None
         for attempt in range(1, 3):
+            short_label = worker_short_label(
+                session.group_id,
+                session.worker_number,
+                int(getattr(session.options, "browser_count", 1)),
+            )
+            worker_suffix = (
+                "" if int(getattr(session.options, "browser_count", 1)) == 1 else f" {short_label}"
+            )
             self._emit_session(
                 session,
                 self._event(
                     "status",
-                    f"Opening {session.options.portal_browser.name} for this ID "
+                    f"Opening {session.options.portal_browser.name}{worker_suffix} for this ID "
                     f"(attempt {attempt} of 2)...",
                 ),
             )
@@ -569,7 +809,9 @@ class AutomationController:
                 session.portal_page = page
                 self._emit_session(
                     session,
-                    self._event("log", f"{browser.choice.name} opened for this ID."),
+                    self._event(
+                        "log", f"{browser.choice.name}{worker_suffix} opened for this ID."
+                    ),
                 )
                 return page
             except asyncio.CancelledError:

@@ -276,8 +276,45 @@ class MainWindow:
             self.automation_status_window = dock
         return dock
 
+    @staticmethod
+    def _dock_base_id(dock_id: str) -> str:
+        text = str(dock_id)
+        if "::" in text:
+            return text.split("::", 1)[0]
+        if "." in text:
+            base, _, worker = text.rpartition(".")
+            if base and worker.isdigit():
+                return base
+        return text
+
+    def _dock_ids_for_tab(self, tab: AutomationTab) -> list[str]:
+        try:
+            count = min(20, max(1, int(getattr(tab.config, "browser_count", 1))))
+        except (TypeError, ValueError):
+            count = 1
+        if count <= 1:
+            return [tab.run_id]
+        return [f"{tab.run_id}.{worker}" for worker in range(1, count + 1)]
+
+    @staticmethod
+    def _dock_title_for_tab(tab: AutomationTab, dock_id: str) -> str:
+        try:
+            count = min(20, max(1, int(getattr(tab.config, "browser_count", 1))))
+        except (TypeError, ValueError):
+            count = 1
+        if count <= 1:
+            return tab.display_name
+        text = str(dock_id)
+        worker = ""
+        if "." in text and "::" not in text:
+            _, _, worker = text.rpartition(".")
+        if worker.isdigit():
+            return f"{tab.display_name} | B{tab.run_id}.{worker}"
+        return f"{tab.display_name} | B{tab.run_id}.1"
+
     def _dock_tab(self, run_id: str) -> AutomationTab | None:
-        return self.tabs.get(int(run_id)) if run_id.isdigit() else None
+        base = self._dock_base_id(run_id)
+        return self.tabs.get(int(base)) if base.isdigit() else None
 
     def _dock_pause(self, run_id: str) -> None:
         tab = self._dock_tab(run_id)
@@ -293,18 +330,23 @@ class MainWindow:
 
     def _dock_stop(self, run_id: str) -> None:
         tab = self._dock_tab(run_id)
-        if tab is not None:
-            self._record_ui_action(f"id_{run_id}_dock_stop_clicked")
-            if tab.browser_recovery_pending:
-                tab.dismiss_browser_recovery()
-            else:
-                tab.stop()
+        if tab is None:
+            return
+        self._record_ui_action(f"id_{run_id}_dock_stop_clicked")
+        if tab.browser_recovery_pending:
+            tab.dismiss_browser_recovery()
+            return
+        # Dock Stop targets one browser only; other browsers of the ID continue.
+        # Tab-level Stop (run_tab) still stops the whole ID group.
+        self.controller.stop(run_id)
 
     def _dock_error_decision(self, run_id: str, action: str) -> None:
         tab = self._dock_tab(run_id)
-        if tab is not None:
-            self._record_ui_action(f"id_{run_id}_dock_error_{action}_clicked")
-            tab.decide_error(action)
+        if tab is None:
+            return
+        self._record_ui_action(f"id_{run_id}_dock_error_{action}_clicked")
+        # Decide only for this browser's pending prompt; others keep working.
+        self.controller.decide_error(run_id, action)
 
     def _dock_browser_recovery(self, run_id: str, action: str) -> None:
         tab = self._dock_tab(run_id)
@@ -316,32 +358,37 @@ class MainWindow:
         self._record_ui_action(f"id_{run_id}_dock_focus_browser_clicked")
         handle = self.controller.get_portal_window_handle(run_id)
         if handle is None:
-            self.run_status_var.set("No browser window found for this ID")
+            base = self._dock_base_id(run_id)
+            self.run_status_var.set(f"No browser window found for {run_id} (ID {base})")
             return
         import os
         if os.name != "nt":
             return
         from automation.browser import _restore_and_activate_window
         if not _restore_and_activate_window(handle):
-            self.run_status_var.set("Could not focus the browser window")
+            self.run_status_var.set(f"Could not focus the browser window {run_id}")
 
     def _show_status_dock(self) -> None:
         self._record_ui_action("show_status_dock_clicked")
         dock = self._ensure_status_dock()
         for tab in self.tabs.values():
-            if (tab.is_active or tab.browser_recovery_pending) and not dock.has_run(tab.run_id):
-                dock.begin_run(
-                    tab.run_id,
-                    tab.display_name,
-                    self._tab_accent_color(tab.tab_id),
-                    tab.run_status_var.get(),
-                )
-            if tab.browser_recovery_pending and dock.has_run(tab.run_id):
-                dock.show_browser_recovery(
-                    tab.run_id,
-                    "Retry this row, skip it and open the next row, or stop this ID.",
-                    ready=tab.browser_recovery_ready,
-                )
+            if tab.is_active or tab.browser_recovery_pending:
+                for dock_id in self._dock_ids_for_tab(tab):
+                    if not dock.has_run(dock_id):
+                        dock.begin_run(
+                            dock_id,
+                            self._dock_title_for_tab(tab, dock_id),
+                            self._tab_accent_color(tab.tab_id),
+                            tab.run_status_var.get(),
+                        )
+            if tab.browser_recovery_pending:
+                for dock_id in self._dock_ids_for_tab(tab):
+                    if dock.has_run(dock_id):
+                        dock.show_browser_recovery(
+                            dock_id,
+                            "Retry this row, skip it and open the next row, or stop this ID.",
+                            ready=tab.browser_recovery_ready,
+                        )
         dock.show()
         if not any(tab.is_active for tab in self.tabs.values()) and not dock.has_cards:
             self.run_status_var.set("No active IDs to show")
@@ -353,30 +400,39 @@ class MainWindow:
         )
         return closing_tab.tab_id in self.tabs and active_runs > 1
 
+    def _resolve_dock_id(self, tab: AutomationTab, event: UiEvent | None = None) -> str:
+        if event is not None:
+            candidate = str(event.data.get("dock_id", "") or "").strip()
+            if candidate:
+                return candidate
+        return self._dock_ids_for_tab(tab)[0]
+
     def show_browser_recovery(
-        self, tab: AutomationTab, message: str, *, ready: bool
+        self, tab: AutomationTab, message: str, *, ready: bool, dock_id: str | None = None
     ) -> None:
         dock = self._ensure_status_dock()
-        if not dock.has_run(tab.run_id):
+        target = dock_id or self._resolve_dock_id(tab)
+        if not dock.has_run(target):
             dock.begin_run(
-                tab.run_id,
-                tab.display_name,
+                target,
+                self._dock_title_for_tab(tab, target),
                 self._tab_accent_color(tab.tab_id),
                 message,
             )
-        dock.show_browser_recovery(tab.run_id, message, ready=ready)
+        dock.show_browser_recovery(target, message, ready=ready)
 
     def show_tab_error_in_dock(self, tab: AutomationTab, event: UiEvent) -> bool:
         dock = self._ensure_status_dock()
-        if not dock.has_run(tab.run_id):
+        dock_id = self._resolve_dock_id(tab, event)
+        if not dock.has_run(dock_id):
             dock.begin_run(
-                tab.run_id,
-                tab.display_name,
+                dock_id,
+                self._dock_title_for_tab(tab, dock_id),
                 self._tab_accent_color(tab.tab_id),
                 event.message,
             )
         dock.show_error(
-            tab.run_id,
+            dock_id,
             message=event.message,
             row=event.data.get("row"),
             quantity=event.data.get("quantity"),
@@ -389,20 +445,32 @@ class MainWindow:
         return True
 
     def update_status_dock_progress(
-        self, tab: AutomationTab, row: int | None, quantity: int | None
+        self, tab: AutomationTab, row: int | None, quantity: int | None,
+        dock_id: str | None = None,
     ) -> None:
         dock = self.automation_status_window
         if dock is not None and dock.exists:
-            dock.set_progress(tab.run_id, row, quantity)
+            target = dock_id or self._resolve_dock_id(tab)
+            if not dock.has_run(target):
+                dock.begin_run(
+                    target,
+                    self._dock_title_for_tab(tab, target),
+                    self._tab_accent_color(tab.tab_id),
+                    tab.run_status_var.get(),
+                )
+            dock.set_progress(target, row, quantity)
 
-    def update_status_dock_payment(self, tab: AutomationTab, state: str) -> None:
+    def update_status_dock_payment(
+        self, tab: AutomationTab, state: str, dock_id: str | None = None
+    ) -> None:
         dock = self.automation_status_window
         if dock is None or not dock.exists:
             return
+        target = dock_id or self._resolve_dock_id(tab)
         if state in {"slot_granted", "pay_now_ready", "qr_ready", "foreground_verified"}:
-            dock.set_payment_active(tab.run_id, True)
+            dock.set_payment_active(target, True)
         elif state in {"slot_released", "download_ready"}:
-            dock.set_payment_active(tab.run_id, False)
+            dock.set_payment_active(target, False)
 
     def _add_tab(self) -> None:
         self._record_ui_action("add_id_clicked")
@@ -579,7 +647,8 @@ class MainWindow:
         self.tabs.pop(tab.tab_id, None)
         self.tab_states.pop(tab.tab_id, None)
         if self.automation_status_window is not None:
-            self.automation_status_window.remove_run(tab.run_id)
+            for dock_id in self._dock_ids_for_tab(tab):
+                self.automation_status_window.remove_run(dock_id)
         self.tab_accent_images.pop((tab.tab_id, True), None)
         self.tab_accent_images.pop((tab.tab_id, False), None)
         self.config.tabs[:] = [item for item in self.config.tabs if item.tab_id != tab.tab_id]
@@ -634,7 +703,13 @@ class MainWindow:
                 return tab
         return None
 
-    def update_tab_state(self, tab: AutomationTab, state: str, detail: str = "") -> None:
+    def update_tab_state(
+        self,
+        tab: AutomationTab,
+        state: str,
+        detail: str = "",
+        dock_id: str | None = None,
+    ) -> None:
         if tab.tab_id not in self.tabs:
             return
         self.tab_states[tab.tab_id] = state
@@ -643,29 +718,49 @@ class MainWindow:
         self.notebook.tab(  # type: ignore[no-untyped-call]
             str(tab.frame), text=caption, image=accent
         )
+        dock_ids = self._dock_ids_for_tab(tab)
         dock = self.automation_status_window
         if state == "Starting" and tab.is_enabled:
             dock = self._ensure_status_dock()
-            dock.begin_run(
-                tab.run_id,
-                tab.display_name,
-                self._tab_accent_color(tab.tab_id),
-                detail or "Preparing this automation session...",
-            )
-        elif dock is not None and dock.exists and dock.has_run(tab.run_id):
+            for target in dock_ids:
+                dock.begin_run(
+                    target,
+                    self._dock_title_for_tab(tab, target),
+                    self._tab_accent_color(tab.tab_id),
+                    detail or "Preparing this automation session...",
+                )
+        elif dock is not None and dock.exists:
             if state in {"Stopped", "Disabled"} and not tab.browser_recovery_pending:
-                dock.remove_run(tab.run_id)
+                for target in dock_ids:
+                    if dock.has_run(target):
+                        dock.remove_run(target)
             else:
-                dock.set_status(tab.run_id, state, detail)
-        if dock is not None and dock.exists and dock.has_run(tab.run_id):
-            dock.set_controls(
-                tab.run_id,
-                running=tab.running,
-                starting=tab.starting,
-                paused=tab.paused,
-                auto_waiting=tab.auto_waiting,
-                portal_open=tab.portal_session_open,
-            )
+                targets = [dock_id] if dock_id and dock.has_run(dock_id) else [
+                    target for target in dock_ids if dock.has_run(target)
+                ]
+                if not targets and dock_id:
+                    dock.begin_run(
+                        dock_id,
+                        self._dock_title_for_tab(tab, dock_id),
+                        self._tab_accent_color(tab.tab_id),
+                        detail or "Preparing this automation session...",
+                    )
+                    targets = [dock_id]
+                for target in targets:
+                    dock.set_status(target, state, detail)
+        if dock is not None and dock.exists:
+            targets = [dock_id] if dock_id and dock.has_run(dock_id) else [
+                target for target in dock_ids if dock.has_run(target)
+            ]
+            for target in targets:
+                dock.set_controls(
+                    target,
+                    running=tab.running,
+                    starting=tab.starting,
+                    paused=tab.paused,
+                    auto_waiting=tab.auto_waiting,
+                    portal_open=tab.portal_session_open,
+                )
         self._update_summary()
 
     def _tab_changed(self, _event: object = None) -> None:
@@ -712,18 +807,27 @@ class MainWindow:
 
     def _handle_event(self, event: UiEvent) -> None:
         run_id = str(event.run_id or event.data.get("run_id", ""))
-        tab = self.tabs.get(int(run_id)) if run_id.isdigit() else None
+        base_id = self._dock_base_id(run_id)
+        tab = self.tabs.get(int(base_id)) if base_id.isdigit() else None
         if tab is not None:
+            dock_id = str(event.data.get("dock_id", "") or "").strip() or None
             tab.handle_event(event)
+            if event.kind in {"worker_stopped", "worker_finished"}:
+                dock = self.automation_status_window
+                if dock is not None and dock.exists and dock_id and dock.has_run(dock_id):
+                    dock.remove_run(dock_id)
+                self._update_summary()
+                return
             if event.kind == "batch_update":
                 self.update_status_dock_progress(
                     tab,
                     event.data.get("current_row"),
                     event.data.get("current_unit"),
+                    dock_id,
                 )
             elif event.kind == "payment_state":
                 state = str(event.data.get("state", ""))
-                self.update_status_dock_payment(tab, state)
+                self.update_status_dock_payment(tab, state, dock_id)
                 if state == "download_ready":
                     self.global_success_count += 1
                     self.global_success_var.set(
@@ -731,7 +835,9 @@ class MainWindow:
                     )
                     dock = self.automation_status_window
                     if dock is not None and dock.exists:
-                        dock.increment_download_count(tab.run_id)
+                        target = dock_id or self._resolve_dock_id(tab)
+                        if dock.has_run(target):
+                            dock.increment_download_count(target)
             elif event.kind in {
                 "run_completed",
                 "run_stopped",
@@ -739,7 +845,7 @@ class MainWindow:
                 "portal_closed",
                 "fatal_error",
             }:
-                self.update_status_dock_payment(tab, "slot_released")
+                self.update_status_dock_payment(tab, "slot_released", dock_id)
             self._update_summary()
             return
         self._handle_global_event(event)
@@ -1109,7 +1215,8 @@ class MainWindow:
     def _reload_all_tabs_after_replace(self) -> None:
         for tab in list(self.tabs.values()):
             if self.automation_status_window is not None:
-                self.automation_status_window.remove_run(tab.run_id)
+                for dock_id in self._dock_ids_for_tab(tab):
+                    self.automation_status_window.remove_run(dock_id)
             tab.destroy()
         self.tabs.clear()
         self.tab_states.clear()

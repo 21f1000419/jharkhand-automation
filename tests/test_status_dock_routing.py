@@ -27,6 +27,7 @@ class StatusDockRoutingTests(unittest.TestCase):
         window.tabs = {1: first, 2: second}
         window._record_ui_action = MagicMock()  # type: ignore[method-assign]
         window._update_summary = MagicMock()  # type: ignore[method-assign]
+        window.controller = MagicMock()
         return window, first, second
 
     def test_dock_controls_target_only_the_selected_id(self) -> None:
@@ -39,12 +40,15 @@ class StatusDockRoutingTests(unittest.TestCase):
 
         first.pause.assert_not_called()
         first.resume.assert_not_called()
-        first.stop.assert_not_called()
         first.decide_error.assert_not_called()
         second.pause.assert_called_once_with()
         second.resume.assert_called_once_with()
-        second.stop.assert_called_once_with()
-        second.decide_error.assert_called_once_with("retry")
+        # Dock Stop/Error target one browser via the controller so other
+        # browsers of the ID can continue.
+        window.controller.stop.assert_called_once_with("2")
+        window.controller.decide_error.assert_called_once_with("2", "retry")
+        second.stop.assert_not_called()
+        second.decide_error.assert_not_called()
 
     def test_browser_recovery_controls_target_only_the_closed_id(self) -> None:
         window, first, second = self.window_with_tabs()
@@ -114,11 +118,13 @@ class StatusDockRoutingTests(unittest.TestCase):
         tab.set_state.assert_called_with(
             "Browser closed",
             "This browser was closed. Finishing cleanup before it can restart...",
+            dock_id=None,
         )
         owner.show_browser_recovery.assert_called_with(
             tab,
             "This browser was closed. Finishing cleanup before it can restart...",
             ready=False,
+            dock_id=None,
         )
 
         tab.handle_event(UiEvent("run_stopped", "Current row remains retryable"))
@@ -130,6 +136,7 @@ class StatusDockRoutingTests(unittest.TestCase):
             tab,
             "Retry this row, skip it and open the next row, or stop this ID.",
             ready=True,
+            dock_id=None,
         )
 
     def test_start_button_waits_for_browser_cleanup(self) -> None:
@@ -144,6 +151,7 @@ class StatusDockRoutingTests(unittest.TestCase):
         tab.resume_button = MagicMock()
         tab.stop_button = MagicMock()
         tab.toggle_enabled_button = MagicMock()
+        tab.delete_profile_button = MagicMock()
         tab.portal_session_open = False
 
         tab._set_buttons()
@@ -175,7 +183,7 @@ class StatusDockRoutingTests(unittest.TestCase):
         tab.handle_event(UiEvent("browser_closed", "Chrome closed"))
 
         self.assertFalse(tab.browser_recovery_pending)
-        tab.set_state.assert_called_with("Stopped", "Chrome closed")
+        tab.set_state.assert_called_with("Stopped", "Chrome closed", dock_id=None)
         owner.show_browser_recovery.assert_not_called()
 
     def test_workflow_only_close_signal_keeps_multi_run_card(self) -> None:
@@ -206,11 +214,13 @@ class StatusDockRoutingTests(unittest.TestCase):
         tab.set_state.assert_called_with(
             "Browser closed",
             "This browser was closed. Finishing cleanup before it can restart...",
+            dock_id=None,
         )
         owner.show_browser_recovery.assert_called_once_with(
             tab,
             "This browser was closed. Finishing cleanup before it can restart...",
             ready=False,
+            dock_id=None,
         )
 
     def test_payment_events_release_topmost_for_only_the_payment_id(self) -> None:
@@ -283,6 +293,116 @@ class StatusDockRoutingTests(unittest.TestCase):
             auto_waiting=False,
             portal_open=False,
         )
+
+    def test_starting_state_creates_one_panel_per_browser_with_concise_names(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        dock = MagicMock()
+        dock.exists = True
+        dock.has_run.return_value = False
+        window.automation_status_window = dock
+        window.tab_states = {}
+        window.notebook = MagicMock()
+        window._tab_accent_image = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+        first.frame = MagicMock()
+        first.run_id = "3"
+        first.tab_id = 3
+        first.display_name = "ID 3"
+        first.config = MagicMock(browser_count=3)
+        first.is_enabled = True
+        first.running = False
+        first.starting = True
+        first.paused = False
+        first.auto_waiting = False
+        first.portal_session_open = False
+        window.tabs = {3: first}
+
+        window.update_tab_state(first, "Starting", "Opening 3 browsers")
+
+        begun = {call.args[0] for call in dock.begin_run.call_args_list}
+        self.assertEqual(begun, {"3.1", "3.2", "3.3"})
+        titles = {call.args[1] for call in dock.begin_run.call_args_list}
+        self.assertEqual(titles, {"ID 3 | B3.1", "ID 3 | B3.2", "ID 3 | B3.3"})
+
+    def test_parallel_browser_status_updates_only_its_own_panel(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        dock = MagicMock()
+        dock.exists = True
+        dock.has_run.side_effect = lambda dock_id: dock_id in {"3.1", "3.2", "3.3"}
+        window.automation_status_window = dock
+        window.tab_states = {}
+        window.notebook = MagicMock()
+        window._tab_accent_image = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+        first.frame = MagicMock()
+        first.run_id = "3"
+        first.tab_id = 3
+        first.display_name = "ID 3"
+        first.config = MagicMock(browser_count=3)
+        first.is_enabled = True
+        first.running = True
+        first.starting = False
+        first.paused = False
+        first.auto_waiting = False
+        first.portal_session_open = True
+        window.tabs = {3: first}
+
+        window.update_tab_state(first, "Running", "Filling form", dock_id="3.2")
+
+        dock.set_status.assert_called_once_with("3.2", "Running", "Filling form")
+        dock.set_controls.assert_called_once_with(
+            "3.2",
+            running=True,
+            starting=False,
+            paused=False,
+            auto_waiting=False,
+            portal_open=True,
+        )
+
+    def test_dock_focus_targets_the_specific_parallel_browser(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        window.controller = MagicMock()
+        window.controller.get_portal_window_handle.return_value = 4242
+        window.run_status_var = MagicMock()
+
+        with patch("automation.browser._restore_and_activate_window", return_value=True):
+            window._dock_focus_browser("3.2")
+
+        window.controller.get_portal_window_handle.assert_called_once_with("3.2")
+
+    def test_dock_worker_id_resolves_to_its_base_id_tab(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        first.tab_id = 3
+        window.tabs = {3: first}
+        self.assertIs(window._dock_tab("3.2"), first)
+        self.assertIs(window._dock_tab("3"), first)
+
+    def test_dock_stop_targets_only_that_browser(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        first.tab_id = 3
+        first.run_id = "3"
+        first.browser_recovery_pending = False
+        window.tabs = {3: first}
+        window._dock_stop("3.2")
+        window.controller.stop.assert_called_once_with("3.2")
+        first.stop.assert_not_called()
+
+    def test_worker_stopped_removes_only_its_own_panel(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        dock = MagicMock()
+        dock.exists = True
+        dock.has_run.side_effect = lambda dock_id: dock_id in {"3.1", "3.2"}
+        window.automation_status_window = dock
+        window.tabs = {3: first}
+        first.tab_id = 3
+        first.run_id = "3"
+        first.handle_event = MagicMock()  # type: ignore[method-assign]
+        window._update_summary = MagicMock()  # type: ignore[method-assign]
+
+        window._handle_event(
+            UiEvent("worker_stopped", "B3.2 stopped.", {"dock_id": "3.2"}, "3")
+        )
+
+        dock.remove_run.assert_called_once_with("3.2")
+        first.handle_event.assert_called_once()
 
 
 if __name__ == "__main__":

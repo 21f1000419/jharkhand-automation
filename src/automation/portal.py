@@ -106,6 +106,7 @@ class PortalAutomation:
         payment_coordinator: PaymentCoordinator | None = None,
         focus_payment_page: Callable[[], Awaitable[None]] | None = None,
         citizen_otp_resend_budget: CitizenOtpResendBudget | None = None,
+        citizen_login_lock: asyncio.Lock | None = None,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -124,6 +125,7 @@ class PortalAutomation:
         self.payment_coordinator = payment_coordinator or default_payment_coordinator()
         self.focus_payment_page = focus_payment_page or self._default_focus_payment_page
         self.citizen_otp_resend_budget = citizen_otp_resend_budget or CitizenOtpResendBudget()
+        self.citizen_login_lock = citizen_login_lock
         self._payment_lease: PaymentLease | None = None
         self.citizen_otp_for_cleanup: str | None = None
         self.egrass_otp_for_cleanup: tuple[str, str] | None = None
@@ -289,6 +291,13 @@ class PortalAutomation:
             await self._release_payment_slot()
 
     async def ensure_citizen_session(self, credentials: Credentials) -> None:
+        if self.citizen_login_lock is not None:
+            async with self.citizen_login_lock:
+                await self._ensure_citizen_session(credentials)
+            return
+        await self._ensure_citizen_session(credentials)
+
+    async def _ensure_citizen_session(self, credentials: Credentials) -> None:
         await self._stage(Stage.CITIZEN_LOGIN)
         if await visible(self.page, "#payment_purpose_id", 1_000):
             return

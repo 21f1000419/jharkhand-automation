@@ -588,8 +588,16 @@ class AutomationStatusWindow:
         for card in self.cards.values():
             card.frame.grid_forget()
 
-        def order(item: str) -> tuple[int, int | str]:
-            return (0, int(item)) if item.isdigit() else (1, item)
+        def order(item: str) -> tuple[int, int, int | str]:
+            base, _, worker = str(item).partition(".")
+            if base.isdigit():
+                try:
+                    return (0, int(base), int(worker) if worker.isdigit() else 0)
+                except ValueError:
+                    pass
+            if str(item).isdigit():
+                return (0, int(str(item)), 0)
+            return (1, 0, str(item))
 
         for column, run_id in enumerate(sorted(self.cards, key=order)):
             self.cards[run_id].frame.grid(row=0, column=column, sticky="ns", padx=(0, 7))

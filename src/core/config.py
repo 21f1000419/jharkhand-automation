@@ -38,6 +38,7 @@ class TabConfig:
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
     retry_egras_otp_once: bool = True
+    browser_count: int = 1
 
     @property
     def display_name(self) -> str:
@@ -60,6 +61,10 @@ class TabConfig:
         cleaned = {key: value for key, value in values.items() if key in allowed}
         cleaned["tab_id"] = tab_id
         cleaned["profile_number"] = profile_number
+        try:
+            cleaned["browser_count"] = min(20, max(1, int(cleaned.get("browser_count", 1))))
+        except (TypeError, ValueError):
+            cleaned["browser_count"] = 1
         return cls(**cleaned)
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +137,7 @@ class AppConfig:
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
     retry_egras_otp_once: bool = True
+    browser_count: int = 1
 
     def __post_init__(self) -> None:
         self._ensure_tab_one()

@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from automation.portal import PortalAutomation
 from core.controls import RunControls
 from core.models import (
     AutomationError,
     BrowserEngine,
+    CaptchaCopyMode,
     Credentials,
     PortalBrowser,
     RunMode,
@@ -18,7 +21,7 @@ from core.models import (
     TransactionResult,
     UiEvent,
 )
-from core.workflow import WorkflowEngine
+from core.workflow import ParallelBatchRuntime, WorkflowEngine
 from services.csv_store import CsvBatchStore
 
 
@@ -121,6 +124,99 @@ class WorkflowQuantityTests(unittest.TestCase):
 
         stopped = next(event for event in events if event.kind == "run_stopped")
         self.assertTrue(stopped.data["browser_closed"])
+
+    def test_parallel_runtime_assigns_distinct_quantities_to_browsers(self) -> None:
+        runtime = ParallelBatchRuntime(self.csv_path)
+
+        async def exercise_queue() -> tuple[
+            tuple[int, dict[str, str], int],
+            tuple[int, dict[str, str], int],
+            None,
+        ]:
+            await runtime.initialize()
+            first = runtime.claim_next()
+            second = runtime.claim_next()
+            assert first is not None
+            assert second is not None
+            finished = runtime.claim_next()
+            assert finished is None
+            return first, second, finished
+
+        first, second, finished = asyncio.run(exercise_queue())
+
+        self.assertEqual(first[2], 1)
+        self.assertEqual(second[2], 2)
+        self.assertIs(first[1], second[1])
+        self.assertIsNone(finished)
+
+    def test_parallel_citizen_logins_are_serialized_for_one_id(self) -> None:
+        runtime = ParallelBatchRuntime(self.csv_path)
+        controls = RunControls(lambda _event: None)
+        active = 0
+        maximum_active = 0
+
+        async def login_step(_credentials: Credentials) -> None:
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+
+        portals = [
+            PortalAutomation(
+                MagicMock(),
+                None,
+                controls,
+                AsyncMock(),
+                lambda _event: None,
+                MagicMock(),
+                "",
+                CaptchaCopyMode.DIRECT,
+                citizen_login_lock=runtime.citizen_login_lock,
+            )
+            for _ in range(3)
+        ]
+        for portal in portals:
+            portal._ensure_citizen_session = AsyncMock(  # type: ignore[method-assign]
+                side_effect=login_step
+            )
+
+        async def run_logins() -> None:
+            await asyncio.gather(
+                *(portal.ensure_citizen_session(Credentials()) for portal in portals)
+            )
+
+        asyncio.run(run_logins())
+
+        self.assertEqual(maximum_active, 1)
+
+    def test_parallel_worker_does_not_prelogin_before_processing_claim(self) -> None:
+        runtime = ParallelBatchRuntime(self.csv_path)
+        controls = RunControls(lambda _event: None)
+        portal = MagicMock()
+        portal.ensure_citizen_session = AsyncMock()
+        portal.reset_to_start = AsyncMock()
+        portal.process_unit = AsyncMock(
+            side_effect=[
+                TransactionResult({"Transaction ID": "first"}, "first"),
+                TransactionResult({"Transaction ID": "second"}, "second"),
+            ]
+        )
+        options = self.options()
+        options = replace(options, browser_count=2)
+        engine = WorkflowEngine(
+            MagicMock(),
+            None,
+            controls,
+            lambda _event: None,
+            parallel_runtime=runtime,
+        )
+
+        with patch("core.workflow.PortalAutomation", return_value=portal):
+            self.assertTrue(asyncio.run(engine.run(options)))
+
+        portal.ensure_citizen_session.assert_not_awaited()
+        self.assertEqual(portal.process_unit.await_count, 2)
 
 
 if __name__ == "__main__":

@@ -174,6 +174,8 @@ class RunOptions:
     portal_profile_path: Path | None = None
     portal_window_accent: str = ""
     portal_window_label: str = ""
+    browser_count: int = 1
+    worker_index: int = 0
 
 
 @dataclass(frozen=True)

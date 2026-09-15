@@ -152,6 +152,39 @@ class CsvBatchStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(list(store.pending_rows())), 0)
 
+    def test_out_of_order_parallel_results_keep_quantity_slots_and_resume_safely(self) -> None:
+        CsvBatchStore.write_template(self.path)
+        store = CsvBatchStore(self.path)
+        store.load()
+        row = store.rows[0]
+        row["quantity"] = "3"
+
+        store.mark_success(
+            row,
+            "ref-three",
+            "downloads/three.pdf",
+            {"Transaction ID": "three"},
+            quantity_number=3,
+        )
+        store.mark_success(
+            row,
+            "ref-one",
+            "downloads/one.pdf",
+            {"Transaction ID": "one"},
+            quantity_number=1,
+        )
+        store.persist()
+
+        reloaded = CsvBatchStore(self.path)
+        reloaded.load()
+        row = reloaded.rows[0]
+        self.assertEqual(reloaded.pending_quantity_numbers(row), [2])
+        self.assertEqual(json.loads(row["processed_units"]), [1, 3])
+        self.assertEqual(
+            json.loads(row["transaction_refs"]),
+            ["ref-one", "", "ref-three"],
+        )
+
     def test_interrupted_running_row_becomes_retryable_error(self) -> None:
         CsvBatchStore.write_template(self.path)
         store = CsvBatchStore(self.path)

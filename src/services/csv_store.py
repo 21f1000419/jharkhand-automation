@@ -26,6 +26,8 @@ STATE_COLUMNS = [
     "status",
     "completed_quantity",
     "processed_quantity",
+    "completed_units",
+    "processed_units",
     "attempt_count",
     "error_count",
     "last_stage",
@@ -102,8 +104,17 @@ class CsvBatchStore:
 
     def pending_rows(self) -> Iterable[tuple[int, dict[str, str]]]:
         for index, row in enumerate(self.rows):
-            if int(row["processed_quantity"]) < safe_positive_int(row["quantity"]):
+            if self.pending_quantity_numbers(row):
                 yield index, row
+
+    def pending_quantity_numbers(self, row: dict[str, str]) -> list[int]:
+        quantity = safe_positive_int(row["quantity"])
+        processed = set(row_processed_unit_numbers(row, quantity))
+        return [number for number in range(1, quantity + 1) if number not in processed]
+
+    def next_pending_quantity(self, row: dict[str, str]) -> int:
+        pending = self.pending_quantity_numbers(row)
+        return pending[0] if pending else safe_positive_int(row["quantity"])
 
     def set_running(self, row: dict[str, str], stage: Stage) -> None:
         row["status"] = RowStatus.RUNNING
@@ -120,24 +131,34 @@ class CsvBatchStore:
         transaction_ref: str,
         relative_file: str,
         details: dict[str, str] | None = None,
+        quantity_number: int | None = None,
     ) -> None:
         quantity = safe_positive_int(row["quantity"])
-        processed = min(quantity, int(row["processed_quantity"]) + 1)
-        completed = min(processed, int(row["completed_quantity"]) + 1)
-        row["completed_quantity"] = str(completed)
-        row["processed_quantity"] = str(processed)
-        row["transaction_refs"] = append_history_value(
-            row["transaction_refs"], transaction_ref, quantity
+        unit = quantity_number or self.next_pending_quantity(row)
+        processed_units = set(row_processed_unit_numbers(row, quantity))
+        completed_units = set(normalize_unit_numbers(row["completed_units"], quantity))
+        processed_units.add(unit)
+        completed_units.add(unit)
+        row["processed_units"] = json.dumps(sorted(processed_units))
+        row["completed_units"] = json.dumps(sorted(completed_units))
+        row["completed_quantity"] = str(len(completed_units))
+        row["processed_quantity"] = str(len(processed_units))
+        row["transaction_refs"] = set_history_value(
+            row["transaction_refs"], transaction_ref, quantity, unit
         )
-        row["transaction_details"] = append_history_object(
-            row["transaction_details"], details or {}
+        row["transaction_details"] = set_history_object(
+            row["transaction_details"], details or {}, unit
         )
-        row["estamp_files"] = append_history_value(row["estamp_files"], relative_file, quantity)
+        row["estamp_files"] = set_history_value(
+            row["estamp_files"], relative_file, quantity, unit
+        )
         download_error = (details or {}).get("PDF error", "")
         row["last_error"] = f"PDF download failed: {download_error}" if download_error else ""
         row["last_stage"] = Stage.DOWNLOAD
         row["status"] = (
-            RowStatus.COMPLETED if completed >= int(row["quantity"]) else RowStatus.PARTIAL
+            RowStatus.COMPLETED
+            if len(completed_units) >= quantity
+            else RowStatus.PARTIAL
         )
         row["updated_at"] = utc_now()
 
@@ -148,8 +169,11 @@ class CsvBatchStore:
         stage: Stage,
         message: str,
     ) -> None:
-        processed = min(safe_positive_int(row["quantity"]), int(row["processed_quantity"]) + 1)
-        row["processed_quantity"] = str(processed)
+        quantity = safe_positive_int(row["quantity"])
+        processed_units = set(row_processed_unit_numbers(row, quantity))
+        processed_units.add(quantity_number)
+        row["processed_units"] = json.dumps(sorted(processed_units))
+        row["processed_quantity"] = str(len(processed_units))
         row["skipped_quantities"] = append_history_object(
             row["skipped_quantities"],
             {
@@ -166,11 +190,10 @@ class CsvBatchStore:
 
     def mark_skipped_row(self, row: dict[str, str], stage: Stage, message: str) -> int:
         """Mark every unfinished quantity in one CSV row as skipped."""
-        quantity = safe_positive_int(row["quantity"])
-        first_unfinished = int(row["processed_quantity"]) + 1
-        for quantity_number in range(first_unfinished, quantity + 1):
+        pending = self.pending_quantity_numbers(row)
+        for quantity_number in pending:
             self.mark_skipped_quantity(row, quantity_number, stage, message)
-        return max(0, quantity - first_unfinished + 1)
+        return len(pending)
 
     def mark_error(self, row: dict[str, str], stage: Stage, message: str) -> None:
         row["error_count"] = str(int(row["error_count"]) + 1)
@@ -244,6 +267,8 @@ class CsvBatchStore:
                     "status": RowStatus.PENDING,
                     "completed_quantity": "0",
                     "processed_quantity": "0",
+                    "completed_units": "[]",
+                    "processed_units": "[]",
                     "attempt_count": "0",
                     "error_count": "0",
                     "transaction_refs": "[]",
@@ -266,10 +291,19 @@ class CsvBatchStore:
             except ValueError:
                 row[key] = "0"
         quantity = safe_positive_int(row["quantity"])
-        completed = min(int(row["completed_quantity"]), quantity)
-        processed = min(max(int(row["processed_quantity"]), completed), quantity)
-        row["completed_quantity"] = str(completed)
-        row["processed_quantity"] = str(processed)
+        completed_count = min(int(row["completed_quantity"]), quantity)
+        processed_count = min(max(int(row["processed_quantity"]), completed_count), quantity)
+        completed_units = normalize_unit_numbers(row.get("completed_units", ""), quantity)
+        processed_units = normalize_unit_numbers(row.get("processed_units", ""), quantity)
+        if not completed_units and completed_count:
+            completed_units = list(range(1, completed_count + 1))
+        if not processed_units and processed_count:
+            processed_units = list(range(1, processed_count + 1))
+        processed_units = sorted(set(processed_units) | set(completed_units))
+        row["completed_units"] = json.dumps(completed_units)
+        row["processed_units"] = json.dumps(processed_units)
+        row["completed_quantity"] = str(len(completed_units))
+        row["processed_quantity"] = str(len(processed_units))
         for key in ("transaction_refs", "estamp_files"):
             row[key] = normalize_history_value(row[key], quantity)
         for key in ("transaction_details", "skipped_quantities"):
@@ -277,7 +311,7 @@ class CsvBatchStore:
         if row["status"] == RowStatus.RUNNING:
             row["status"] = RowStatus.ERROR
             row["last_error"] = "The previous application run ended before this unit finished."
-        if int(row["completed_quantity"]) >= quantity:
+        if len(completed_units) >= quantity:
             row["status"] = RowStatus.COMPLETED
         elif not row["status"]:
             row["status"] = RowStatus.PENDING
@@ -291,6 +325,35 @@ def normalize_json_list(value: str) -> list[str]:
         return [str(item) for item in parsed]
     except (ValueError, TypeError, json.JSONDecodeError):
         return []
+
+
+def normalize_unit_numbers(value: str, quantity: int) -> list[int]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    units: set[int] = set()
+    for item in parsed:
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= number <= quantity:
+            units.add(number)
+    return sorted(units)
+
+
+def row_processed_unit_numbers(row: dict[str, str], quantity: int) -> list[int]:
+    processed = set(normalize_unit_numbers(row.get("processed_units", ""), quantity))
+    try:
+        legacy_count = min(quantity, max(0, int(row.get("processed_quantity", "0"))))
+    except ValueError:
+        legacy_count = 0
+    if len(processed) < legacy_count:
+        processed.update(range(1, legacy_count + 1))
+    return sorted(processed)
 
 
 def normalize_history_value(value: str, quantity: int) -> str:
@@ -312,6 +375,18 @@ def append_history_value(value: str, item: str, quantity: int) -> str:
     return json.dumps(values)
 
 
+def set_history_value(value: str, item: str, quantity: int, quantity_number: int) -> str:
+    if quantity == 1:
+        return item
+    values = normalize_json_list(value)
+    if not values and value.strip() and not value.lstrip().startswith("["):
+        values = [value.strip()]
+    while len(values) < quantity_number:
+        values.append("")
+    values[quantity_number - 1] = item
+    return json.dumps(values)
+
+
 def normalize_history_objects(value: str) -> str:
     try:
         parsed = json.loads(value or "[]")
@@ -325,6 +400,14 @@ def normalize_history_objects(value: str) -> str:
 def append_history_object(value: str, item: dict[str, str]) -> str:
     values = json.loads(normalize_history_objects(value))
     values.append(item)
+    return json.dumps(values)
+
+
+def set_history_object(value: str, item: dict[str, str], quantity_number: int) -> str:
+    values = json.loads(normalize_history_objects(value))
+    while len(values) < quantity_number:
+        values.append({})
+    values[quantity_number - 1] = item
     return json.dumps(values)
 
 

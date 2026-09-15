@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -26,6 +27,42 @@ from services.csv_store import CsvBatchStore
 from services.sms_otp_client import SmsOtpClient
 
 
+class ParallelBatchRuntime:
+    """Shared CSV state and work queue for one ID's browser workers."""
+
+    def __init__(self, csv_path: Path) -> None:
+        self.store = CsvBatchStore(csv_path)
+        self.initialize_lock = asyncio.Lock()
+        self.persist_lock = asyncio.Lock()
+        self.citizen_login_lock = asyncio.Lock()
+        self.error_decision_lock = asyncio.Lock()
+        self.initialized = False
+        self.initial_has_work = False
+        self.work: deque[tuple[int, dict[str, str], int]] = deque()
+        self.failed = False
+        self.fatal = False
+
+    async def initialize(self) -> None:
+        async with self.initialize_lock:
+            if self.initialized:
+                return
+            self.store.load()
+            self.store.persist()
+            for row_number, row in self.store.pending_rows():
+                if self.store.validate_row(row):
+                    self.work.append(
+                        (row_number, row, self.store.next_pending_quantity(row))
+                    )
+                    continue
+                for sequence in self.store.pending_quantity_numbers(row):
+                    self.work.append((row_number, row, sequence))
+            self.initial_has_work = bool(self.work)
+            self.initialized = True
+
+    def claim_next(self) -> tuple[int, dict[str, str], int] | None:
+        return self.work.popleft() if self.work else None
+
+
 class WorkflowEngine:
     def __init__(
         self,
@@ -37,6 +74,7 @@ class WorkflowEngine:
         close_portal_page: Callable[[], Awaitable[None]] | None = None,
         payment_coordinator: PaymentCoordinator | None = None,
         focus_payment_page: Callable[[], Awaitable[None]] | None = None,
+        parallel_runtime: ParallelBatchRuntime | None = None,
     ) -> None:
         self.page = page
         self.solver = solver
@@ -46,6 +84,7 @@ class WorkflowEngine:
         self.close_portal_page = close_portal_page
         self.payment_coordinator = payment_coordinator or default_payment_coordinator()
         self.focus_payment_page = focus_payment_page
+        self.parallel_runtime = parallel_runtime
         self.store: CsvBatchStore | None = None
         self.current_row: dict[str, str] | None = None
         self.current_stage = Stage.IDLE
@@ -69,9 +108,12 @@ class WorkflowEngine:
             self.payment_coordinator,
             self.focus_payment_page,
             self.citizen_otp_resend_budget,
+            self.parallel_runtime.citizen_login_lock if self.parallel_runtime is not None else None,
         )
 
     async def run(self, options: RunOptions) -> bool:
+        if self.parallel_runtime is not None:
+            return await self._run_parallel(options)
         self.citizen_otp_resend_budget = CitizenOtpResendBudget()
         self.store = CsvBatchStore(options.csv_path)
         self.store.load()
@@ -144,7 +186,7 @@ class WorkflowEngine:
                     self.store.set_running(row, self.current_stage)
                     await self._persist()
                     self._publish_progress(row_number, row)
-                    sequence = int(row["processed_quantity"]) + 1
+                    sequence = self.store.next_pending_quantity(row)
 
                     if options.fresh_browser_per_unit:
                         if (
@@ -313,6 +355,231 @@ class WorkflowEngine:
             )
             return False
 
+    async def _run_parallel(self, options: RunOptions) -> bool:
+        runtime = self.parallel_runtime
+        if runtime is None:
+            raise RuntimeError("Parallel batch state is unavailable.")
+        self.citizen_otp_resend_budget = CitizenOtpResendBudget()
+        await runtime.initialize()
+        self.store = runtime.store
+        if options.worker_index == 0:
+            self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
+
+        if not options.article.strip():
+            return False
+
+        download_root = options.download_root or Path.home() / "Downloads"
+        portal: PortalAutomation | None = None
+        if not options.fresh_browser_per_unit:
+            if (
+                (self.page is None or self.page.is_closed())
+                and self.open_portal_page is not None
+            ):
+                self.page = await self.open_portal_page()
+            if self.page is None:
+                raise RuntimeError("No portal browser page available.")
+            portal = self._create_portal(self.page, options)
+
+        try:
+            if not runtime.initial_has_work:
+                return True
+
+            while True:
+                await self.controls.checkpoint()
+                claimed = runtime.claim_next()
+                if claimed is None:
+                    break
+                row_number, row, sequence = claimed
+                self.current_row = row
+                self._publish_progress(row_number, row, sequence)
+
+                validation = self.store.validate_row(row)
+                if validation:
+                    error = AutomationError(
+                        "; ".join(validation),
+                        stage=Stage.VALIDATING,
+                        code="invalid_csv_row",
+                    )
+                    async with runtime.error_decision_lock:
+                        await self._handle_error(
+                            portal,
+                            row_number,
+                            row,
+                            error,
+                            options.mode,
+                            options.credentials,
+                            options.fresh_browser_per_unit,
+                            sequence,
+                        )
+                    continue
+
+                start_from_stage = Stage.CITIZEN_LOGIN
+                while True:
+                    self.current_stage = start_from_stage
+                    self.store.set_running(row, self.current_stage)
+                    await self._persist()
+                    self._publish_progress(row_number, row, sequence)
+
+                    if options.fresh_browser_per_unit:
+                        if (
+                            self.page is None
+                            or self.page.is_closed()
+                            or start_from_stage == Stage.CITIZEN_LOGIN
+                        ):
+                            if self.open_portal_page is not None:
+                                self.page = await self.open_portal_page()
+                            if self.page is None:
+                                raise RuntimeError("No portal browser page available.")
+                            portal = self._create_portal(self.page, options)
+                    elif self.page is None or self.page.is_closed():
+                        if self.open_portal_page is not None:
+                            self.page = await self.open_portal_page()
+                        if self.page is None:
+                            raise RuntimeError("No portal browser page available.")
+                        portal = self._create_portal(self.page, options)
+
+                    if portal is None:
+                        raise RuntimeError("No portal automation session available.")
+                    try:
+                        result = await portal.process_unit(
+                            row,
+                            options.article,
+                            options.credentials,
+                            download_root,
+                            row_number + 1,
+                            sequence,
+                            start_from_stage=start_from_stage,
+                        )
+                        relative_path = (
+                            os.path.relpath(result.destination, options.csv_path.parent)
+                            if result.destination is not None
+                            else ""
+                        )
+                        details = dict(result.details)
+                        details["PDF status"] = (
+                            "saved" if result.destination is not None else "failed"
+                        )
+                        details["PDF file"] = relative_path
+                        details["PDF error"] = result.download_error
+                        self.store.mark_success(
+                            row,
+                            result.reference,
+                            relative_path,
+                            details,
+                            quantity_number=sequence,
+                        )
+                        await self._persist()
+                        self._publish_progress(row_number, row, sequence)
+                        outcome = (
+                            result.destination.name
+                            if result.destination is not None
+                            else "transaction recorded; PDF unavailable"
+                        )
+                        self.emit(
+                            UiEvent(
+                                "log",
+                                f"Row {row_number + 1}, quantity {sequence} completed: {outcome}",
+                            )
+                        )
+                        if options.fresh_browser_per_unit:
+                            if self.close_portal_page is not None:
+                                await self.close_portal_page()
+                            self.page = None
+                            portal = None
+                        else:
+                            try:
+                                await portal.reset_to_start(credentials=options.credentials)
+                            except AutomationError as reset_error:
+                                self.emit(
+                                    UiEvent(
+                                        "log",
+                                        "Transaction was recorded, but the portal could not reset: "
+                                        f"{reset_error}",
+                                        {"level": "error"},
+                                    )
+                                )
+                                if reset_error.code == "browser_closed":
+                                    raise WorkflowStopped from reset_error
+                        break
+                    except WorkflowStopped:
+                        raise
+                    except AutomationError as error:
+                        async with runtime.error_decision_lock:
+                            action = await self._handle_error(
+                                portal,
+                                row_number,
+                                row,
+                                error,
+                                options.mode,
+                                options.credentials,
+                                options.fresh_browser_per_unit,
+                                sequence,
+                            )
+                        if error.code == "browser_closed":
+                            raise WorkflowStopped from error
+                        if action == "retry":
+                            start_from_stage = Stage.CITIZEN_LOGIN
+                            continue
+                        if action == "continue":
+                            checkpoint_info = STAGE_CHECKPOINTS.get(error.stage)
+                            start_from_stage = (
+                                checkpoint_info[0] if checkpoint_info else Stage.CITIZEN_LOGIN
+                            )
+                            self.emit(
+                                UiEvent(
+                                    "log",
+                                    "Resuming automation from next checkpoint: "
+                                    f"{start_from_stage.value}",
+                                )
+                            )
+                            continue
+                        self.store.mark_skipped_quantity(
+                            row,
+                            sequence,
+                            error.stage,
+                            str(error),
+                        )
+                        await self._persist()
+                        self._publish_progress(row_number, row, sequence)
+                        self.emit(
+                            UiEvent(
+                                "log",
+                                f"Row {row_number + 1}, quantity {sequence} skipped; "
+                                "moving to the next quantity.",
+                            )
+                        )
+                        break
+
+            self.current_row = None
+            self.current_stage = Stage.IDLE
+            if options.fresh_browser_per_unit:
+                if self.close_portal_page is not None:
+                    await self.close_portal_page()
+                self.page = None
+            elif portal is not None:
+                await portal.reset_to_start(credentials=options.credentials)
+            self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
+            return True
+        except (WorkflowStopped, asyncio.CancelledError):
+            if self.current_row is not None and not self.browser_interrupted:
+                if "closed" in self.controls.stop_reason.casefold():
+                    self.browser_interrupted = True
+                    self.store.mark_error(
+                        self.current_row,
+                        self.current_stage,
+                        "Browser closed. This row can be retried.",
+                    )
+                else:
+                    self.store.mark_stopped(
+                        self.current_row,
+                        self.current_stage,
+                        self.controls.stop_reason,
+                    )
+                await self._persist(ignore_stop=True)
+                self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
+            self.current_row = None
+            return False
+
     async def _handle_error(
         self,
         portal: PortalAutomation | None,
@@ -322,6 +589,7 @@ class WorkflowEngine:
         mode: RunMode,
         credentials: Credentials | None = None,
         fresh_browser_per_unit: bool = False,
+        quantity_number: int | None = None,
     ) -> str:
         self.current_stage = error.stage
         self.store_or_raise().mark_error(row, error.stage, str(error))
@@ -372,7 +640,7 @@ class WorkflowEngine:
                 str(error),
                 {
                     "row": row_number + 1,
-                    "quantity": int(row["processed_quantity"]) + 1,
+                    "quantity": quantity_number or self.store_or_raise().next_pending_quantity(row),
                     "stage": error.stage.value,
                     "quantity_action": error.stage != Stage.VALIDATING,
                     "post_payment_warning": error.stage in {Stage.PAYMENT, Stage.RESULT, Stage.DOWNLOAD},
@@ -414,7 +682,11 @@ class WorkflowEngine:
         reported_block = False
         while True:
             try:
-                self.store_or_raise().persist()
+                if self.parallel_runtime is None:
+                    self.store_or_raise().persist()
+                else:
+                    async with self.parallel_runtime.persist_lock:
+                        self.store_or_raise().persist()
                 return
             except PersistenceError as error:
                 if ignore_stop:
@@ -426,7 +698,9 @@ class WorkflowEngine:
                 await self.controls.checkpoint()
                 await asyncio.sleep(1)
 
-    def _publish_progress(self, row_number: int, row: dict[str, str]) -> None:
+    def _publish_progress(
+        self, row_number: int, row: dict[str, str], quantity_number: int | None = None
+    ) -> None:
         store = self.store_or_raise()
         self.emit(
             UiEvent(
@@ -434,10 +708,8 @@ class WorkflowEngine:
                 data={
                     "rows": store.summaries(),
                     "current_row": row_number + 1,
-                    "current_unit": min(
-                        int(row["processed_quantity"]) + 1,
-                        int(row["quantity"]),
-                    ),
+                    "current_unit": quantity_number
+                    or store.next_pending_quantity(row),
                 },
             )
         )

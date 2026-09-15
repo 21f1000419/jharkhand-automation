@@ -12,6 +12,17 @@ from services.credential_store import TARGET_NAME, tab_target_name
 
 
 class TabConfigTests(unittest.TestCase):
+    def test_browser_count_is_persisted_and_clamped(self) -> None:
+        tab = TabConfig.from_dict(
+            {"browser_count": 200}, tab_id=1, profile_number=1
+        )
+        self.assertEqual(tab.browser_count, 20)
+
+        invalid = TabConfig.from_dict(
+            {"browser_count": "invalid"}, tab_id=1, profile_number=1
+        )
+        self.assertEqual(invalid.browser_count, 1)
+
     def test_legacy_settings_migrate_to_tab_one(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

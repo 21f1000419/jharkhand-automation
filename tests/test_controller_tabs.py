@@ -4,12 +4,18 @@ import asyncio
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from core.config import AppConfig
-from core.controller import AutomationController, PortalSessionFactory
+from core.controller import (
+    AutomationController,
+    PortalSessionFactory,
+    worker_dock_id,
+    worker_short_label,
+)
 from core.models import BrowserEngine, Credentials, OcrEngine, PortalBrowser, RunMode, RunOptions
 
 
@@ -152,6 +158,111 @@ class AutomationControllerTabTests(unittest.TestCase):
                 self.wait_for(lambda: "tab-one" in controller.sessions)
                 with self.assertRaises(ValueError):
                     controller.start("tab-one", _options("second-run"))
+            finally:
+                controller.shutdown()
+
+    def test_one_id_starts_the_configured_number_of_browser_workers(self) -> None:
+        options = _options("run-one")
+        options = replace(options, browser_count=3)
+        with patch("core.controller.WorkflowEngine", _BlockingWorkflow):
+            controller = AutomationController(AppConfig())
+            try:
+                controller.start("tab-one", options)
+                expected = {
+                    "tab-one",
+                    "tab-one::browser-2",
+                    "tab-one::browser-3",
+                }
+                self.wait_for(lambda: set(controller.sessions) == expected)
+                self.assertEqual(
+                    {session.group_id for session in controller.sessions.values()},
+                    {"tab-one"},
+                )
+                self.assertEqual(
+                    {session.worker_number for session in controller.sessions.values()},
+                    {1, 2, 3},
+                )
+            finally:
+                controller.shutdown()
+
+    def test_parallel_browsers_use_concise_dock_names(self) -> None:
+        self.assertEqual(worker_short_label("3", 1, 3), "B3.1")
+        self.assertEqual(worker_short_label("3", 2, 3), "B3.2")
+        self.assertEqual(worker_short_label("3", 3, 3), "B3.3")
+        self.assertEqual(worker_dock_id("3", 2, 3), "3.2")
+        self.assertEqual(worker_dock_id("3", 1, 1), "3")
+        self.assertEqual(
+            AutomationController._worker_window_label("ID 3 | user", 3, 1, "3"),
+            "ID 3 | user | B3.2",
+        )
+        self.assertEqual(
+            AutomationController._worker_window_label("ID 3 | user", 1, 0, "3"),
+            "ID 3 | user",
+        )
+
+    def test_parallel_browser_events_carry_their_own_dock_id(self) -> None:
+        options = _options("3")
+        options = replace(options, browser_count=2)
+        with patch("core.controller.WorkflowEngine", _BlockingWorkflow):
+            controller = AutomationController(AppConfig())
+            try:
+                controller.start("3", options)
+                self.wait_for(lambda: len(controller.sessions) == 2)
+                sessions = sorted(
+                    controller.sessions.values(), key=lambda s: s.worker_number
+                )
+                self.assertEqual(
+                    [s.options.portal_window_label for s in sessions],
+                    ["B3.1", "B3.2"],
+                )
+
+                def run_started_dock_ids() -> set[str]:
+                    found: set[str] = set()
+                    while not controller.events.empty():
+                        event = controller.events.get_nowait()
+                        if event.kind == "run_started" and event.data.get("dock_id"):
+                            found.add(str(event.data["dock_id"]))
+                    return found
+
+                self.wait_for(lambda: {"3.1"} <= run_started_dock_ids())
+                for session in sessions:
+                    self.assertEqual(
+                        str(
+                            controller.sessions[session.tab_id]
+                            .options.portal_window_label
+                        ),
+                        f"B3.{session.worker_number}",
+                    )
+            finally:
+                controller.shutdown()
+
+    def test_stopping_one_browser_keeps_the_other_working(self) -> None:
+        options = _options("3")
+        options = replace(options, browser_count=2)
+        with patch("core.controller.WorkflowEngine", _BlockingWorkflow):
+            controller = AutomationController(AppConfig())
+            try:
+                controller.start("3", options)
+                self.wait_for(lambda: len(controller.sessions) == 2)
+                controller.stop("3.2")
+                self.wait_for(lambda: len(controller.sessions) == 1)
+                remaining = next(iter(controller.sessions.values()))
+                self.assertEqual(remaining.worker_number, 1)
+                self.assertEqual(remaining.group_id, "3")
+
+                def worker_stopped_seen() -> bool:
+                    while not controller.events.empty():
+                        event = controller.events.get_nowait()
+                        if event.kind == "worker_stopped" and str(
+                            event.data.get("dock_id", "")
+                        ) == "3.2":
+                            return True
+                    return False
+
+                self.wait_for(worker_stopped_seen)
+                # Group is still reserved: starting the same ID must be rejected.
+                with self.assertRaises(ValueError):
+                    controller.start("3", options)
             finally:
                 controller.shutdown()
 
