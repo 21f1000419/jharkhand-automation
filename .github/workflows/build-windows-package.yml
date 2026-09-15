@@ -81,24 +81,6 @@ jobs:
           Write-Host "Created $archiveName"
           Write-Host "Size: $([math]::Round((Get-Item -LiteralPath $archivePath).Length / 1MB, 1)) MiB"
 
-      - name: Upload ZIP as Actions artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: jharni
-          path: ${{ steps.package.outputs.archive_path }}
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload EXE as Actions artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: jharni-exe
-          path: ${{ steps.package.outputs.exe_path }}
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
-
       - name: Attach ZIP and checksum to release
         if: github.event_name == 'release' || inputs.release_tag != ''
         shell: pwsh

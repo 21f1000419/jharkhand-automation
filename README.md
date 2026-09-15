@@ -131,7 +131,7 @@ The output is the complete `dist\jharni` folder. Keep the folder intact when mov
 
 The `Build Windows package` workflow runs on `windows-latest`. It installs the pinned dependencies, builds the onedir package with `estamp_automation.spec`, checks the bundled OCR and browser files, runs a frozen-runtime smoke test, and creates `jharni.zip`. The ZIP extracts to a top-level `jharni` folder. It also publishes `Compitcom-eStamp-Automation.exe` as a separate release asset for updating an existing installation.
 
-It runs automatically when an existing GitHub release is published. The ZIP, EXE, and SHA-256 checksum are attached to that release. You can also run it from **Actions > Build Windows package > Run workflow**. If you enter an existing release tag, the workflow attaches the new files there; otherwise the run provides separate ZIP and EXE artifacts for download.
+It runs automatically when an existing GitHub release is published. The ZIP, EXE, and SHA-256 checksum are attached to that release. You can also run it from **Actions > Build Windows package > Run workflow** and enter an existing release tag to attach the new files there. The workflow does not retain Actions artifacts, so a manual run without a release tag only builds and validates the package.
 
 For an existing installation, replace only the EXE when the update changes Python application logic or the UI and does not change dependencies, native DLLs, the PyInstaller spec, or bundled assets. Download the complete ZIP whenever any of those packaged files change.
 
