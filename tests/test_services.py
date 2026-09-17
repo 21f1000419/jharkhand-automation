@@ -679,6 +679,7 @@ class ServiceTests(unittest.TestCase):
                 )
 
             self.assertEqual(reference, "reference123")
+            self.assertEqual(destination.name, "eStamp_reference123.pdf")
             self.assertEqual(destination.read_bytes(), pdf)
             self.assertEqual(page.evaluate.await_count, 2)
             sleep.assert_awaited_once_with(1)
@@ -717,6 +718,7 @@ class ServiceTests(unittest.TestCase):
                 )
 
             self.assertEqual(reference, "native123")
+            self.assertEqual(destination.name, "eStamp_native123.pdf")
             self.assertEqual(destination.read_bytes(), pdf)
             self.assertEqual(page.evaluate.await_count, 3)
             link.click.assert_awaited_once_with()

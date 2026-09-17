@@ -9,7 +9,7 @@ from pathlib import Path
 
 _TRANSACTION_ID_HEADER = "transaction id"
 _DOWNLOADED_STAMP_NAME = re.compile(
-    r"^estamp_row-\d+_unit-\d+_(?P<transaction_id>[A-Za-z0-9_-]+)$", re.IGNORECASE
+    r"^estamp_(?:row-\d+_unit-\d+_)?(?P<transaction_id>[A-Za-z0-9_-]+)$", re.IGNORECASE
 )
 
 

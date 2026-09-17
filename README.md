@@ -80,7 +80,7 @@ selected CSV in place; atomic replacement may create a short-lived temporary fil
 CSV is retained.
 The destination displayed in the application defaults to the current user's Windows `Downloads` folder and can be
 changed with **Browse…**. The app saves validated PDFs with names such as
-`eStamp_row-001_unit-001_<reference>.pdf` and records their paths in the CSV; this is explicit rather than relying
+`eStamp_<reference>.pdf` and records their paths in the CSV; this is explicit rather than relying
 on an opaque Chrome-profile download preference.
 
 Each CSV row is validated immediately when the CSV is selected; the progress table and a warning identify rows that

@@ -46,7 +46,7 @@ class EstampDownloader:
         url = urljoin(page.url, href)
         reference = extract_reference(url) or f"unit-{sequence}"
         output_directory.mkdir(parents=True, exist_ok=True)
-        destination = output_directory / f"eStamp_row-{row_number:03d}_unit-{sequence:03d}_{reference}.pdf"
+        destination = output_directory / f"eStamp_{reference}.pdf"
         temporary = destination.with_suffix(".pdf.part")
         try:
             data = await self._fetch_pdf(page, url)

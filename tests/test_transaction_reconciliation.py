@@ -24,8 +24,8 @@ class TransactionReconciliationTests(unittest.TestCase):
                 "Name,Transaction ID,Status\nFirst,txn-1,SUCCESS\nSecond,txn-2,SUCCESS\n",
                 encoding="utf-8",
             )
-            (stamps / "eStamp_row-001_unit-001_txn-1.pdf").touch()
-            (nested_stamps / "eStamp_row-002_unit-001_txn-3.pdf").touch()
+            (stamps / "eStamp_txn-1.pdf").touch()
+            (nested_stamps / "eStamp_txn-3.pdf").touch()
 
             report = reconcile_transactions(csv_path, stamps)
 
