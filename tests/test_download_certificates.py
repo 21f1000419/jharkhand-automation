@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import datetime
 import io
 import tempfile
 import tkinter as tk
@@ -23,6 +24,12 @@ from services.estamp_transactions import (
     export_payment_transactions_batch,
     export_payment_transactions_for_target,
 )
+from services.pdf_receipt_dates import (
+    _read_receipt_date,
+    extract_first_party_name,
+    extract_receipt_amount,
+    extract_receipt_date,
+)
 from services.transaction_reconciliation import (
     MissingPdf,
     TransactionReconciliation,
@@ -35,6 +42,49 @@ from ui.download_certificates_dialog import (
 
 
 class DownloadCertificatesTests(unittest.TestCase):
+    def test_extract_receipt_date(self) -> None:
+        text = "Certificate details\nReceipt Date : 05-Sep-2026 12:15:13 pm\nReference"
+
+        self.assertEqual(extract_receipt_date(text), datetime.date(2026, 9, 5))
+
+    def test_extract_receipt_date_ignores_invalid_text(self) -> None:
+        self.assertIsNone(extract_receipt_date("Receipt Date : 42-Sep-2026 12:15:13 pm"))
+
+    def test_extract_first_party_name_and_receipt_amount(self) -> None:
+        text = (
+            "Receipt Amount : 100/-\n"
+            "Amount In Words : One Hundred Rupees Only\n"
+            "First Party Name : HDFC Bank Ltd\n"
+            "Second Party Name : As per agreement with HDFC Bank Ltd"
+        )
+
+        self.assertEqual(extract_first_party_name(text), "HDFC Bank Ltd")
+        self.assertEqual(extract_receipt_amount(text), "100")
+
+    def test_pdf_reader_closes_objects_without_context_manager_support(self) -> None:
+        text_page = MagicMock()
+        text_page.get_text_range.return_value = "Receipt Date : 05-Sep-2026 12:15:13 pm"
+        page = MagicMock()
+        page.get_textpage.return_value = text_page
+        document = MagicMock()
+        document.__len__.return_value = 1
+        document.__getitem__.return_value = page
+
+        with patch("services.pdf_receipt_dates.pdfium.PdfDocument") as pdf_document:
+            pdf_document.return_value.__enter__.return_value = document
+            result = _read_receipt_date(Path("sample.pdf"))
+
+        self.assertEqual(result, datetime.date(2026, 9, 5))
+        text_page.close.assert_called_once_with()
+        page.close.assert_called_once_with()
+
+    def test_pdf_reader_ignores_unexpected_extraction_errors(self) -> None:
+        with patch(
+            "services.pdf_receipt_dates.pdfium.PdfDocument",
+            side_effect=Exception("unsupported PDF"),
+        ):
+            self.assertIsNone(_read_receipt_date(Path("sample.pdf")))
+
     def test_target_dataclass_defaults(self) -> None:
         browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)
         target = TransactionExportTarget(

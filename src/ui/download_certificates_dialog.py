@@ -33,6 +33,7 @@ from services.estamp_transactions import (
     export_payment_transactions_batch,
     parse_payment_amount,
 )
+from services.pdf_receipt_dates import find_pdf_folder_defaults
 from services.transaction_reconciliation import (
     TransactionReconciliation,
     reconcile_transactions,
@@ -258,14 +259,6 @@ class DownloadUndownloadedCertificatesDialog:
         ids_group = ttk.LabelFrame(parent, text="Select Citizen IDs", padding=8)
         ids_group.pack(fill="x", pady=(0, 6))
 
-        info_label = ttk.Label(
-            ids_group,
-            text="Select none to sign in manually in the browser.",
-            foreground="#555555",
-            wraplength=480,
-        )
-        info_label.pack(anchor="w", pady=(0, 4))
-
         # Selection Toolbar
         tools_frame = ttk.Frame(ids_group)
         tools_frame.pack(fill="x", pady=(0, 4))
@@ -278,6 +271,11 @@ class DownloadUndownloadedCertificatesDialog:
             text="Use Chrome For All",
             variable=self.use_chrome_for_all_var,
         ).pack(side="left", padx=(10, 0))
+        ttk.Label(
+            tools_frame,
+            text="Select none to sign in manually in the browser.",
+            foreground="#555555",
+        ).pack(side="left", padx=(12, 0))
         ttk.Label(
             tools_frame,
             textvariable=self.selection_summary_var,
@@ -861,6 +859,22 @@ class DownloadUndownloadedCertificatesDialog:
         )
         if selected:
             self.reconcile_folder_var.set(selected)
+            self._set_date_filter_from_pdf_folder(Path(selected))
+
+    def _set_date_filter_from_pdf_folder(self, folder: Path) -> None:
+        try:
+            defaults = find_pdf_folder_defaults(folder)
+        except Exception:
+            return
+        if defaults.date_from is not None and defaults.date_to is not None:
+            self.export_date_from_var.set(defaults.date_from.isoformat())
+            self.export_date_to_var.set(defaults.date_to.isoformat())
+            self.export_date_filter_enabled_var.set(True)
+            self._update_date_filter_state()
+        if defaults.first_party_name:
+            self.export_name_filter_var.set(defaults.first_party_name)
+        if defaults.receipt_amount:
+            self.export_amount_filter_var.set(defaults.receipt_amount)
 
     def _run_compare(self) -> None:
         csv_path_str = self.reconcile_csv_var.get().strip()
