@@ -101,6 +101,7 @@ class DownloadUndownloadedCertificatesDialog:
         self.reconcile_status_var = tk.StringVar(value="Select files and click Compare.")
 
         self.id_items: list[IdSelectionItem] = []
+        self._pdf_scan_token = 0
 
         self._build_ui()
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -862,9 +863,67 @@ class DownloadUndownloadedCertificatesDialog:
             self._set_date_filter_from_pdf_folder(Path(selected))
 
     def _set_date_filter_from_pdf_folder(self, folder: Path) -> None:
+        """Scan PDFs in background so large folders don't freeze the UI."""
+        self._pdf_scan_token += 1
+        token = self._pdf_scan_token
         try:
-            defaults = find_pdf_folder_defaults(folder)
+            self.reconcile_status_var.set("Scanning PDFs for dates...")
         except Exception:
+            pass
+        threading.Thread(
+            target=self._scan_pdf_folder_worker,
+            args=(folder, token),
+            name="pdf-defaults-scan",
+            daemon=True,
+        ).start()
+
+    def _scan_pdf_folder_worker(self, folder: Path, token: int) -> None:
+        def progress(done: int, total: int) -> None:
+            if token != self._pdf_scan_token:
+                return
+            try:
+                if not self.dialog.winfo_exists():
+                    return
+            except Exception:
+                return
+            try:
+                self.dialog.after(
+                    0,
+                    lambda d=done, t=total: self.reconcile_status_var.set(
+                        f"Scanning PDFs for dates... {d}/{t}"
+                    ),
+                )
+            except Exception:
+                pass
+
+        try:
+            defaults = find_pdf_folder_defaults(
+                folder,
+                progress_callback=progress,
+                should_stop=lambda: token != self._pdf_scan_token,
+            )
+        except Exception:
+            return
+        if token != self._pdf_scan_token:
+            return
+        try:
+            if not self.dialog.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            self.dialog.after(0, lambda: self._apply_pdf_defaults(defaults, folder, token))
+        except Exception:
+            pass
+
+    def _apply_pdf_defaults(self, defaults: Any, folder: Path, token: int) -> None:
+        if token != self._pdf_scan_token:
+            return
+        try:
+            current = self.reconcile_folder_var.get().strip()
+        except Exception:
+            current = ""
+        if current and Path(current) != folder:
             return
         if defaults.date_from is not None and defaults.date_to is not None:
             self.export_date_from_var.set(defaults.date_from.isoformat())
@@ -875,6 +934,12 @@ class DownloadUndownloadedCertificatesDialog:
             self.export_name_filter_var.set(defaults.first_party_name)
         if defaults.receipt_amount:
             self.export_amount_filter_var.set(defaults.receipt_amount)
+        if defaults.date_from is None and defaults.date_to is None:
+            self.reconcile_status_var.set("Select files and click Compare.")
+        else:
+            self.reconcile_status_var.set(
+                f"Auto-filled dates {defaults.date_from} to {defaults.date_to} from PDFs."
+            )
 
     def _run_compare(self) -> None:
         csv_path_str = self.reconcile_csv_var.get().strip()
