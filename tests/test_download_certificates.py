@@ -7,6 +7,7 @@ import io
 import tempfile
 import tkinter as tk
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +30,7 @@ from services.pdf_receipt_dates import (
     extract_first_party_name,
     extract_receipt_amount,
     extract_receipt_date,
+    find_pdf_folder_defaults,
 )
 from services.transaction_reconciliation import (
     MissingPdf,
@@ -84,6 +86,65 @@ class DownloadCertificatesTests(unittest.TestCase):
             side_effect=Exception("unsupported PDF"),
         ):
             self.assertIsNone(_read_receipt_date(Path("sample.pdf")))
+
+    def test_pdf_folder_defaults_keep_parallel_results_complete(self) -> None:
+        paths = [Path(f"{index:02}.pdf") for index in range(20)]
+        scan_results = {
+            path: (
+                datetime.date(2026, 9, 13 + index % 7),
+                f"Party {index}",
+                str(20 + index),
+                True,
+            )
+            for index, path in enumerate(paths)
+        }
+        progress: list[tuple[int, int]] = []
+
+        with (
+            patch("services.pdf_receipt_dates._list_pdf_paths", return_value=paths),
+            patch(
+                "services.pdf_receipt_dates._scan_single_pdf",
+                side_effect=lambda path: scan_results[path],
+            ),
+            patch(
+                "services.pdf_receipt_dates.ProcessPoolExecutor",
+                side_effect=lambda max_workers: ThreadPoolExecutor(max_workers=max_workers),
+            ) as process_pool,
+        ):
+            defaults = find_pdf_folder_defaults(
+                Path("pdfs"),
+                max_workers=4,
+                progress_callback=lambda done, total: progress.append((done, total)),
+            )
+
+        process_pool.assert_called_once_with(max_workers=4)
+        self.assertEqual(defaults.date_from, datetime.date(2026, 9, 13))
+        self.assertEqual(defaults.date_to, datetime.date(2026, 9, 19))
+        self.assertEqual(defaults.first_party_name, "Party 0")
+        self.assertEqual(defaults.receipt_amount, "20")
+        self.assertEqual(progress[-1], (20, 20))
+        self.assertEqual(len(progress), 20)
+
+    def test_pdf_folder_defaults_fall_back_when_processes_cannot_start(self) -> None:
+        paths = [Path(f"{index:02}.pdf") for index in range(20)]
+
+        def scan(path: Path) -> tuple[datetime.date, str, str, bool]:
+            index = paths.index(path)
+            return datetime.date(2026, 9, 13 + index % 7), "Party", "20", True
+
+        with (
+            patch("services.pdf_receipt_dates._list_pdf_paths", return_value=paths),
+            patch("services.pdf_receipt_dates._scan_single_pdf", side_effect=scan) as scanner,
+            patch(
+                "services.pdf_receipt_dates.ProcessPoolExecutor",
+                side_effect=RuntimeError("process creation blocked"),
+            ),
+        ):
+            defaults = find_pdf_folder_defaults(Path("pdfs"), max_workers=4)
+
+        self.assertEqual(defaults.date_from, datetime.date(2026, 9, 13))
+        self.assertEqual(defaults.date_to, datetime.date(2026, 9, 19))
+        self.assertEqual(scanner.call_count, 20)
 
     def test_target_dataclass_defaults(self) -> None:
         browser = PortalBrowser("Managed Chrome", Path("/path/to/chrome"), BrowserEngine.CHROMIUM)

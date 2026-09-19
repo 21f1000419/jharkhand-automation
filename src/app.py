@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tkinter as tk
+from multiprocessing import freeze_support
 from pathlib import Path
 from tkinter import messagebox
 
@@ -66,6 +67,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    freeze_support()
     if "--packaging-smoke-test" in sys.argv:
         raise SystemExit(packaging_smoke_test())
     main()

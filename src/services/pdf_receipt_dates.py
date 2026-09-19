@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import datetime
+import os
 import re
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -121,15 +124,11 @@ def find_pdf_folder_defaults(
 ) -> PdfFolderDefaults:
     """Read dates from all PDFs and filters from the first readable PDF.
 
-    Dates are streamed into min/max (no list buildup). PDFs are read
-    sequentially because pypdfium2/PDFium is not thread-safe: reading
-    documents from a thread pool hangs and silently drops files, which
-    previously produced a wrong range (e.g. 17-19 instead of 13-19).
-    ``max_workers`` is accepted for API compatibility but ignored.
+    PDFium is not thread-safe, so parallel scans use separate processes.
+    Worker failures and blank reads are retried in the calling process.
     ``progress_callback(done, total)`` reports progress; ``should_stop``
     aborts early with partial results.
     """
-    _ = max_workers
     pdf_paths = _list_pdf_paths(folder)
     total = len(pdf_paths)
     if total == 0:
@@ -140,11 +139,16 @@ def find_pdf_folder_defaults(
     first_party_name = ""
     receipt_amount = ""
     first_readable_index: int | None = None
+    completed_indexes: set[int] = set()
+    done_count = 0
 
-    for index, pdf_path in enumerate(pdf_paths):
-        if should_stop is not None and should_stop():
-            break
-        receipt_date, name, amount, has_text = _scan_single_pdf(pdf_path)
+    def absorb(
+        index: int,
+        result: tuple[datetime.date | None, str, str, bool],
+    ) -> None:
+        nonlocal date_from, date_to, first_party_name, receipt_amount, first_readable_index
+        nonlocal done_count
+        receipt_date, name, amount, has_text = result
         if receipt_date is not None:
             if date_from is None or receipt_date < date_from:
                 date_from = receipt_date
@@ -156,11 +160,76 @@ def find_pdf_folder_defaults(
             first_readable_index = index
             first_party_name = name
             receipt_amount = amount
+        completed_indexes.add(index)
+        done_count += 1
         if progress_callback is not None:
-            try:
-                progress_callback(index + 1, total)
-            except Exception:
-                pass
+            with suppress(Exception):
+                progress_callback(done_count, total)
+
+    def scan_sequentially(indexes: list[int]) -> None:
+        for index in indexes:
+            if should_stop is not None and should_stop():
+                return
+            absorb(index, _scan_single_pdf(pdf_paths[index]))
+
+    if total <= 16 or max_workers <= 1:
+        scan_sequentially(list(range(total)))
+        return PdfFolderDefaults(
+            date_from=date_from,
+            date_to=date_to,
+            first_party_name=first_party_name,
+            receipt_amount=receipt_amount,
+        )
+
+    workers = max(1, min(max_workers, total, os.cpu_count() or 1, 8))
+    executor: ProcessPoolExecutor | None = None
+    pending: dict[
+        Future[tuple[datetime.date | None, str, str, bool]], tuple[int, Path]
+    ] = {}
+    next_index = 0
+    stopped = False
+
+    def submit_until_full() -> None:
+        nonlocal next_index
+        assert executor is not None
+        while next_index < total and len(pending) < workers * 2:
+            pdf_path = pdf_paths[next_index]
+            pending[executor.submit(_scan_single_pdf, pdf_path)] = (next_index, pdf_path)
+            next_index += 1
+
+    try:
+        executor = ProcessPoolExecutor(max_workers=workers)
+        submit_until_full()
+        while pending:
+            if should_stop is not None and should_stop():
+                stopped = True
+                break
+            finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                index, pdf_path = pending.pop(future)
+                try:
+                    result = future.result()
+                except Exception:
+                    result = _scan_single_pdf(pdf_path)
+                else:
+                    if not result[3]:
+                        result = _scan_single_pdf(pdf_path)
+                absorb(index, result)
+            submit_until_full()
+    except Exception:
+        # A process may fail to start in a restricted or frozen runtime.
+        # Complete every unprocessed file in the caller rather than return
+        # a plausible-looking but incomplete range.
+        pass
+    finally:
+        for future in pending:
+            future.cancel()
+        if executor is not None:
+            executor.shutdown(wait=not stopped, cancel_futures=True)
+
+    if not stopped:
+        remaining = [index for index in range(total) if index not in completed_indexes]
+        scan_sequentially(remaining)
     return PdfFolderDefaults(
         date_from=date_from,
         date_to=date_to,
