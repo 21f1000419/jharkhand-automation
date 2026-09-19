@@ -218,6 +218,97 @@ class WorkflowQuantityTests(unittest.TestCase):
         portal.ensure_citizen_session.assert_not_awaited()
         self.assertEqual(portal.process_unit.await_count, 2)
 
+    def test_rerun_after_complete_preserves_results_and_reports_recheck(self) -> None:
+        row, sequences = self.run_with_results(
+            "next",
+            [
+                TransactionResult({"Transaction ID": "first"}, "first"),
+                TransactionResult({"Transaction ID": "second"}, "second"),
+            ],
+        )
+        self.assertEqual(sequences, [1, 2])
+        self.assertEqual(row["completed_quantity"], "2")
+
+        controls = RunControls(lambda _event: None)
+        portal = MagicMock()
+        portal.ensure_citizen_session = AsyncMock()
+        portal.reset_to_start = AsyncMock()
+        portal.process_unit = AsyncMock(
+            side_effect=AssertionError("completed units must not be reprocessed")
+        )
+        events: list[UiEvent] = []
+        engine = WorkflowEngine(MagicMock(), None, controls, events.append)
+
+        with patch("core.workflow.PortalAutomation", return_value=portal):
+            self.assertTrue(asyncio.run(engine.run(self.options())))
+
+        portal.process_unit.assert_not_awaited()
+        completed = [event for event in events if event.kind == "run_completed"]
+        self.assertTrue(completed)
+        self.assertIn("Recheck", completed[0].message)
+
+        reloaded = CsvBatchStore(self.csv_path)
+        reloaded.load()
+        self.assertEqual(reloaded.rows[0]["completed_quantity"], "2")
+        self.assertEqual(reloaded.rows[0]["processed_quantity"], "2")
+        self.assertEqual(len(list(reloaded.pending_rows())), 0)
+
+    def test_rerun_picks_up_rows_added_after_previous_run(self) -> None:
+        preparer = CsvBatchStore(self.csv_path)
+        preparer.load()
+        preparer.rows[0]["quantity"] = "1"
+        preparer.persist()
+
+        row, _sequences = self.run_with_results(
+            "next",
+            [TransactionResult({"Transaction ID": "first"}, "first")],
+        )
+        self.assertEqual(row["completed_quantity"], "1")
+
+        store = CsvBatchStore(self.csv_path)
+        store.load()
+        new_row = dict(store.rows[0])
+        for key in (
+            "status",
+            "completed_quantity",
+            "processed_quantity",
+            "completed_units",
+            "processed_units",
+            "attempt_count",
+            "error_count",
+            "last_stage",
+            "last_error",
+            "updated_at",
+            "transaction_refs",
+            "transaction_details",
+            "estamp_files",
+            "skipped_quantities",
+        ):
+            new_row[key] = ""
+        new_row["quantity"] = "1"
+        store.rows.append(new_row)
+        store.persist()
+
+        controls = RunControls(lambda _event: None)
+        portal = MagicMock()
+        portal.ensure_citizen_session = AsyncMock()
+        portal.reset_to_start = AsyncMock()
+        portal.process_unit = AsyncMock(
+            side_effect=[TransactionResult({"Transaction ID": "added"}, "added")]
+        )
+        engine = WorkflowEngine(MagicMock(), None, controls, lambda _event: None)
+
+        with patch("core.workflow.PortalAutomation", return_value=portal):
+            self.assertTrue(asyncio.run(engine.run(self.options())))
+
+        self.assertEqual(portal.process_unit.await_count, 1)
+
+        reloaded = CsvBatchStore(self.csv_path)
+        reloaded.load()
+        self.assertEqual(len(list(reloaded.pending_rows())), 0)
+        self.assertEqual(reloaded.rows[0]["completed_quantity"], "1")
+        self.assertEqual(reloaded.rows[1]["completed_quantity"], "1")
+
 
 if __name__ == "__main__":
     unittest.main()

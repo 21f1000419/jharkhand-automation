@@ -328,11 +328,16 @@ class DownloadUndownloadedCertificatesDialog:
             citizen_pwd = creds.citizen_password
             user_key = citizen_user.casefold()
 
-            # Deduplicate by unique citizen username if provided
-            if user_key:
-                if user_key in seen_usernames:
-                    continue
-                seen_usernames.add(user_key)
+            # Only IDs with a citizen username can run an automatic export.
+            # IDs without one are hidden here; use "Deselect All" for a
+            # manual Citizen login instead of opening a browser per empty ID.
+            if not user_key:
+                continue
+
+            # Deduplicate by unique citizen username
+            if user_key in seen_usernames:
+                continue
+            seen_usernames.add(user_key)
 
             browser = tab._selected_browser() or self._first_available_browser()
             profile_slug = (
@@ -382,7 +387,7 @@ class DownloadUndownloadedCertificatesDialog:
             )
             chk.pack(side="left", padx=(0, 6))
 
-            label_text = f"{tab.tab_id}. {citizen_user or 'No username configured'}"
+            label_text = f"{tab.tab_id}. {citizen_user}"
             ttk.Label(row_frame, text=label_text).pack(side="left")
 
         self._update_selection_summary()

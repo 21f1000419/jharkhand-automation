@@ -77,6 +77,21 @@ class StatusDockRoutingTests(unittest.TestCase):
         second.start.assert_called_once_with(show_errors=False)
         window.run_status_var.set.assert_called_once_with("Started 2 ID(s); skipped 0 disabled")
 
+    def test_start_all_restarts_complete_ids_for_recheck(self) -> None:
+        window, first, second = self.window_with_tabs()
+        window.run_status_var = MagicMock()
+        window.tab_states = {1: "Complete", 2: "Complete"}
+        first.is_enabled = True
+        second.is_enabled = True
+        first.start.return_value = True
+        second.start.return_value = True
+
+        window._start_all()
+
+        first.start.assert_called_once_with(show_errors=False)
+        second.start.assert_called_once_with(show_errors=False)
+        window.run_status_var.set.assert_called_once_with("Started 2 ID(s); skipped 0 disabled")
+
     def test_recovery_is_only_offered_while_another_run_is_active(self) -> None:
         window, first, second = self.window_with_tabs()
         first.is_active = True

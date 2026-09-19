@@ -649,6 +649,14 @@ class AutomationTab:
             return False
         if self.browser_recovery_pending and not self.browser_recovery_ready:
             return False
+        # Recheck support: a restart after completion must see rows added to
+        # the CSV after the previous run. Reload quietly; completed units are
+        # preserved by the store, so old data stays intact.
+        csv_preview_path = Path(self.csv_var.get().strip())
+        if csv_preview_path.is_file():
+            self._load_preview(csv_preview_path, quiet=True)
+        self.current_row_number = None
+        self.current_unit_number = None
         error = self.validation_error()
         if error:
             self.set_state("Needs setup", error)

@@ -141,7 +141,13 @@ class WorkflowEngine:
             if not pending:
                 if portal is not None:
                     await portal.reset_to_start(credentials=options.credentials)
-                self.emit(UiEvent("run_completed", "All CSV rows are already complete."))
+                self.emit(
+                    UiEvent(
+                        "run_completed",
+                        "Recheck complete - all CSV rows are already complete. "
+                        "Existing results preserved.",
+                    )
+                )
                 return True
             # Highlight the first work item immediately.  Citizen login may
             # pause for user input before per-row processing starts.

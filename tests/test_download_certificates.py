@@ -517,14 +517,20 @@ class DownloadCertificatesTests(unittest.TestCase):
 
             dialog = DownloadUndownloadedCertificatesDialog(owner, initial_tab=0)
 
-            # Unique IDs should be 3: tab1 (user_alpha), tab2 (user_beta), tab4 (no username)
-            self.assertEqual(len(dialog.id_items), 3)
+            # Only IDs with a citizen username are listed: tab1 (user_alpha)
+            # and tab2 (user_beta). tab3 is a duplicate username and tab4 has
+            # no username, so both are hidden.
+            self.assertEqual(len(dialog.id_items), 2)
+            self.assertEqual(
+                sorted(item.citizen_username for item in dialog.id_items),
+                ["user_alpha", "user_beta"],
+            )
 
             # All should be checked by default
             for item in dialog.id_items:
                 self.assertTrue(item.var.get())
 
-            self.assertIn("3 of 3 IDs selected (Automatic login mode)", dialog.selection_summary_var.get())
+            self.assertIn("2 of 2 IDs selected (Automatic login mode)", dialog.selection_summary_var.get())
 
             # Deselect all -> manual mode
             dialog._deselect_all_ids()
@@ -536,7 +542,7 @@ class DownloadCertificatesTests(unittest.TestCase):
             dialog._select_all_ids()
             for item in dialog.id_items:
                 self.assertTrue(item.var.get())
-            self.assertIn("3 of 3 IDs selected (Automatic login mode)", dialog.selection_summary_var.get())
+            self.assertIn("2 of 2 IDs selected (Automatic login mode)", dialog.selection_summary_var.get())
 
             # Check Use Chrome For All is True by default
             self.assertTrue(dialog.use_chrome_for_all_var.get())
