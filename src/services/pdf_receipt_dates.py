@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import datetime
-import os
 import re
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
@@ -101,7 +100,7 @@ def _list_pdf_paths(folder: Path) -> list[Path]:
 def _scan_single_pdf(
     pdf_path: Path,
 ) -> tuple[datetime.date | None, str, str, bool]:
-    """Extract date/name/amount from the first page of one PDF."""
+    """Extract date/name/amount from one PDF (first page, rest as fallback)."""
     text = _read_pdf_text(pdf_path)
     if not text:
         return None, "", "", False
@@ -122,10 +121,15 @@ def find_pdf_folder_defaults(
 ) -> PdfFolderDefaults:
     """Read dates from all PDFs and filters from the first readable PDF.
 
-    Dates are streamed into min/max (no list buildup) and PDFs are read
-    in parallel. ``progress_callback(done, total)`` is invoked from the
-    calling thread; ``should_stop`` aborts early with partial results.
+    Dates are streamed into min/max (no list buildup). PDFs are read
+    sequentially because pypdfium2/PDFium is not thread-safe: reading
+    documents from a thread pool hangs and silently drops files, which
+    previously produced a wrong range (e.g. 17-19 instead of 13-19).
+    ``max_workers`` is accepted for API compatibility but ignored.
+    ``progress_callback(done, total)`` reports progress; ``should_stop``
+    aborts early with partial results.
     """
+    _ = max_workers
     pdf_paths = _list_pdf_paths(folder)
     total = len(pdf_paths)
     if total == 0:
@@ -137,14 +141,10 @@ def find_pdf_folder_defaults(
     receipt_amount = ""
     first_readable_index: int | None = None
 
-    def _absorb(
-        index: int,
-        receipt_date: datetime.date | None,
-        name: str,
-        amount: str,
-        has_text: bool,
-    ) -> None:
-        nonlocal date_from, date_to, first_party_name, receipt_amount, first_readable_index
+    for index, pdf_path in enumerate(pdf_paths):
+        if should_stop is not None and should_stop():
+            break
+        receipt_date, name, amount, has_text = _scan_single_pdf(pdf_path)
         if receipt_date is not None:
             if date_from is None or receipt_date < date_from:
                 date_from = receipt_date
@@ -156,57 +156,11 @@ def find_pdf_folder_defaults(
             first_readable_index = index
             first_party_name = name
             receipt_amount = amount
-
-    if total <= 16 or max_workers <= 1:
-        for index, pdf_path in enumerate(pdf_paths):
-            if should_stop is not None and should_stop():
-                break
-            receipt_date, name, amount, has_text = _scan_single_pdf(pdf_path)
-            _absorb(index, receipt_date, name, amount, has_text)
-            if progress_callback is not None:
-                try:
-                    progress_callback(index + 1, total)
-                except Exception:
-                    pass
-        return PdfFolderDefaults(
-            date_from=date_from,
-            date_to=date_to,
-            first_party_name=first_party_name,
-            receipt_amount=receipt_amount,
-        )
-
-    try:
-        cpu_hint = (os.cpu_count() or 4) + 4
-    except Exception:
-        cpu_hint = 8
-    workers = max(1, min(max_workers, total, cpu_hint, 8))
-    done = 0
-    try:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_to_index = {
-                executor.submit(_scan_single_pdf, pdf_path): index
-                for index, pdf_path in enumerate(pdf_paths)
-            }
-            for future in as_completed(future_to_index):
-                if should_stop is not None and should_stop():
-                    for pending in future_to_index:
-                        pending.cancel()
-                    break
-                index = future_to_index[future]
-                try:
-                    receipt_date, name, amount, has_text = future.result()
-                except Exception:
-                    receipt_date, name, amount, has_text = None, "", "", False
-                _absorb(index, receipt_date, name, amount, has_text)
-                done += 1
-                if progress_callback is not None:
-                    try:
-                        progress_callback(done, total)
-                    except Exception:
-                        pass
-    except Exception:
-        # Fall back to whatever partial results were collected.
-        pass
+        if progress_callback is not None:
+            try:
+                progress_callback(index + 1, total)
+            except Exception:
+                pass
     return PdfFolderDefaults(
         date_from=date_from,
         date_to=date_to,
@@ -221,19 +175,40 @@ def _read_receipt_date(pdf_path: Path) -> datetime.date | None:
 
 
 def _read_pdf_text(pdf_path: Path) -> str:
-    """Return text from the first page only (eStamps are single-page)."""
+    """Return text from a PDF, first page first.
+
+    eStamps are single-page, so the first page is read first. If the
+    first page yields no text (or the document has more pages and the
+    receipt fields were not found there), the remaining pages are read
+    as a fallback so multi-page PDFs are not silently skipped.
+    """
     try:
         with pdfium.PdfDocument(pdf_path) as document:
             if len(document) == 0:
                 return ""
-            page = document[0]
-            try:
-                text_page = page.get_textpage()
-                try:
-                    return text_page.get_text_range()
-                finally:
-                    text_page.close()
-            finally:
-                page.close()
+            first = _read_page_text(document, 0)
+            if len(document) == 1:
+                return first
+            if (
+                extract_receipt_date(first) is not None
+                and extract_first_party_name(first)
+                and extract_receipt_amount(first)
+            ):
+                return first
+            rest = [_read_page_text(document, index) for index in range(1, len(document))]
+            return "\n".join([first, *rest])
     except Exception:
         return ""
+
+
+def _read_page_text(document: Any, page_index: int) -> str:
+    """Return the text of one PDF page, closing native handles."""
+    page = document[page_index]
+    try:
+        text_page = page.get_textpage()
+        try:
+            return str(text_page.get_text_range())
+        finally:
+            text_page.close()
+    finally:
+        page.close()
