@@ -27,6 +27,16 @@ from services.csv_store import CsvBatchStore
 from services.sms_otp_client import SmsOtpClient
 
 
+def _download_path_for_csv(destination: Path | None, csv_path: Path) -> str:
+    if destination is None:
+        return ""
+    try:
+        return os.path.relpath(destination, csv_path.parent)
+    except ValueError:
+        # Windows cannot create a relative path between different drives.
+        return str(destination.resolve())
+
+
 class ParallelBatchRuntime:
     """Shared CSV state and quantity claims for every active ID."""
 
@@ -256,10 +266,9 @@ class WorkflowEngine:
                             start_from_stage=start_from_stage,
                         )
                         start_from_stage = Stage.CITIZEN_LOGIN
-                        relative_path = (
-                            os.path.relpath(result.destination, options.csv_path.parent)
-                            if result.destination is not None
-                            else ""
+                        relative_path = _download_path_for_csv(
+                            result.destination,
+                            options.csv_path,
                         )
                         details = dict(result.details)
                         details["PDF status"] = "saved" if result.destination is not None else "failed"
@@ -486,10 +495,9 @@ class WorkflowEngine:
                             sequence,
                             start_from_stage=start_from_stage,
                         )
-                        relative_path = (
-                            os.path.relpath(result.destination, options.csv_path.parent)
-                            if result.destination is not None
-                            else ""
+                        relative_path = _download_path_for_csv(
+                            result.destination,
+                            options.csv_path,
                         )
                         details = dict(result.details)
                         details["PDF status"] = "saved" if result.destination is not None else "failed"

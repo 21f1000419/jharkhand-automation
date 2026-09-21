@@ -21,7 +21,7 @@ from core.models import (
     TransactionResult,
     UiEvent,
 )
-from core.workflow import ParallelBatchRuntime, WorkflowEngine
+from core.workflow import ParallelBatchRuntime, WorkflowEngine, _download_path_for_csv
 from services.csv_store import CsvBatchStore
 
 
@@ -57,6 +57,21 @@ class WorkflowQuantityTests(unittest.TestCase):
             mode=RunMode.ASSISTED,
             credentials=Credentials(),
         )
+
+    def test_download_path_uses_absolute_path_when_drives_differ(self) -> None:
+        destination = self.directory / "downloads" / "stamp.pdf"
+
+        with patch("core.workflow.os.path.relpath", side_effect=ValueError("different drives")):
+            stored_path = _download_path_for_csv(destination, self.csv_path)
+
+        self.assertEqual(stored_path, str(destination.resolve()))
+
+    def test_download_path_stays_relative_when_possible(self) -> None:
+        destination = self.directory / "downloads" / "stamp.pdf"
+
+        stored_path = _download_path_for_csv(destination, self.csv_path)
+
+        self.assertEqual(stored_path, str(Path("downloads") / "stamp.pdf"))
 
     def run_with_results(
         self, decision: str, results: list[AutomationError | TransactionResult]
