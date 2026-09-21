@@ -129,7 +129,7 @@ class StatusDockRoutingTests(unittest.TestCase):
 
         self.assertEqual(
             text,
-            "1. citizen-one\n● Running · Filling details for the current transaction",
+            "1. citizen-one\n● Running\nFilling details for the current transaction",
         )
 
     def test_id_button_status_symbols_cover_terminal_and_attention_states(self) -> None:

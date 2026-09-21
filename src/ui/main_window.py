@@ -1045,8 +1045,11 @@ class MainWindow:
                 borderwidth=0,
                 font=("Segoe UI", 9, "bold"),
                 justify="center",
-                padx=8,
-                pady=7,
+                width=1,
+                height=5,
+                wraplength=140,
+                padx=5,
+                pady=4,
                 cursor="hand2",
             )
             self.id_strip.columnconfigure(column, weight=1, uniform="id-buttons")
@@ -1065,8 +1068,10 @@ class MainWindow:
             relief="flat",
             borderwidth=0,
             font=("Segoe UI", 9, "bold"),
-            padx=8,
-            pady=7,
+            width=1,
+            height=5,
+            padx=5,
+            pady=4,
             cursor="hand2",
         ).grid(row=0, column=add_column, sticky="ew")
         self._refresh_start_menu()
@@ -1118,7 +1123,7 @@ class MainWindow:
         status = f"{self._status_symbol(state)} {state}"
         compact_detail = self._compact_status_detail(detail)
         if compact_detail:
-            status = f"{status} · {compact_detail}"
+            status = f"{status}\n{compact_detail}"
         return f"{self._id_citizen_label(tab)}\n{status}"
 
     def _show_id_settings(self, tab_id: int, *, new_id: bool = False) -> None:
