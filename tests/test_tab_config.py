@@ -13,14 +13,10 @@ from services.credential_store import TARGET_NAME, tab_target_name
 
 class TabConfigTests(unittest.TestCase):
     def test_browser_count_is_persisted_and_clamped(self) -> None:
-        tab = TabConfig.from_dict(
-            {"browser_count": 200}, tab_id=1, profile_number=1
-        )
+        tab = TabConfig.from_dict({"browser_count": 200}, tab_id=1, profile_number=1)
         self.assertEqual(tab.browser_count, 20)
 
-        invalid = TabConfig.from_dict(
-            {"browser_count": "invalid"}, tab_id=1, profile_number=1
-        )
+        invalid = TabConfig.from_dict({"browser_count": "invalid"}, tab_id=1, profile_number=1)
         self.assertEqual(invalid.browser_count, 1)
 
     def test_legacy_settings_migrate_to_tab_one(self) -> None:
@@ -40,44 +36,73 @@ class TabConfigTests(unittest.TestCase):
             config = ConfigStore(path).load()
 
             self.assertEqual(config.get_tab(1).display_name, "ID 1")
-            self.assertEqual(config.get_tab(1).last_article, "AFFIDAVIT")
+            self.assertEqual(config.run_config.last_article, "AFFIDAVIT")
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertIn("tabs", saved)
+            self.assertEqual(saved["run_config"]["last_article"], "AFFIDAVIT")
             self.assertNotIn("last_article", saved)
 
     def test_new_tab_has_blank_inputs_and_monotonic_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "settings.json")
             config = store.load()
-            config.get_tab(1).last_article = "old"
             first = store.create_tab(config)
             second = config.create_tab()
 
             self.assertEqual(first.display_name, "ID 2")
             self.assertEqual(second.display_name, "ID 3")
             self.assertEqual((first.profile_number, second.profile_number), (2, 3))
-            self.assertEqual(second.last_article, "")
-            self.assertEqual(second.last_csv_path, "")
             self.assertTrue(second.portal_profile_path)
 
-    def test_copy_run_settings_preserves_target_profile_identity(self) -> None:
+    def test_multi_id_upgrade_uses_id_one_for_global_run_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "tabs": [
+                            {
+                                "tab_id": 1,
+                                "profile_number": 1,
+                                "last_article": "LEASE",
+                                "last_csv_path": "id-one.csv",
+                                "sms_user_id": "sms-one",
+                                "browser_count": 2,
+                            },
+                            {
+                                "tab_id": 2,
+                                "profile_number": 2,
+                                "last_article": "AFFIDAVIT",
+                                "last_csv_path": "id-two.csv",
+                                "sms_user_id": "sms-two",
+                                "browser_count": 4,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = ConfigStore(path).load()
+
+            self.assertEqual(config.run_config.last_article, "LEASE")
+            self.assertEqual(config.run_config.last_csv_path, "id-one.csv")
+            self.assertEqual(config.get_tab(1).sms_user_id, "sms-one")
+            self.assertEqual(config.get_tab(2).sms_user_id, "sms-two")
+            self.assertEqual(config.get_tab(2).browser_count, 4)
+
+    def test_ids_keep_only_id_specific_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = ConfigStore(Path(directory) / "settings.json").load()
             source = config.get_tab(1)
-            source.last_article = "LEASE"
-            source.last_csv_path = "source.csv"
             source.sms_user_id = "citizen-1"
-            source.payment_trigger_method = "POST"
+            source.browser_count = 4
             target = config.create_tab()
             target.enabled = False
             identity = (target.tab_id, target.profile_number, target.portal_profile_path)
 
-            target.copy_run_settings_from(source)
-
-            self.assertEqual(target.last_article, "LEASE")
-            self.assertEqual(target.last_csv_path, "source.csv")
-            self.assertEqual(target.sms_user_id, "citizen-1")
-            self.assertEqual(target.payment_trigger_method, "POST")
+            self.assertEqual(target.sms_user_id, "")
+            self.assertEqual(target.browser_count, 1)
             self.assertFalse(target.enabled)
             self.assertEqual(
                 (target.tab_id, target.profile_number, target.portal_profile_path),
@@ -122,15 +147,15 @@ class TabConfigTests(unittest.TestCase):
             self.assertEqual(result, "deleted")
             self.assertFalse(expected_path.exists())
 
-    def test_tab_settings_are_the_persisted_source_of_truth(self) -> None:
+    def test_global_run_settings_are_the_persisted_source_of_truth(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "settings.json")
             config = store.load()
-            config.get_tab(1).last_article = "LEASE"
+            config.run_config.last_article = "LEASE"
 
             store.save(config)
 
-            self.assertEqual(store.load().get_tab(1).last_article, "LEASE")
+            self.assertEqual(store.load().run_config.last_article, "LEASE")
 
     def test_transaction_export_path_is_persisted_for_all_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

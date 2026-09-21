@@ -548,7 +548,6 @@ class AutomationStatusWindow:
 
     def set_payment_active(self, run_id: str, active: bool) -> None:
         del run_id, active
-        self._apply_topmost_state()
 
     def hide(self) -> None:
         self._manually_hidden = True

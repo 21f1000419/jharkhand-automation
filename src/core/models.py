@@ -176,6 +176,7 @@ class RunOptions:
     portal_window_label: str = ""
     browser_count: int = 1
     worker_index: int = 0
+    worker_key: str = ""
 
 
 @dataclass(frozen=True)

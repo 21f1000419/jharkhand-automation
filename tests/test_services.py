@@ -16,7 +16,7 @@ from automation.portal import (
     extract_egrass_otp_reference,
     transaction_details_from_rows,
 )
-from core.config import AppConfig, ConfigStore
+from core.config import AppConfig, ConfigStore, GlobalRunConfig
 from core.controls import RunControls
 from core.models import AutomationError, CaptchaCopyMode, Credentials, Stage, WorkflowStopped
 from services.captcha_ocr import join_ocr_fragments, normalize_captcha
@@ -73,9 +73,7 @@ class ServiceTests(unittest.TestCase):
             patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.04),
             self.assertRaises(AutomationError) as raised,
         ):
-            asyncio.run(
-                portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1)
-            )
+            asyncio.run(portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1))
 
         self.assertEqual(raised.exception.code, "prepayment_inactivity_timeout")
         self.assertEqual(raised.exception.stage, Stage.IDLE)
@@ -96,9 +94,7 @@ class ServiceTests(unittest.TestCase):
             patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.04),
             self.assertRaises(AutomationError) as raised,
         ):
-            asyncio.run(
-                portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1)
-            )
+            asyncio.run(portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1))
 
         self.assertEqual(raised.exception.code, "expected")
 
@@ -130,7 +126,7 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "expected")
 
-    def test_payment_queue_wait_is_not_subject_to_prepayment_timeout(self) -> None:
+    def test_payment_flow_does_not_acquire_a_global_queue_slot(self) -> None:
         portal = self._watchdog_portal()
         for method_name in (
             "ensure_citizen_session",
@@ -144,21 +140,26 @@ class ServiceTests(unittest.TestCase):
         ):
             setattr(portal, method_name, AsyncMock())
 
-        async def slow_payment_queue() -> None:
+        async def stop_at_qr(*_args: object) -> None:
             await asyncio.sleep(0.06)
             raise AutomationError("expected stop", stage=Stage.PAYMENT, code="expected")
 
-        portal._acquire_payment_slot = slow_payment_queue  # type: ignore[method-assign]
+        portal._acquire_payment_slot = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("the removed payment queue must not be used")
+        )
+        portal.select_upi_qr_and_pay = AsyncMock()  # type: ignore[method-assign]
+        portal.wait_for_upi_qr_and_trigger = AsyncMock(  # type: ignore[method-assign]
+            side_effect=stop_at_qr
+        )
 
         with (
             patch("automation.portal.PREPAYMENT_INACTIVITY_TIMEOUT_SECONDS", 0.02),
             self.assertRaises(AutomationError) as raised,
         ):
-            asyncio.run(
-                portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1)
-            )
+            asyncio.run(portal.process_unit({}, "Article", Credentials(), Path("downloads"), 1, 1))
 
         self.assertEqual(raised.exception.code, "expected")
+        portal._acquire_payment_slot.assert_not_awaited()
 
     def test_normalize_captcha_prefers_expected_length(self) -> None:
         self.assertEqual(normalize_captcha("The code is `UL1HVY`.", 6), "UL1HVY")
@@ -225,9 +226,7 @@ class ServiceTests(unittest.TestCase):
         otp_field = sticky_field()
         page.locator.return_value.first = otp_field
 
-        otp = asyncio.run(
-            portal._watch_and_fill_sms_otp("egrass", "#txtOTP", timeout_seconds=1)
-        )
+        otp = asyncio.run(portal._watch_and_fill_sms_otp("egrass", "#txtOTP", timeout_seconds=1))
 
         self.assertEqual(otp, "A09AFD")
         portal._wait_for_sms_otp.assert_awaited_once_with(
@@ -359,6 +358,7 @@ class ServiceTests(unittest.TestCase):
             "GRN": "grn-123",
             "CIN": "cin-123",
         }
+
         async def find_download_page() -> dict[str, str]:
             order.append("download_ready")
             return details
@@ -373,6 +373,7 @@ class ServiceTests(unittest.TestCase):
             patch("automation.portal.first_visible", new=AsyncMock(return_value=link)),
             patch("automation.portal.EstampDownloader") as downloader_type,
         ):
+
             async def fail_download(*_args: object) -> None:
                 order.append("download")
                 raise RuntimeError("HTTP 500")
@@ -393,7 +394,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.details, details)
         self.assertIsNone(result.destination)
         self.assertEqual(result.download_error, "HTTP 500")
-        self.assertEqual(order, ["download_ready", "release", "download"])
+        self.assertEqual(order, ["download_ready", "download"])
 
     def test_egras_terms_checkbox_uses_native_fallback(self) -> None:
         portal = PortalAutomation(
@@ -449,9 +450,7 @@ class ServiceTests(unittest.TestCase):
         unauthorized_form.count = AsyncMock(return_value=0)
         body = MagicMock()
         body.inner_text = AsyncMock(
-            return_value=(
-                "Unauthorized It appears that you don't have permission to access this page."
-            )
+            return_value=("Unauthorized It appears that you don't have permission to access this page.")
         )
         body.inner_html = AsyncMock(return_value="<div>Unauthorized</div>")
         page.locator.side_effect = [unauthorized_form, body]
@@ -575,6 +574,12 @@ class ServiceTests(unittest.TestCase):
             focus_payment_page=focus,
         )
 
+        async def capture_qr(_deadline: float) -> tuple[str, Path]:
+            order.append("capture")
+            return "qr-1", Path("qr-1.png")
+
+        portal._capture_upi_qr = AsyncMock(side_effect=capture_qr)  # type: ignore[method-assign]
+
         with patch(
             "automation.portal.send_payment_trigger_request",
             new=AsyncMock(side_effect=send_trigger),
@@ -582,20 +587,21 @@ class ServiceTests(unittest.TestCase):
             asyncio.run(portal.wait_for_upi_qr_and_trigger())
 
         trigger.assert_awaited_once_with("https://payment-trigger.example/start", "POST")
-        focus.assert_awaited_once_with()
-        self.assertEqual(order, ["focus", "trigger"])
+        focus.assert_not_awaited()
+        self.assertEqual(order, ["capture", "trigger"])
         page.wait_for_timeout.assert_awaited_once_with(250)
         self.assertTrue(any("HTTP 204" in getattr(event, "message", "") for event in events))
 
-    def test_empty_payment_trigger_still_foregrounds_the_qr_page(self) -> None:
+    def test_qr_capture_reads_visible_base64_image(self) -> None:
         page = MagicMock()
-        page.is_closed.return_value = False
-        body = MagicMock()
-        body.inner_text = AsyncMock(
-            return_value="Scan UPI QR Time left to complete the transaction"
-        )
-        page.locator.return_value = body
-        focus = AsyncMock()
+        candidate = MagicMock()
+        candidate.is_visible = AsyncMock(return_value=True)
+        candidate.bounding_box = AsyncMock(return_value={"width": 220, "height": 220})
+        candidate.get_attribute = AsyncMock(return_value="data:image/png;base64,cG5n")
+        matches = MagicMock()
+        matches.count = AsyncMock(return_value=1)
+        matches.nth.return_value = candidate
+        page.locator.return_value = matches
         portal = PortalAutomation(
             page,
             None,
@@ -605,21 +611,51 @@ class ServiceTests(unittest.TestCase):
             MagicMock(),
             "",
             CaptchaCopyMode.DIRECT,
+        )
+
+        with patch(
+            "automation.portal.save_data_uri",
+            return_value=("qr-1", Path("qr-1.png")),
+        ) as save:
+            result = asyncio.run(portal._capture_upi_qr(float("inf")))
+
+        self.assertEqual(result, ("qr-1", Path("qr-1.png")))
+        save.assert_called_once_with("data:image/png;base64,cG5n")
+
+    def test_empty_payment_trigger_captures_qr_without_foregrounding_browser(self) -> None:
+        page = MagicMock()
+        page.is_closed.return_value = False
+        body = MagicMock()
+        body.inner_text = AsyncMock(return_value="Scan UPI QR Time left to complete the transaction")
+        page.locator.return_value = body
+        events: list[object] = []
+        focus = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            events.append,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
             focus_payment_page=focus,
+        )
+        portal._capture_upi_qr = AsyncMock(  # type: ignore[method-assign]
+            return_value=("qr-1", Path("qr-1.png"))
         )
 
         asyncio.run(portal.wait_for_upi_qr_and_trigger())
 
-        focus.assert_awaited_once_with()
+        focus.assert_not_awaited()
+        self.assertTrue(any(getattr(event, "kind", "") == "qr_available" for event in events))
 
     def test_payment_trigger_failure_is_logged_and_ignored(self) -> None:
         page = MagicMock()
         page.is_closed.return_value = False
         page.bring_to_front = AsyncMock()
         body = MagicMock()
-        body.inner_text = AsyncMock(
-            return_value="Scan UPI QR Time left to complete the transaction"
-        )
+        body.inner_text = AsyncMock(return_value="Scan UPI QR Time left to complete the transaction")
         page.locator.return_value = body
         events: list[object] = []
         portal = PortalAutomation(
@@ -634,6 +670,9 @@ class ServiceTests(unittest.TestCase):
             "https://payment-trigger.example/start",
             "GET",
         )
+        portal._capture_upi_qr = AsyncMock(  # type: ignore[method-assign]
+            return_value=("qr-1", Path("qr-1.png"))
+        )
 
         with patch(
             "automation.portal.send_payment_trigger_request",
@@ -641,12 +680,7 @@ class ServiceTests(unittest.TestCase):
         ):
             asyncio.run(portal.wait_for_upi_qr_and_trigger())
 
-        self.assertTrue(
-            any(
-                "failed and was ignored" in getattr(event, "message", "")
-                for event in events
-            )
-        )
+        self.assertTrue(any("failed and was ignored" in getattr(event, "message", "") for event in events))
 
     def test_download_retries_in_live_browser_and_saves_pdf(self) -> None:
         pdf = b"%PDF-1.7\n" + (b"valid-pdf-data" * 50)
@@ -663,9 +697,7 @@ class ServiceTests(unittest.TestCase):
             ]
         )
         link = MagicMock()
-        link.get_attribute = AsyncMock(
-            return_value="/JHWebService/gras_estamp_download/reference123"
-        )
+        link.get_attribute = AsyncMock(return_value="/JHWebService/gras_estamp_download/reference123")
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch("services.downloads.asyncio.sleep", new=AsyncMock()) as sleep:
                 destination, reference = asyncio.run(
@@ -688,13 +720,9 @@ class ServiceTests(unittest.TestCase):
         pdf = b"%PDF-1.7\n" + (b"native-download-data" * 40)
         page = MagicMock()
         page.url = "https://example.test/payment/result"
-        page.evaluate = AsyncMock(
-            return_value={"status": 500, "contentType": "text/html", "body": ""}
-        )
+        page.evaluate = AsyncMock(return_value={"status": 500, "contentType": "text/html", "body": ""})
         link = MagicMock()
-        link.get_attribute = AsyncMock(
-            return_value="/JHWebService/gras_estamp_download/native123"
-        )
+        link.get_attribute = AsyncMock(return_value="/JHWebService/gras_estamp_download/native123")
         link.click = AsyncMock()
         download = MagicMock(spec=Download)
         download.failure = AsyncMock(return_value=None)
@@ -857,9 +885,7 @@ class ServiceTests(unittest.TestCase):
         field.input_value = AsyncMock(return_value="")
         resend_button = MagicMock()
         resend_button.count = AsyncMock(return_value=1)
-        resend_button.is_visible = AsyncMock(
-            side_effect=[True, False, True, False, True]
-        )
+        resend_button.is_visible = AsyncMock(side_effect=[True, False, True, False, True])
 
         def locate(selector: str) -> MagicMock:
             located = MagicMock()
@@ -1259,30 +1285,33 @@ class ServiceTests(unittest.TestCase):
         controls = RunControls(lambda _event: None)
         controls.decide("next")
         self.assertEqual(asyncio.run(controls.wait_for_decision()), "next")
+
     def test_config_store_persists_article_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings_path = Path(temp_dir) / "settings.json"
             store = ConfigStore(settings_path)
             config = AppConfig(
-                last_article="AFFIDAVIT (Art. 4)",
-                last_csv_path=r"C:\batches\sample.csv",
-                last_mode="continuous",
-                captcha_copy_mode=CaptchaCopyMode.MOUSE_CURSOR,
-                payment_trigger_url="https://payment-trigger.example/start",
-                payment_trigger_method="POST",
+                run_config=GlobalRunConfig(
+                    last_article="AFFIDAVIT (Art. 4)",
+                    last_csv_path=r"C:\batches\sample.csv",
+                    last_mode="continuous",
+                    captcha_copy_mode=CaptchaCopyMode.MOUSE_CURSOR,
+                    payment_trigger_url="https://payment-trigger.example/start",
+                    payment_trigger_method="POST",
+                ),
             )
             store.save(config)
 
             reloaded = store.load()
-            self.assertEqual(reloaded.last_article, "AFFIDAVIT (Art. 4)")
-            self.assertEqual(reloaded.last_csv_path, r"C:\batches\sample.csv")
-            self.assertEqual(reloaded.last_mode, "continuous")
-            self.assertEqual(reloaded.captcha_copy_mode, CaptchaCopyMode.MOUSE_CURSOR)
+            self.assertEqual(reloaded.run_config.last_article, "AFFIDAVIT (Art. 4)")
+            self.assertEqual(reloaded.run_config.last_csv_path, r"C:\batches\sample.csv")
+            self.assertEqual(reloaded.run_config.last_mode, "continuous")
+            self.assertEqual(reloaded.run_config.captcha_copy_mode, CaptchaCopyMode.MOUSE_CURSOR)
             self.assertEqual(
-                reloaded.payment_trigger_url,
+                reloaded.run_config.payment_trigger_url,
                 "https://payment-trigger.example/start",
             )
-            self.assertEqual(reloaded.payment_trigger_method, "POST")
+            self.assertEqual(reloaded.run_config.payment_trigger_method, "POST")
 
     def test_config_store_handles_missing_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1293,9 +1322,10 @@ class ServiceTests(unittest.TestCase):
             )
             store = ConfigStore(settings_path)
             loaded = store.load()
-            self.assertEqual(loaded.last_article, "")
-            self.assertEqual(loaded.last_csv_path, "")
-            self.assertEqual(loaded.last_mode, "assisted")
+            self.assertEqual(loaded.run_config.last_article, "")
+            self.assertEqual(loaded.run_config.last_csv_path, "")
+            self.assertEqual(loaded.run_config.last_mode, "assisted")
+
 
 if __name__ == "__main__":
     unittest.main()

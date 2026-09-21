@@ -30,21 +30,9 @@ PBKDF2_ROUNDS = 50_000
 # Windows installation and may contain an active signed-in browser session.
 EXPORTED_TAB_CONFIG_FIELDS = frozenset(
     {
-        "last_download_path",
-        "last_mode",
-        "last_portal_browser_path",
+        "enabled",
         "sms_user_id",
-        "sms_server_url",
-        "payment_trigger_url",
-        "payment_trigger_method",
-        "captcha_copy_mode",
-        "ocr_engine",
-        "ocr_enabled",
-        "last_article",
-        "last_csv_path",
-        "save_captcha_images",
-        "fresh_browser_per_unit",
-        "retry_egras_otp_once",
+        "browser_count",
     }
 )
 
@@ -253,8 +241,7 @@ def apply_imported_package(
         # Global browser and profile settings are local.  Do not restore them
         # from either current or older package versions.
         local_profiles_by_id = {
-            tab.tab_id: (tab.profile_number, tab.portal_profile_path)
-            for tab in app_config.tabs
+            tab.tab_id: (tab.profile_number, tab.portal_profile_path) for tab in app_config.tabs
         }
 
         # Reconstruct the tabs, retaining the local browser profile for an ID
@@ -287,7 +274,6 @@ def apply_imported_package(
         app_config._ensure_tab_one()
         app_config._ensure_unique_profiles()
         app_config._normalize_profile_counter()
-        app_config._sync_legacy_fields_from_tab()
 
     elif mode == "merge":
         # Add imported tabs alongside existing tabs
@@ -329,9 +315,7 @@ def _apply_tab_dict_to_tab(values: dict[str, Any], target: TabConfig) -> None:
         setattr(target, key, val)
 
 
-def _apply_credentials(
-    tab_data: TabExportData, tab_id: int, credential_store: CredentialStore
-) -> None:
+def _apply_credentials(tab_data: TabExportData, tab_id: int, credential_store: CredentialStore) -> None:
     """Save credentials into credential store if present."""
     creds_dict = tab_data.credentials
     if not creds_dict:

@@ -1,8 +1,8 @@
 # Compitcom eStamp Batch Automation
 
-Windows Tkinter application for processing multiple resumable CSV batches in parallel through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. Each ID tab owns its settings, credentials, CSV, SMS configuration, browser profile, and automation process. The application uses a signed-in dedicated Chrome profile to set up Gemini, then reopens that profile headlessly to read CAPTCHA images. The portals open in the browsers selected in their tabs. There is no OCR web server or FastAPI process.
+Windows Tkinter application for processing a resumable CSV batch in parallel through the Jharkhand NGDRS/eGRAS eStamp workflow described in `process.md`. One global run configuration supplies the batch, article, browser, download, OCR, trigger, and mode settings. Each ID keeps only its credentials, SMS user ID, browser count, enabled state, and browser profile. The application uses a signed-in dedicated Chrome profile to set up Gemini, then reopens that profile headlessly to read CAPTCHA images. There is no OCR web server or FastAPI process.
 
-Version 1 intentionally leaves OTP and payment manual: the application pauses, the user completes the step in Chrome, and then clicks **Resume**.
+Payment approval remains manual. The application captures each UPI QR code in its built-in carousel, continues polling the transaction, and removes the QR after five minutes or when the matching stamp is ready to download.
 
 At the start of a portal session, the application opens the Jharkhand portal home page and clicks its Citizen **Login** link, rather than requesting the login URL directly. When Citizen credentials are supplied, it captures the displayed `#captcha_image` directly for Gemini OCR, fills the CAPTCHA, and clicks **Get OTP**. When an SMS User ID is configured, it polls the SMS server and fills the retrieved OTP; the user then confirms Login. The app allows up to two minutes for the portal's eStamp entry link to appear before treating the login as incomplete.
 
@@ -36,15 +36,17 @@ CAPTCHA element without moving the mouse and uploads those exact PNG bytes direc
 clipboard ownership and browser-focus races. The `mouse_cursor` option retains the previous right-click **Copy
 image** browser-menu method.
 
-The dedicated Gemini profile and non-secret tab settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Saved Citizen/eGRAS credentials use Windows Credential Manager and are isolated by ID tab.
+The dedicated Gemini profile and non-secret settings are stored under `%LOCALAPPDATA%\Compitcom\eStampAutomation`. Saved Citizen/eGRAS credentials use Windows Credential Manager and are isolated by ID.
 
-## ID tabs and parallel runs
+## Shared workspace and IDs
 
-**ID 1** is the permanent default tab. Use **Add ID** to create more independently configured tabs and **Remove ID** to remove the selected non-default tab. Removing a tab keeps its browser profile and saved credentials. The next added tab reuses the first available ID and reconnects to the data associated with that ID. Its run settings start blank. **Copy all from ID 1** copies ID 1's current run settings and credentials while preserving the target ID and its separate browser profile.
+The compact controls at the top apply to every ID. The application locks these fields while automation is active so all workers continue using one consistent batch configuration. Existing configurations are migrated automatically: the former ID 1 values become the global settings, while every ID keeps its own credentials, SMS user ID, browser count, enabled state, and profile.
 
-Each tab has a different color marker and can use its own CSV, Article, browser, OCR choice, SMS settings, payment trigger, download folder, and operating mode. **Disable ID** keeps that tab and its settings but excludes it from **Start All** and grays its tab marker; **Enable ID** includes it again. Its Start, Pause, Resume, and Stop controls affect only that run. **Start All** starts every valid enabled tab and reports tabs that still need configuration; **Stop All** stops every active run. The same CSV cannot be active in two tabs at once.
+The center is split between the shared batch table and a payment QR carousel. The bottom ID strip shows each numbered Citizen ID, its state, and its current stage. Clicking any ID opens one settings dialog with a native tab for every ID. Each colored tab uses the same `number. Citizen ID` label. Password fields remain visible while editing. Active IDs are read-only until stopped. Use **+ Add ID** to create and select another tab, and remove a non-default ID from its tab.
 
-The **Browsers** count selects 1 to 20 parallel browser workers for that ID. Workers share one quantity queue and one CSV state, so rows and quantities are claimed once even when transactions finish out of order. Citizen login is one-by-one per ID, but each browser starts working right after its own login without waiting for the other browsers to finish logging in. Each worker gets its own persistent browser profile. When there is more than one browser, the existing ID name is kept and B3.1, B3.2, B3.3 is appended with a separator too (for example ID 3 shows ID 3 | B3.1, ID 3 | B3.2), and the status dock shows one panel per browser instead of wrapping them into one. Stopping one browser panel stops only that browser; the remaining browsers continue working.
+**Start All** starts every valid enabled ID. **Start ID** lists each idle ID with its Citizen username, and **Stop All** stops all active IDs. An ID started later joins the live shared batch and claims the next available quantity. Every worker across every ID shares one claim queue and CSV state, so a row and quantity can only be assigned once even when transactions finish out of order.
+
+The **Browsers** count in each ID's settings selects 1 to 20 parallel workers for that ID. Citizen login is serialized per ID, but each browser starts working as soon as its login is ready. Each worker gets its own persistent browser profile. When an ID has multiple browsers, the status dock displays one panel per worker. Stopping a panel stops only that worker; the other workers continue.
 
 ## Browser selection
 
@@ -52,7 +54,7 @@ The **Portal browser** picker automatically finds installed Google Chrome, Micro
 
 ## CSV batches
 
-Click **Download CSV Format**, fill and save the downloaded file, then use **Select CSV…** to load it. The
+Click **Download CSV Format**, fill and save the downloaded file, then use the global **Select...** button to load it. The
 template action never starts or selects a batch by itself. Input columns are:
 
 ```text
@@ -99,23 +101,22 @@ Every application action, workflow stage, error, and stop event is appended to o
 
 Enter the Citizen User ID used by the SMS server in **SMS OTP settings**. The ID applies only to the `main` NGDRS OTP. For eGRAS, the application reads the OTP reference number from the website and fetches the OTP stored under that reference, so parallel eGRAS sessions do not share or overwrite an OTP slot. The default server address is `https://sms-server.compitcom.in`; it can be changed in settings. An empty or incorrect Citizen User ID disables only automatic Citizen OTP retrieval. The browser remains available for manual entry if no OTP arrives.
 
-## Optional payment trigger and payment queue
+## Payment QR carousel and optional trigger
 
-Each ID accepts an optional payment-trigger URL and `GET`/`POST` method. Before clicking **Pay Now**, parallel runs enter a process-wide FIFO queue. Only the run at the front proceeds to its QR code. After both **Scan UPI QR** and **Time left to complete the transaction** appear, the application brings that run's native browser window to the foreground and verifies it is active. Only then does it call the configured URL once; POST sends an empty request body.
+The payment-trigger URL and `GET`/`POST` method are global. Payment workers proceed independently without a FIFO payment queue. When the SBIePay page displays the UPI payment block, the application extracts the visible base64 QR image to a temporary local PNG and appends it to the in-app carousel. The portal browser is not brought to the foreground.
 
-That run retains the queue until the transaction result and download link appear. The next queued browser is then allowed to proceed and come to the foreground. Foreground activation retries until it succeeds or the run is stopped. Trigger timeouts, HTTP errors, and invalid URLs are written to the activity log and do not stop transaction-result polling.
+The newest QR is selected automatically. Use **Previous** and **Next** to move between active QR codes; the panel shows the ID, CSV row, quantity, and remaining lifetime. A QR is removed after five minutes or as soon as the matching download is ready. Temporary QR files are also cleared when the application starts and closes. If configured, the payment trigger is called once after the QR has been captured successfully; POST sends an empty request body. Trigger timeouts, HTTP errors, and invalid URLs are written to the activity log and do not stop transaction-result polling.
 
 ## Operating modes and controls
 
 - **Assisted errors** asks whether to retry the current quantity or record it as skipped and move to the next quantity.
 - **Continuous** records ordinary errors, skips that quantity, and advances once without a prompt.
-- **Pause** keeps the current page and stops before the next browser action.
-- **Stop** cancels the active unit and preserves it as retryable.
-- Closing a portal browser stops only its ID. Gemini OCR runs headlessly while batches are active; closing the application stops all runs and closes their automation browsers.
+- **Stop All** cancels active units and preserves them as retryable.
+- Closing a portal browser stops that worker. Gemini OCR runs headlessly while batches are active; closing the application stops all runs and closes their automation browsers.
 
-Each tab shows its current state, row/quantity progress, and payment-queue position. Actionable row failures provide **Retry** and **Move to next** choices for that tab without blocking the other runs.
+The shared table shows row and quantity progress plus the ID currently assigned to each item. The ID strip and status dock show running, stopped, and error states. Actionable failures provide **Retry** and **Move to next** choices without blocking other workers.
 
-Continuous mode still pauses for manual OTP and payment. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
+Continuous mode still waits for manual OTP and payment when automation cannot complete them. Retrying a failure after payment began can create a duplicate charge; the assisted dialog displays a warning, and the CSV retains the stage/error for review.
 
 If the page reports that the PNB gateway is temporarily suspended after SBIePay selection, the application stops waiting for UPI controls and records a retryable gateway error. Assisted mode offers Retry, Continue, or Move to next. Continuous mode records the failure and advances according to its normal error policy.
 

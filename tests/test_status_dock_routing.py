@@ -77,6 +77,86 @@ class StatusDockRoutingTests(unittest.TestCase):
         second.start.assert_called_once_with(show_errors=False)
         window.run_status_var.set.assert_called_once_with("Started 2 ID(s); skipped 0 disabled")
 
+    def test_start_id_menu_includes_each_citizen_username(self) -> None:
+        window, first, second = self.window_with_tabs()
+        window.start_menu = MagicMock()
+        window.start_menu_button = MagicMock()
+        first.tab_id = 1
+        second.tab_id = 2
+        for tab in (first, second):
+            tab.is_enabled = True
+            tab.is_active = False
+            tab.portal_session_open = False
+        first.citizen_user_var.get.return_value = "citizen-one"
+        second.citizen_user_var.get.return_value = "citizen-two"
+
+        window._refresh_start_menu()
+
+        labels = [call.kwargs["label"] for call in window.start_menu.add_command.call_args_list]
+        self.assertEqual(labels, ["1. citizen-one", "2. citizen-two"])
+
+    def test_menu_opens_combined_settings_at_selected_or_first_id(self) -> None:
+        window, _first, _second = self.window_with_tabs()
+        window._show_id_settings = MagicMock()  # type: ignore[method-assign]
+        window.selected_id = None
+
+        window._show_selected_id_settings()
+        window._show_id_settings.assert_called_once_with(1)
+
+        window._show_id_settings.reset_mock()
+        window.selected_id = 2
+        window._show_selected_id_settings()
+        window._show_id_settings.assert_called_once_with(2)
+
+    def test_id_labels_use_numeric_prefix_and_citizen_username(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        first.citizen_user_var.get.return_value = "citizen-one"
+
+        self.assertEqual(window._id_citizen_label(first), "1. citizen-one")
+
+        first.citizen_user_var.get.return_value = "  "
+        self.assertEqual(window._id_citizen_label(first), "1. No Citizen ID")
+
+    def test_id_button_shows_state_symbol_and_compact_detail(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        first.citizen_user_var.get.return_value = "citizen-one"
+
+        text = window._id_button_text(
+            first,
+            "Running",
+            "  Filling   details for the current transaction  ",
+        )
+
+        self.assertEqual(
+            text,
+            "1. citizen-one\n● Running\nFilling details for the current transaction",
+        )
+
+    def test_id_button_status_symbols_cover_terminal_and_attention_states(self) -> None:
+        expected = {
+            "Idle": "○",
+            "Stopped": "○",
+            "Disabled": "○",
+            "Starting": "●",
+            "Running": "●",
+            "Payment": "●",
+            "Paused": "◐",
+            "Complete": "✓",
+            "Error": "!",
+            "Needs setup": "!",
+            "Browser closed": "!",
+        }
+
+        for state, symbol in expected.items():
+            with self.subTest(state=state):
+                self.assertEqual(MainWindow._status_symbol(state), symbol)
+
+    def test_id_button_truncates_long_status_detail(self) -> None:
+        compact = MainWindow._compact_status_detail("x" * 60)
+
+        self.assertEqual(len(compact), 48)
+        self.assertTrue(compact.endswith("…"))
+
     def test_start_all_restarts_complete_ids_for_recheck(self) -> None:
         window, first, second = self.window_with_tabs()
         window.run_status_var = MagicMock()
@@ -256,14 +336,14 @@ class StatusDockRoutingTests(unittest.TestCase):
         dock.set_payment_active.assert_called_once_with("1", False)
         self.assertEqual(first.handle_event.call_count, 2)
 
-    def test_status_dock_stays_topmost_during_payment(self) -> None:
+    def test_payment_does_not_raise_status_dock(self) -> None:
         dock = AutomationStatusWindow.__new__(AutomationStatusWindow)
         dock.window = MagicMock()
 
         dock.set_payment_active("1", True)
 
-        dock.window.attributes.assert_called_once_with("-topmost", True)
-        dock.window.lift.assert_called_once_with()
+        dock.window.attributes.assert_not_called()
+        dock.window.lift.assert_not_called()
 
     def test_macos_dock_uses_a_floating_utility_window(self) -> None:
         dock = AutomationStatusWindow.__new__(AutomationStatusWindow)
@@ -412,9 +492,7 @@ class StatusDockRoutingTests(unittest.TestCase):
         first.handle_event = MagicMock()  # type: ignore[method-assign]
         window._update_summary = MagicMock()  # type: ignore[method-assign]
 
-        window._handle_event(
-            UiEvent("worker_stopped", "B3.2 stopped.", {"dock_id": "3.2"}, "3")
-        )
+        window._handle_event(UiEvent("worker_stopped", "B3.2 stopped.", {"dock_id": "3.2"}, "3"))
 
         dock.remove_run.assert_called_once_with("3.2")
         first.handle_event.assert_called_once()

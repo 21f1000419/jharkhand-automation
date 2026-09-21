@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -21,8 +21,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from automation.browser import PortalBrowserSession
 from automation.portal import CITIZEN_LOGIN_URL, CITIZEN_WELCOME_URL, PortalAutomation
 from core.config import DEFAULT_SMS_SERVER_URL
-from core.controls import RunControls, WorkflowStopped
-from core.models import CaptchaCopyMode, Credentials, PortalBrowser, Stage, UiEvent
+from core.controls import RunControls
+from core.models import CaptchaCopyMode, Credentials, PortalBrowser, Stage, UiEvent, WorkflowStopped
 from services.captcha_ocr import CaptchaSolver
 from services.sms_otp_client import SmsOtpClient
 
@@ -81,7 +81,10 @@ _READ_ROWS_SCRIPT = """(args) => {
         for (const a of tr.querySelectorAll('a')) {
             const href = a.getAttribute('href') || '';
             const text = (a.textContent || '').toLowerCase();
-            if (href.includes('gras_estamp_download') || (text.includes('estamp') && !text.includes('payment_entry'))) {
+            if (
+                href.includes('gras_estamp_download')
+                || (text.includes('estamp') && !text.includes('payment_entry'))
+            ) {
                 if (href) {
                     if (href.startsWith('http://') || href.startsWith('https://')) {
                         estampUrl = href;
@@ -196,7 +199,10 @@ async def export_payment_transactions_for_target(
             and target.credentials.citizen_username
             and target.credentials.citizen_password
         ):
-            report_status(f"{target.name}: Logging into Citizen portal ({target.credentials.citizen_username})...")
+            report_status(
+                f"{target.name}: Logging into Citizen portal "
+                f"({target.credentials.citizen_username})..."
+            )
             sms_client = SmsOtpClient(target.sms_server_url or DEFAULT_SMS_SERVER_URL)
 
             def emit_event(event: UiEvent) -> None:
@@ -767,9 +773,12 @@ async def _select_page_size(page: Page) -> None:
 
 
 async def _read_current_page(page: Page, header_count: int, user_id: str) -> list[list[str]]:
-    return await page.evaluate(
-        _READ_ROWS_SCRIPT,
-        {"expectedColCount": header_count, "userId": user_id},
+    return cast(
+        list[list[str]],
+        await page.evaluate(
+            _READ_ROWS_SCRIPT,
+            {"expectedColCount": header_count, "userId": user_id},
+        ),
     )
 
 
@@ -794,9 +803,12 @@ def append_unique_transactions(
     transaction_id_index = _transaction_id_index(headers)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     existing_ids, existing_headers, existing_rows = _read_existing_transaction_ids_and_rows(output_path)
-    if existing_headers is not None and list(headers) != existing_headers:
-        if not _can_upgrade_headers(existing_headers, list(headers)):
-            raise RuntimeError("The selected CSV has different columns from the payment transaction table.")
+    if (
+        existing_headers is not None
+        and list(headers) != existing_headers
+        and not _can_upgrade_headers(existing_headers, list(headers))
+    ):
+        raise RuntimeError("The selected CSV has different columns from the payment transaction table.")
 
     rows_to_append: list[list[str]] = []
     for row in rows:
@@ -959,7 +971,8 @@ def download_missing_stamps(
                 else:
                     failed += 1
                     snippet = content[:80].decode("utf-8", errors="ignore").strip()
-                    err_msg = f"{tx_id}: Response is not a valid PDF ({snippet or f'size={len(content)} bytes'})"
+                    detail = snippet or f"size={len(content)} bytes"
+                    err_msg = f"{tx_id}: Response is not a valid PDF ({detail})"
                     errors.append(err_msg)
                     report_status(f"[{index}/{total}] Failed: {err_msg}")
         except Exception as exc:
