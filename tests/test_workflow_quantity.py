@@ -134,11 +134,13 @@ class WorkflowQuantityTests(unittest.TestCase):
             None,
         ]:
             await runtime.initialize()
-            first = runtime.claim_next()
-            second = runtime.claim_next()
+            first = await runtime.claim_next("id-1")
+            second = await runtime.claim_next("id-2")
             assert first is not None
             assert second is not None
-            finished = runtime.claim_next()
+            await runtime.complete_claim("id-1")
+            await runtime.complete_claim("id-2")
+            finished = await runtime.claim_next("id-3")
             assert finished is None
             return first, second, finished
 
@@ -182,13 +184,26 @@ class WorkflowQuantityTests(unittest.TestCase):
             )
 
         async def run_logins() -> None:
-            await asyncio.gather(
-                *(portal.ensure_citizen_session(Credentials()) for portal in portals)
-            )
+            await asyncio.gather(*(portal.ensure_citizen_session(Credentials()) for portal in portals))
 
         asyncio.run(run_logins())
 
         self.assertEqual(maximum_active, 1)
+
+    def test_released_quantity_can_be_claimed_by_another_id(self) -> None:
+        runtime = ParallelBatchRuntime(self.csv_path)
+
+        async def exercise() -> tuple[int, int]:
+            await runtime.initialize()
+            first = await runtime.claim_next("1")
+            assert first is not None
+            await runtime.release_claim("1")
+            replacement = await runtime.claim_next("2")
+            assert replacement is not None
+            return first[2], replacement[2]
+
+        first_quantity, replacement_quantity = asyncio.run(exercise())
+        self.assertEqual(replacement_quantity, first_quantity)
 
     def test_parallel_worker_does_not_prelogin_before_processing_claim(self) -> None:
         runtime = ParallelBatchRuntime(self.csv_path)
@@ -233,9 +248,7 @@ class WorkflowQuantityTests(unittest.TestCase):
         portal = MagicMock()
         portal.ensure_citizen_session = AsyncMock()
         portal.reset_to_start = AsyncMock()
-        portal.process_unit = AsyncMock(
-            side_effect=AssertionError("completed units must not be reprocessed")
-        )
+        portal.process_unit = AsyncMock(side_effect=AssertionError("completed units must not be reprocessed"))
         events: list[UiEvent] = []
         engine = WorkflowEngine(MagicMock(), None, controls, events.append)
 
@@ -293,9 +306,7 @@ class WorkflowQuantityTests(unittest.TestCase):
         portal = MagicMock()
         portal.ensure_citizen_session = AsyncMock()
         portal.reset_to_start = AsyncMock()
-        portal.process_unit = AsyncMock(
-            side_effect=[TransactionResult({"Transaction ID": "added"}, "added")]
-        )
+        portal.process_unit = AsyncMock(side_effect=[TransactionResult({"Transaction ID": "added"}, "added")])
         engine = WorkflowEngine(MagicMock(), None, controls, lambda _event: None)
 
         with patch("core.workflow.PortalAutomation", return_value=portal):

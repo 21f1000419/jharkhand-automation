@@ -28,17 +28,20 @@ from services.sms_otp_client import SmsOtpClient
 
 
 class ParallelBatchRuntime:
-    """Shared CSV state and work queue for one ID's browser workers."""
+    """Shared CSV state and quantity claims for every active ID."""
 
     def __init__(self, csv_path: Path) -> None:
         self.store = CsvBatchStore(csv_path)
         self.initialize_lock = asyncio.Lock()
         self.persist_lock = asyncio.Lock()
+        self._claim_changed = asyncio.Condition()
         self.citizen_login_lock = asyncio.Lock()
-        self.error_decision_lock = asyncio.Lock()
+        self.citizen_login_locks: dict[str, asyncio.Lock] = {}
+        self.error_decision_locks: dict[str, asyncio.Lock] = {}
         self.initialized = False
         self.initial_has_work = False
         self.work: deque[tuple[int, dict[str, str], int]] = deque()
+        self.claims: dict[str, tuple[int, dict[str, str], int]] = {}
         self.failed = False
         self.fatal = False
 
@@ -50,17 +53,44 @@ class ParallelBatchRuntime:
             self.store.persist()
             for row_number, row in self.store.pending_rows():
                 if self.store.validate_row(row):
-                    self.work.append(
-                        (row_number, row, self.store.next_pending_quantity(row))
-                    )
+                    self.work.append((row_number, row, self.store.next_pending_quantity(row)))
                     continue
                 for sequence in self.store.pending_quantity_numbers(row):
                     self.work.append((row_number, row, sequence))
             self.initial_has_work = bool(self.work)
             self.initialized = True
 
-    def claim_next(self) -> tuple[int, dict[str, str], int] | None:
-        return self.work.popleft() if self.work else None
+    def citizen_login_lock_for(self, group_id: str) -> asyncio.Lock:
+        if not group_id:
+            return self.citizen_login_lock
+        return self.citizen_login_locks.setdefault(group_id, asyncio.Lock())
+
+    def error_decision_lock(self, group_id: str) -> asyncio.Lock:
+        return self.error_decision_locks.setdefault(group_id, asyncio.Lock())
+
+    async def claim_next(self, worker_key: str) -> tuple[int, dict[str, str], int] | None:
+        async with self._claim_changed:
+            while not self.work and self.claims:
+                await self._claim_changed.wait()
+            if not self.work:
+                return None
+            claimed = self.work.popleft()
+            self.claims[worker_key] = claimed
+            return claimed
+
+    async def complete_claim(self, worker_key: str) -> None:
+        async with self._claim_changed:
+            self.claims.pop(worker_key, None)
+            self._claim_changed.notify_all()
+
+    async def release_claim(self, worker_key: str) -> None:
+        async with self._claim_changed:
+            claimed = self.claims.pop(worker_key, None)
+            if claimed is not None:
+                _row_number, row, sequence = claimed
+                if sequence in self.store.pending_quantity_numbers(row):
+                    self.work.appendleft(claimed)
+            self._claim_changed.notify_all()
 
 
 class WorkflowEngine:
@@ -108,7 +138,11 @@ class WorkflowEngine:
             self.payment_coordinator,
             self.focus_payment_page,
             self.citizen_otp_resend_budget,
-            self.parallel_runtime.citizen_login_lock if self.parallel_runtime is not None else None,
+            (
+                self.parallel_runtime.citizen_login_lock_for(options.run_id)
+                if self.parallel_runtime is not None
+                else None
+            ),
         )
 
     async def run(self, options: RunOptions) -> bool:
@@ -127,10 +161,7 @@ class WorkflowEngine:
         download_root = options.download_root or Path.home() / "Downloads"
         portal: PortalAutomation | None = None
         if not options.fresh_browser_per_unit:
-            if (
-                (self.page is None or self.page.is_closed())
-                and self.open_portal_page is not None
-            ):
+            if (self.page is None or self.page.is_closed()) and self.open_portal_page is not None:
                 self.page = await self.open_portal_page()
             if self.page is None:
                 raise RuntimeError("No portal browser page available.")
@@ -144,8 +175,7 @@ class WorkflowEngine:
                 self.emit(
                     UiEvent(
                         "run_completed",
-                        "Recheck complete - all CSV rows are already complete. "
-                        "Existing results preserved.",
+                        "Recheck complete - all CSV rows are already complete. Existing results preserved.",
                     )
                 )
                 return True
@@ -375,12 +405,10 @@ class WorkflowEngine:
             return False
 
         download_root = options.download_root or Path.home() / "Downloads"
+        worker_key = options.worker_key or f"{options.run_id}:{options.worker_index}"
         portal: PortalAutomation | None = None
         if not options.fresh_browser_per_unit:
-            if (
-                (self.page is None or self.page.is_closed())
-                and self.open_portal_page is not None
-            ):
+            if (self.page is None or self.page.is_closed()) and self.open_portal_page is not None:
                 self.page = await self.open_portal_page()
             if self.page is None:
                 raise RuntimeError("No portal browser page available.")
@@ -392,7 +420,7 @@ class WorkflowEngine:
 
             while True:
                 await self.controls.checkpoint()
-                claimed = runtime.claim_next()
+                claimed = await runtime.claim_next(worker_key)
                 if claimed is None:
                     break
                 row_number, row, sequence = claimed
@@ -406,7 +434,7 @@ class WorkflowEngine:
                         stage=Stage.VALIDATING,
                         code="invalid_csv_row",
                     )
-                    async with runtime.error_decision_lock:
+                    async with runtime.error_decision_lock(options.run_id):
                         await self._handle_error(
                             portal,
                             row_number,
@@ -417,6 +445,8 @@ class WorkflowEngine:
                             options.fresh_browser_per_unit,
                             sequence,
                         )
+                    await runtime.complete_claim(worker_key)
+                    self.current_row = None
                     continue
 
                 start_from_stage = Stage.CITIZEN_LOGIN
@@ -462,9 +492,7 @@ class WorkflowEngine:
                             else ""
                         )
                         details = dict(result.details)
-                        details["PDF status"] = (
-                            "saved" if result.destination is not None else "failed"
-                        )
+                        details["PDF status"] = "saved" if result.destination is not None else "failed"
                         details["PDF file"] = relative_path
                         details["PDF error"] = result.download_error
                         self.store.mark_success(
@@ -510,7 +538,7 @@ class WorkflowEngine:
                     except WorkflowStopped:
                         raise
                     except AutomationError as error:
-                        async with runtime.error_decision_lock:
+                        async with runtime.error_decision_lock(options.run_id):
                             action = await self._handle_error(
                                 portal,
                                 row_number,
@@ -528,14 +556,11 @@ class WorkflowEngine:
                             continue
                         if action == "continue":
                             checkpoint_info = STAGE_CHECKPOINTS.get(error.stage)
-                            start_from_stage = (
-                                checkpoint_info[0] if checkpoint_info else Stage.CITIZEN_LOGIN
-                            )
+                            start_from_stage = checkpoint_info[0] if checkpoint_info else Stage.CITIZEN_LOGIN
                             self.emit(
                                 UiEvent(
                                     "log",
-                                    "Resuming automation from next checkpoint: "
-                                    f"{start_from_stage.value}",
+                                    f"Resuming automation from next checkpoint: {start_from_stage.value}",
                                 )
                             )
                             continue
@@ -555,6 +580,9 @@ class WorkflowEngine:
                             )
                         )
                         break
+
+                await runtime.complete_claim(worker_key)
+                self.current_row = None
 
             self.current_row = None
             self.current_stage = Stage.IDLE
@@ -583,8 +611,13 @@ class WorkflowEngine:
                     )
                 await self._persist(ignore_stop=True)
                 self.emit(UiEvent("batch_update", data={"rows": self.store.summaries()}))
+            await runtime.release_claim(worker_key)
             self.current_row = None
             return False
+        except BaseException:
+            await runtime.release_claim(worker_key)
+            self.current_row = None
+            raise
 
     async def _handle_error(
         self,
@@ -714,8 +747,7 @@ class WorkflowEngine:
                 data={
                     "rows": store.summaries(),
                     "current_row": row_number + 1,
-                    "current_unit": quantity_number
-                    or store.next_pending_quantity(row),
+                    "current_unit": quantity_number or store.next_pending_quantity(row),
                 },
             )
         )

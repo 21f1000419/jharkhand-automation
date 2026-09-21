@@ -28,6 +28,7 @@ from services.captcha_ocr import CaptchaSolver
 from services.desktop_copy_image import copy_image_from_screen_position
 from services.downloads import EstampDownloader
 from services.payment_trigger import send_payment_trigger_request
+from services.qr_images import save_data_uri
 from services.sms_otp_client import SmsOtpClient, SmsOtpServerError
 
 CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
@@ -117,9 +118,7 @@ class PortalAutomation:
         self.sms_user_id = sms_user_id.strip()
         self.captcha_copy_mode = captcha_copy_mode
         self.payment_trigger_url = payment_trigger_url.strip()
-        self.payment_trigger_method = (
-            "POST" if payment_trigger_method.strip().upper() == "POST" else "GET"
-        )
+        self.payment_trigger_method = "POST" if payment_trigger_method.strip().upper() == "POST" else "GET"
         self.save_captcha_images = save_captcha_images
         self.retry_egras_otp_once = retry_egras_otp_once
         self.payment_coordinator = payment_coordinator or default_payment_coordinator()
@@ -172,9 +171,7 @@ class PortalAutomation:
                 Stage.DOWNLOAD,
             ]
 
-            effective_start = (
-                Stage.FILL_ESTAMP if start_from_stage == Stage.OPEN_ESTAMP else start_from_stage
-            )
+            effective_start = Stage.FILL_ESTAMP if start_from_stage == Stage.OPEN_ESTAMP else start_from_stage
 
             def should_run(stage: Stage) -> bool:
                 try:
@@ -204,14 +201,12 @@ class PortalAutomation:
                 await self.select_upi()
             if should_run(Stage.PAYMENT):
                 self._prepayment_watchdog_active = False
-                await self._acquire_payment_slot()
                 await self.select_upi_qr_and_pay()
-                await self.wait_for_upi_qr_and_trigger()
+                await self.wait_for_upi_qr_and_trigger(row_number, sequence)
 
             details: dict[str, str] = {}
             if should_run(Stage.RESULT) or should_run(Stage.DOWNLOAD):
                 details = await self.find_result_details()
-                await self._release_payment_slot()
                 reference = (
                     details.get("Transaction ID")
                     or details.get("GRN")
@@ -288,7 +283,6 @@ class PortalAutomation:
             raise AutomationError(str(error), stage=self.stage) from error
         finally:
             await self._stop_prepayment_watchdog()
-            await self._release_payment_slot()
 
     async def ensure_citizen_session(self, credentials: Credentials) -> None:
         if self.citizen_login_lock is not None:
@@ -330,9 +324,7 @@ class PortalAutomation:
                     # request.  Capturing it only after #otp appears can miss
                     # a fast SMS and can allow a previous OTP through.
                     requested_at = self._capture_main_otp_request_time()
-                    citizen_otp_task = self._start_otp_watcher(
-                        "main", "#otp", not_before=requested_at
-                    )
+                    citizen_otp_task = self._start_otp_watcher("main", "#otp", not_before=requested_at)
                     try:
                         await otp_button.click()
                     except Exception:
@@ -488,8 +480,7 @@ class PortalAutomation:
             self.emit(
                 UiEvent(
                     "log",
-                    "Session expired: portal redirected to the home page. "
-                    "Clicking the Citizen login link…",
+                    "Session expired: portal redirected to the home page. Clicking the Citizen login link…",
                 )
             )
             citizen_link = await first_visible(
@@ -506,8 +497,7 @@ class PortalAutomation:
             self.emit(
                 UiEvent(
                     "log",
-                    "Session expired: portal redirected to the login page. "
-                    "Re-login is required.",
+                    "Session expired: portal redirected to the login page. Re-login is required.",
                 )
             )
 
@@ -614,9 +604,7 @@ class PortalAutomation:
         await click_first(self.page, ["button.close_model", 'button:has-text("OK")'])
         self._record_prepayment_activity()
 
-    async def complete_egras_login(
-        self, credentials: Credentials, *, start_from_otp: bool = False
-    ) -> None:
+    async def complete_egras_login(self, credentials: Credentials, *, start_from_otp: bool = False) -> None:
         await self._raise_if_egras_unauthorized()
         if not start_from_otp:
             await self._stage(Stage.EGRAS_LOGIN)
@@ -766,9 +754,7 @@ class PortalAutomation:
             MAIN_OTP_POLL_TIMEOUT_SECONDS if otp_type == "main" else EGRASS_OTP_POLL_TIMEOUT_SECONDS
         )
         return asyncio.create_task(
-            self._watch_and_fill_sms_otp(
-                otp_type, field_selector, timeout_seconds, not_before=not_before
-            )
+            self._watch_and_fill_sms_otp(otp_type, field_selector, timeout_seconds, not_before=not_before)
         )
 
     async def _await_otp_watcher(self, task: asyncio.Task[str | None] | None) -> str | None:
@@ -787,9 +773,7 @@ class PortalAutomation:
         if not self.retry_egras_otp_once:
             return await self._await_otp_watcher(task), captcha_entered_manually, task
 
-        otp, finished = await self._wait_for_otp_watcher_for(
-            task, EGRASS_OTP_RECOVERY_WAIT_SECONDS
-        )
+        otp, finished = await self._wait_for_otp_watcher_for(task, EGRASS_OTP_RECOVERY_WAIT_SECONDS)
         if finished:
             return otp, captcha_entered_manually, task
 
@@ -806,9 +790,7 @@ class PortalAutomation:
         retry_task = self._start_otp_watcher("egrass", "#txtOTP")
         await self._wait_for_egras_otp_step()
         captcha_entered_manually = await self._solve_egras_otp_captcha()
-        otp, finished = await self._wait_for_otp_watcher_for(
-            retry_task, EGRASS_OTP_RECOVERY_WAIT_SECONDS
-        )
+        otp, finished = await self._wait_for_otp_watcher_for(retry_task, EGRASS_OTP_RECOVERY_WAIT_SECONDS)
         if finished:
             return otp, captcha_entered_manually, retry_task
 
@@ -907,9 +889,7 @@ class PortalAutomation:
                     )
                 )
                 return None
-            waiting_message = (
-                f"Waiting for eGRAS OTP reference {reference_number} from the SMS server..."
-            )
+            waiting_message = f"Waiting for eGRAS OTP reference {reference_number} from the SMS server..."
         else:
             not_before = not_before or self._capture_main_otp_request_time()
             if not_before is None:
@@ -977,9 +957,7 @@ class PortalAutomation:
             await self.controls.checkpoint()
             try:
                 if await message.count() > 0:
-                    reference_number = extract_egrass_otp_reference(
-                        (await message.text_content()) or ""
-                    )
+                    reference_number = extract_egrass_otp_reference((await message.text_content()) or "")
                     if reference_number:
                         return reference_number
             except PlaywrightError:
@@ -1017,22 +995,14 @@ class PortalAutomation:
             if otp_type == "main":
                 resend_button = self.page.locator("#btnotp1").first
                 try:
-                    resend_is_visible = (
-                        await resend_button.count() > 0 and await resend_button.is_visible()
-                    )
+                    resend_is_visible = await resend_button.count() > 0 and await resend_button.is_visible()
                 except PlaywrightError:
                     resend_is_visible = False
 
-                if (
-                    resend_is_visible
-                    and not resend_was_visible
-                    and self.citizen_otp_resend_budget.available
-                ):
+                if resend_is_visible and not resend_was_visible and self.citizen_otp_resend_budget.available:
                     resend_was_visible = True
                     fresh_request_time = self._capture_main_otp_request_time()
-                    if fresh_request_time is not None and await self._click_citizen_otp_resend(
-                        resend_button
-                    ):
+                    if fresh_request_time is not None and await self._click_citizen_otp_resend(resend_button):
                         attempt = self.citizen_otp_resend_budget.record()
                         not_before = fresh_request_time
                         started_at = time.monotonic()
@@ -1282,10 +1252,7 @@ class PortalAutomation:
             )
         except PlaywrightError:
             return
-        if (
-            GATEWAY_SUSPENDED_TEXT in visible_text
-            and PREPAYMENT_SUMMARY_TEXT in visible_text
-        ):
+        if GATEWAY_SUSPENDED_TEXT in visible_text and PREPAYMENT_SUMMARY_TEXT in visible_text:
             raise AutomationError(
                 "The payment gateway is temporarily suspended. Choose Retry after the gateway "
                 "is available, or move to the next quantity.",
@@ -1299,21 +1266,15 @@ class PortalAutomation:
         try:
             unauthorized = "pagenotpermittedtoaccess.aspx" in str(self.page.url).casefold()
             if not unauthorized:
-                unauthorized_form = self.page.locator(
-                    'form[action*="PageNotPermittedtoAccess.aspx"]'
-                )
+                unauthorized_form = self.page.locator('form[action*="PageNotPermittedtoAccess.aspx"]')
                 unauthorized = await unauthorized_form.count() > 0
             if not unauthorized:
                 body = self.page.locator("body")
                 body_text = " ".join((await body.inner_text(timeout=1_000)).casefold().split())
                 body_html = " ".join((await body.inner_html(timeout=1_000)).casefold().split())
                 unauthorized = (
-                    "unauthorized" in body_text
-                    and "permission to access this page" in body_text
-                ) or (
-                    "unauthorized" in body_html
-                    and "permission to access this page" in body_html
-                )
+                    "unauthorized" in body_text and "permission to access this page" in body_text
+                ) or ("unauthorized" in body_html and "permission to access this page" in body_html)
         except (PlaywrightError, TypeError, AttributeError):
             return
         if unauthorized:
@@ -1417,7 +1378,7 @@ class PortalAutomation:
                 return
             await self.page.wait_for_timeout(500)
 
-    async def wait_for_upi_qr_and_trigger(self) -> None:
+    async def wait_for_upi_qr_and_trigger(self, row_number: int = 0, quantity_number: int = 0) -> None:
         """Wait for SBI's QR payment screen, then call the optional external trigger once."""
         self._status("Waiting for the SBI UPI QR payment screen…")
         body = self.page.locator("body")
@@ -1436,10 +1397,7 @@ class PortalAutomation:
             except PlaywrightError:
                 await self.page.wait_for_timeout(250)
                 continue
-            if (
-                UPI_QR_READY_TEXT in visible_text
-                and UPI_TRANSACTION_TIMER_TEXT in visible_text
-            ):
+            if UPI_QR_READY_TEXT in visible_text and UPI_TRANSACTION_TIMER_TEXT in visible_text:
                 self.emit(
                     UiEvent(
                         "log",
@@ -1465,8 +1423,23 @@ class PortalAutomation:
                 )
             await self.page.wait_for_timeout(250)
 
+        qr_id, qr_path = await self._capture_upi_qr(wait_deadline)
+        created_at = time.time()
+        self.emit(
+            UiEvent(
+                "qr_available",
+                "UPI QR captured for payment.",
+                {
+                    "qr_id": qr_id,
+                    "file_path": str(qr_path),
+                    "created_at": created_at,
+                    "expires_at": created_at + 300,
+                    "row": row_number,
+                    "quantity": quantity_number,
+                },
+            )
+        )
         self._payment_state("qr_ready")
-        await self._prepare_upi_payment_observation()
         if not self.payment_trigger_url:
             return
 
@@ -1492,28 +1465,46 @@ class PortalAutomation:
             )
         )
 
+    async def _capture_upi_qr(self, deadline: float) -> tuple[str, Path]:
+        selectors = (
+            'div.row.justify-content-center.align-items-center img[src^="data:image/"]',
+            'img[src^="data:image/"]',
+        )
+        last_error = "The QR image was not found."
+        while time.monotonic() < deadline:
+            await self.controls.checkpoint()
+            for selector in selectors:
+                matches = self.page.locator(selector)
+                try:
+                    count = await matches.count()
+                except PlaywrightError:
+                    continue
+                for index in range(count):
+                    candidate = matches.nth(index)
+                    try:
+                        if not await candidate.is_visible():
+                            continue
+                        box = await candidate.bounding_box()
+                        if box is not None and min(box["width"], box["height"]) < 120:
+                            continue
+                        source = await candidate.get_attribute("src")
+                        if not source:
+                            continue
+                        return save_data_uri(source)
+                    except (PlaywrightError, ValueError) as error:
+                        last_error = str(error)
+            await self.page.wait_for_timeout(200)
+        raise AutomationError(
+            f"The UPI QR image could not be captured: {last_error}",
+            stage=self.stage,
+            code="upi_qr_capture_failed",
+        )
+
     def _upi_qr_wait_timeout_seconds(self) -> int:
         """Use a shorter QR wait when payment is expected outside the portal browser."""
         if self.payment_trigger_url:
             return UPI_QR_EXTERNAL_WAIT_TIMEOUT_SECONDS
         return UPI_QR_WAIT_TIMEOUT_SECONDS
-
-    async def _prepare_upi_payment_observation(self) -> None:
-        """Keep QR monitoring browser-independent while still attempting focus when possible."""
-        await self._check_payment_wait()
-        try:
-            await self.focus_payment_page()
-        except Exception as error:
-            self.emit(
-                UiEvent(
-                    "log",
-                    "UPI QR is ready. Continuing to monitor payment without forcing browser focus: "
-                    f"{error}",
-                    {"level": "warning"},
-                )
-            )
-            return
-        self._payment_state("foreground_verified")
 
     async def find_result_details(self) -> dict[str, str]:
         await self._stage(Stage.RESULT)
@@ -1559,9 +1550,7 @@ class PortalAutomation:
                         )
                     )
 
-                download_link = await first_visible(
-                    self.page, ['a[href*="gras_estamp_download"]'], 500
-                )
+                download_link = await first_visible(self.page, ['a[href*="gras_estamp_download"]'], 500)
                 if download_link is not None:
                     self._payment_state("download_ready")
                     return confirmed_details
@@ -1620,8 +1609,7 @@ class PortalAutomation:
                     self.emit(
                         UiEvent(
                             "log",
-                            "Session expired after stamp download. "
-                            "Re-logging in from the beginning…",
+                            "Session expired after stamp download. Re-logging in from the beginning…",
                         )
                     )
                     await self.ensure_citizen_session(credentials)

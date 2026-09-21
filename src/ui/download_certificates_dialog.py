@@ -8,19 +8,19 @@ Presents a 2-column layout with clear headings:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import re
 import shutil
 import threading
 import tkinter as tk
-from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
-from tkcalendar import DateEntry
+from tkcalendar import DateEntry  # type: ignore[import-untyped]
 
 from core.config import DEFAULT_SMS_SERVER_URL, app_data_directory, default_download_directory
 from core.controls import RunControls
@@ -37,13 +37,10 @@ from services.pdf_receipt_dates import find_pdf_folder_defaults
 from services.transaction_reconciliation import (
     TransactionReconciliation,
     reconcile_transactions,
-    write_reconciliation_csv,
-    write_reconciliation_text,
 )
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
-    from ui.run_tab import AutomationTab
 
 
 @dataclass
@@ -357,7 +354,7 @@ class DownloadUndownloadedCertificatesDialog:
                 sms_user_id=tab.sms_user_id_var.get().strip() or tab.config.sms_user_id,
                 sms_server_url=(
                     tab.sms_server_url_var.get().strip()
-                    or tab.config.sms_server_url
+                    or self.owner.config.run_config.sms_server_url
                     or DEFAULT_SMS_SERVER_URL
                 ),
                 browser=browser,
@@ -516,7 +513,8 @@ class DownloadUndownloadedCertificatesDialog:
             if chrome_browser is None:
                 messagebox.showwarning(
                     "Export transactions",
-                    "Google Chrome was not detected on this system. Uncheck 'Use Chrome For All' to use configured browsers.",
+                    "Google Chrome was not detected on this system. "
+                    "Uncheck 'Use Chrome For All' to use configured browsers.",
                     parent=self.dialog,
                 )
                 return
@@ -529,14 +527,15 @@ class DownloadUndownloadedCertificatesDialog:
         if not selected_items:
             # Mode A (Manual): 0 checkboxes selected
             active_tab = self.owner._selected_tab()
+            manual_browser: PortalBrowser | None
             if use_chrome and chrome_browser is not None:
-                browser = chrome_browser
+                manual_browser = chrome_browser
             else:
-                browser = (
+                manual_browser = (
                     (active_tab._selected_browser() if active_tab else None)
                     or self._first_available_browser()
                 )
-            if browser is None:
+            if manual_browser is None:
                 messagebox.showwarning(
                     "Export transactions",
                     "Choose an installed portal browser first.",
@@ -544,11 +543,11 @@ class DownloadUndownloadedCertificatesDialog:
                 )
                 return
 
-            profile_path = self._export_profile_path("manual", browser)
+            profile_path = self._export_profile_path("manual", manual_browser)
             targets.append(
                 TransactionExportTarget(
                     name="Manual Login",
-                    browser=browser,
+                    browser=manual_browser,
                     profile_path=profile_path,
                     auto_login=False,
                     payment_date_from=payment_date_from,
@@ -559,7 +558,7 @@ class DownloadUndownloadedCertificatesDialog:
                 )
             )
             self._append_log(
-                f"Starting manual Citizen login export (Browser: {browser.name})..."
+                f"Starting manual Citizen login export (Browser: {manual_browser.name})..."
             )
         else:
             # Mode A (Automatic): >0 checkboxes selected
@@ -574,12 +573,12 @@ class DownloadUndownloadedCertificatesDialog:
                     return
 
             for item in selected_items:
-                browser = (
+                target_browser = (
                     chrome_browser
                     if (use_chrome and chrome_browser is not None)
                     else item.browser
                 )
-                if browser is None:
+                if target_browser is None:
                     messagebox.showwarning(
                         "Export transactions",
                         f"{item.display_name} has no installed portal browser selected.",
@@ -592,7 +591,7 @@ class DownloadUndownloadedCertificatesDialog:
                 # profile.  A separate app-owned profile prevents a saved
                 # profile under another Windows user's folder from blocking
                 # every export with Access Denied.
-                profile_path = self._export_profile_path(f"id-{item.tab_id}", browser)
+                profile_path = self._export_profile_path(f"id-{item.tab_id}", target_browser)
 
                 solver: CaptchaSolver | None = None
                 if item.ocr_enabled:
@@ -601,7 +600,7 @@ class DownloadUndownloadedCertificatesDialog:
                 targets.append(
                     TransactionExportTarget(
                         name=item.display_name,
-                        browser=browser,
+                        browser=target_browser,
                         profile_path=profile_path,
                         credentials=Credentials(
                             citizen_username=item.citizen_username,
@@ -627,7 +626,8 @@ class DownloadUndownloadedCertificatesDialog:
                 else "individual ID browsers"
             )
             self._append_log(
-                f"Starting automatic transaction export for {len(targets)} selected ID(s) using {browser_info}..."
+                "Starting automatic transaction export for "
+                f"{len(targets)} selected ID(s) using {browser_info}..."
             )
 
         self.is_running = True
@@ -637,13 +637,11 @@ class DownloadUndownloadedCertificatesDialog:
         self.current_controls = RunControls(lambda _e: None)
 
         def report_status(message: str) -> None:
-            self.dialog.after(
-                0,
-                lambda: (
-                    self.export_status_var.set(message),
-                    self._append_log(message),
-                ),
-            )
+            def apply_status() -> None:
+                self.export_status_var.set(message)
+                self._append_log(message)
+
+            self.dialog.after(0, apply_status)
 
         def run_worker() -> None:
             def refresh_comparison(_result: TransactionExportSummary) -> None:
@@ -871,10 +869,8 @@ class DownloadUndownloadedCertificatesDialog:
         """Scan PDFs in background so large folders don't freeze the UI."""
         self._pdf_scan_token += 1
         token = self._pdf_scan_token
-        try:
+        with contextlib.suppress(Exception):
             self.reconcile_status_var.set("Scanning PDFs for dates...")
-        except Exception:
-            pass
         threading.Thread(
             target=self._scan_pdf_folder_worker,
             args=(folder, token),
@@ -891,15 +887,14 @@ class DownloadUndownloadedCertificatesDialog:
                     return
             except Exception:
                 return
-            try:
+            with contextlib.suppress(Exception):
+                def update_progress(d: int = done, t: int = total) -> None:
+                    self.reconcile_status_var.set(f"Scanning PDFs for dates... {d}/{t}")
+
                 self.dialog.after(
                     0,
-                    lambda d=done, t=total: self.reconcile_status_var.set(
-                        f"Scanning PDFs for dates... {d}/{t}"
-                    ),
+                    update_progress,
                 )
-            except Exception:
-                pass
 
         try:
             defaults = find_pdf_folder_defaults(
@@ -916,10 +911,8 @@ class DownloadUndownloadedCertificatesDialog:
                 return
         except Exception:
             return
-        try:
+        with contextlib.suppress(Exception):
             self.dialog.after(0, lambda: self._apply_pdf_defaults(defaults, folder, token))
-        except Exception:
-            pass
 
     def _apply_pdf_defaults(self, defaults: Any, folder: Path, token: int) -> None:
         if token != self._pdf_scan_token:
@@ -979,10 +972,10 @@ class DownloadUndownloadedCertificatesDialog:
             f"{len(report.unmatched_pdfs)} PDF(s) without a CSV transaction"
         )
 
-        self.results_notebook.tab(
+        self.results_notebook.tab(  # type: ignore[no-untyped-call]
             0, text=f"Transactions without PDF ({len(report.missing_pdfs)})"
         )
-        self.results_notebook.tab(
+        self.results_notebook.tab(  # type: ignore[no-untyped-call]
             1, text=f"PDFs without CSV transaction ({len(report.unmatched_pdfs)})"
         )
 
@@ -1101,13 +1094,12 @@ class DownloadUndownloadedCertificatesDialog:
                     f"Already existed (skipped): {summary.skipped_existing}\n"
                     f"Failed: {summary.failed}"
                 )
-                self.dialog.after(
-                    0,
-                    lambda: (
-                        messagebox.showinfo("Download Missing Stamps", msg, parent=self.dialog),
-                        self._run_compare(),
-                    ),
-                )
+
+                def show_summary() -> None:
+                    messagebox.showinfo("Download Missing Stamps", msg, parent=self.dialog)
+                    self._run_compare()
+
+                self.dialog.after(0, show_summary)
             finally:
                 self.dialog.after(0, self._on_download_missing_finished)
 

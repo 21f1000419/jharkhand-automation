@@ -125,14 +125,12 @@ class ConfigPackageTests(TestCase):
             ],
         }
 
-        updated_config, imported_ids = apply_imported_package(
-            package, app_config, cred_store, mode="replace"
-        )
+        updated_config, imported_ids = apply_imported_package(package, app_config, cred_store, mode="replace")
         self.assertEqual(imported_ids, [1, 2])
         self.assertEqual(len(updated_config.tabs), 2)
         self.assertNotEqual(updated_config.chrome_executable, "C:\\Custom\\chrome.exe")
         self.assertEqual(updated_config.get_tab(1).sms_user_id, "sms1")
-        self.assertEqual(updated_config.get_tab(1).last_mode, "continuous")
+        self.assertEqual(updated_config.run_config.last_mode, "assisted")
         self.assertEqual(updated_config.get_tab(2).sms_user_id, "sms2")
         self.assertEqual(cred_store.save.call_count, 2)
 
@@ -159,16 +157,12 @@ class ConfigPackageTests(TestCase):
             ],
         }
 
-        updated_config, imported_ids = apply_imported_package(
-            package, app_config, cred_store, mode="replace"
-        )
+        updated_config, imported_ids = apply_imported_package(package, app_config, cred_store, mode="replace")
 
         self.assertEqual(imported_ids, [1])
         self.assertEqual(updated_config.chrome_profile_path, "C:\\Local\\ocr-profile")
         self.assertEqual(updated_config.get_tab(1).profile_number, 7)
-        self.assertEqual(
-            updated_config.get_tab(1).portal_profile_path, "C:\\Local\\portal-profile-7"
-        )
+        self.assertEqual(updated_config.get_tab(1).portal_profile_path, "C:\\Local\\portal-profile-7")
         self.assertEqual(updated_config.get_tab(1).sms_user_id, "imported-sms")
 
     def test_apply_imported_package_merge_mode(self) -> None:
@@ -188,9 +182,7 @@ class ConfigPackageTests(TestCase):
             ],
         }
 
-        updated_config, imported_ids = apply_imported_package(
-            package, app_config, cred_store, mode="merge"
-        )
+        updated_config, imported_ids = apply_imported_package(package, app_config, cred_store, mode="merge")
         # Should merge as a new tab ID (2)
         self.assertEqual(imported_ids, [2])
         self.assertEqual(len(updated_config.tabs), 2)
@@ -224,7 +216,7 @@ class ConfigPackageTests(TestCase):
         )
         self.assertEqual(imported_ids, [2])
         self.assertEqual(updated_config.get_tab(2).sms_user_id, "new-sms-applied")
-        self.assertEqual(updated_config.get_tab(2).last_mode, "continuous")
+        self.assertEqual(updated_config.run_config.last_mode, "assisted")
         # Profile path and numbers preserved
         self.assertEqual(updated_config.get_tab(2).tab_id, 2)
         self.assertEqual(updated_config.get_tab(2).profile_number, 2)
@@ -245,9 +237,7 @@ class ConfigPackageTests(TestCase):
 
         # Single tab mode without target_tab_id
         with self.assertRaises(ConfigPackageError):
-            apply_imported_package(
-                {"tabs": [{"tab_config": {}}]}, app_config, cred_store, mode="single_tab"
-            )
+            apply_imported_package({"tabs": [{"tab_config": {}}]}, app_config, cred_store, mode="single_tab")
 
     def test_nonexistent_file_import_raises_error(self) -> None:
         with self.assertRaises(ConfigPackageError):
