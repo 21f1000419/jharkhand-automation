@@ -75,6 +75,7 @@ class DownloadUndownloadedCertificatesDialog:
         self.dialog.transient(owner.root)
 
         self.is_running = False
+        self.export_stop_requested = False
         self.current_controls: RunControls | None = None
         self.is_downloading_stamps = False
         self.download_missing_controls: RunControls | None = None
@@ -102,6 +103,7 @@ class DownloadUndownloadedCertificatesDialog:
 
         self.id_items: list[IdSelectionItem] = []
         self._pdf_scan_token = 0
+        self.is_scanning_pdf_dates = False
 
         self._build_ui()
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -631,9 +633,10 @@ class DownloadUndownloadedCertificatesDialog:
             )
 
         self.is_running = True
+        self.export_stop_requested = False
         self.owner.transaction_export_running = True
         self.start_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
+        self._update_stop_button_state()
         self.current_controls = RunControls(lambda _e: None)
 
         def report_status(message: str) -> None:
@@ -761,16 +764,32 @@ class DownloadUndownloadedCertificatesDialog:
         return app_data_directory() / "transaction-recovery" / f"transactions_{timestamp}.csv"
 
     def _stop_export(self) -> None:
-        if self.current_controls is not None:
-            self.current_controls.stop("Export cancelled by user")
-        self._append_log("Stop requested. Waiting for active browser to close...")
-        self.stop_btn.configure(state="disabled")
+        stopping_export = self.is_running
+        stopping_pdf_scan = self.is_scanning_pdf_dates
+        if stopping_export:
+            self.export_stop_requested = True
+            if self.current_controls is not None:
+                self.current_controls.stop("Export cancelled by user")
+        if stopping_pdf_scan:
+            self._pdf_scan_token += 1
+            self.is_scanning_pdf_dates = False
+            self.reconcile_status_var.set("Automatic PDF date extraction stopped.")
+            self._append_log("Automatic PDF date extraction stopped by user.")
+        if stopping_export:
+            self._append_log("Stop requested. Waiting for active browser to close...")
+        self._update_stop_button_state()
+
+    def _update_stop_button_state(self) -> None:
+        can_stop_export = self.is_running and not self.export_stop_requested
+        state = "normal" if can_stop_export or self.is_scanning_pdf_dates else "disabled"
+        self.stop_btn.configure(state=state)
 
     def _on_export_finished(self) -> None:
         self.is_running = False
+        self.export_stop_requested = False
         self.owner.transaction_export_running = False
         self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
+        self._update_stop_button_state()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Comparison results and recovery actions.
@@ -871,6 +890,8 @@ class DownloadUndownloadedCertificatesDialog:
         """Scan PDFs in background so large folders don't freeze the UI."""
         self._pdf_scan_token += 1
         token = self._pdf_scan_token
+        self.is_scanning_pdf_dates = True
+        self._update_stop_button_state()
         try:
             self.reconcile_status_var.set("Scanning PDFs for dates...")
         except Exception:
@@ -908,7 +929,7 @@ class DownloadUndownloadedCertificatesDialog:
                 should_stop=lambda: token != self._pdf_scan_token,
             )
         except Exception:
-            return
+            defaults = None
         if token != self._pdf_scan_token:
             return
         try:
@@ -917,9 +938,21 @@ class DownloadUndownloadedCertificatesDialog:
         except Exception:
             return
         try:
-            self.dialog.after(0, lambda: self._apply_pdf_defaults(defaults, folder, token))
+            self.dialog.after(
+                0, lambda: self._finish_pdf_folder_scan(defaults, folder, token)
+            )
         except Exception:
             pass
+
+    def _finish_pdf_folder_scan(self, defaults: Any, folder: Path, token: int) -> None:
+        if token != self._pdf_scan_token:
+            return
+        self.is_scanning_pdf_dates = False
+        self._update_stop_button_state()
+        if defaults is None:
+            self.reconcile_status_var.set("Could not automatically extract dates from PDFs.")
+            return
+        self._apply_pdf_defaults(defaults, folder, token)
 
     def _apply_pdf_defaults(self, defaults: Any, folder: Path, token: int) -> None:
         if token != self._pdf_scan_token:
@@ -1156,4 +1189,7 @@ class DownloadUndownloadedCertificatesDialog:
             ):
                 return
             self._stop_download_missing()
+        if self.is_scanning_pdf_dates:
+            self._pdf_scan_token += 1
+            self.is_scanning_pdf_dates = False
         self.dialog.destroy()

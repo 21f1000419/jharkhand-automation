@@ -204,7 +204,11 @@ def find_pdf_folder_defaults(
             if should_stop is not None and should_stop():
                 stopped = True
                 break
-            finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+            # Poll so a Stop request is noticed even while every worker is
+            # still parsing a large or malformed PDF.
+            finished, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+            if not finished:
+                continue
             for future in finished:
                 index, pdf_path = pending.pop(future)
                 try:

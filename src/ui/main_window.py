@@ -52,6 +52,13 @@ TAB_ACCENT_COLORS = (
     "#ea580c",
 )
 
+# Tk expects multiple extensions as separate patterns. A semicolon-delimited
+# Windows pattern can crash the native macOS file dialog inside Cocoa/Tk.
+CONFIG_PACKAGE_FILE_TYPES = (
+    ("eStamp Config Package (*.estampcfg, *.ecfg)", ("*.estampcfg", "*.ecfg")),
+    ("All files", "*.*"),
+)
+
 
 class MainWindow:
     """Small host for the independent automation tabs."""
@@ -174,14 +181,25 @@ class MainWindow:
     def _build_menu(self) -> None:
         menu = tk.Menu(self.root, tearoff=False)
         self.application_menu = menu
-        menu.add_command(label="Download managed Firefox", command=self._download_managed_firefox)
+
+        # Aqua Tk only supports cascade entries in the macOS menu bar. Direct
+        # commands added to the top-level menu are silently omitted, so keep
+        # all download actions in a submenu on every platform.
+        downloads_menu = tk.Menu(menu, tearoff=False)
+        self.downloads_menu = downloads_menu
+        downloads_menu.add_command(
+            label="Download managed Firefox", command=self._download_managed_firefox
+        )
         self.managed_firefox_menu_index = 0
         self._update_managed_firefox_menu()
-        menu.add_command(label="Download CSV format...", command=self._download_template)
-        menu.add_command(
+        downloads_menu.add_command(
+            label="Download CSV format...", command=self._download_template
+        )
+        downloads_menu.add_command(
             label="Download Undownloaded Certificates...",
             command=self._open_download_undownloaded_certificates_dialog,
         )
+        menu.add_cascade(label="Downloads", menu=downloads_menu)
 
         config_menu = tk.Menu(menu, tearoff=False)
         config_menu.add_command(
@@ -896,7 +914,9 @@ class MainWindow:
             label, state = "Managed Firefox downloaded", "disabled"
         else:
             label, state = "Download managed Firefox", "normal"
-        self.application_menu.entryconfigure(self.managed_firefox_menu_index, label=label, state=state)
+        self.downloads_menu.entryconfigure(
+            self.managed_firefox_menu_index, label=label, state=state
+        )
 
     def _download_managed_firefox(self) -> None:
         self._record_ui_action("download_managed_firefox_clicked")
@@ -1073,7 +1093,7 @@ class MainWindow:
             title="Export All IDs & Settings",
             defaultextension=".estampcfg",
             initialfile=f"estamp_all_ids_export_{datetime.now():%Y%m%d_%H%M%S}.estampcfg",
-            filetypes=[("eStamp Config Package (*.estampcfg)", "*.estampcfg;*.ecfg"), ("All files", "*.*")],
+            filetypes=CONFIG_PACKAGE_FILE_TYPES,
             parent=self.root,
         )
         if not selected:
@@ -1104,7 +1124,7 @@ class MainWindow:
             title=f"Export {tab.display_name} Configuration",
             defaultextension=".estampcfg",
             initialfile=f"estamp_id_{tab.tab_id}_export_{datetime.now():%Y%m%d_%H%M%S}.estampcfg",
-            filetypes=[("eStamp Config Package (*.estampcfg)", "*.estampcfg;*.ecfg"), ("All files", "*.*")],
+            filetypes=CONFIG_PACKAGE_FILE_TYPES,
             parent=self.root,
         )
         if not selected:
@@ -1134,10 +1154,7 @@ class MainWindow:
 
         selected = filedialog.askopenfilename(
             title="Import IDs & Settings",
-            filetypes=[
-                ("eStamp Config Package (*.estampcfg, *.ecfg)", "*.estampcfg;*.ecfg"),
-                ("All files", "*.*"),
-            ],
+            filetypes=CONFIG_PACKAGE_FILE_TYPES,
             parent=self.root,
         )
         if not selected:

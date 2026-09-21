@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from core.models import UiEvent
 from ui.automation_status import AutomationStatusWindow
@@ -418,6 +418,64 @@ class StatusDockRoutingTests(unittest.TestCase):
 
         dock.remove_run.assert_called_once_with("3.2")
         first.handle_event.assert_called_once()
+
+
+class MainMenuTests(unittest.TestCase):
+    @patch("ui.main_window.filedialog.askopenfilename", return_value="")
+    def test_import_config_uses_cross_platform_file_patterns(
+        self, askopenfilename: MagicMock
+    ) -> None:
+        window = MainWindow.__new__(MainWindow)
+        window.root = MagicMock()
+        window.tabs = {}
+        window._record_ui_action = MagicMock()  # type: ignore[method-assign]
+
+        window._import_configs()
+
+        filetypes = askopenfilename.call_args.kwargs["filetypes"]
+        self.assertEqual(filetypes[0][1], ("*.estampcfg", "*.ecfg"))
+        self.assertNotIn(";", repr(filetypes))
+
+    @patch("ui.main_window.managed_firefox_is_installed", return_value=False)
+    @patch("ui.main_window.tk.Menu")
+    def test_top_level_menu_contains_only_macos_compatible_cascades(
+        self, menu_class: MagicMock, _managed_firefox_is_installed: MagicMock
+    ) -> None:
+        top_menu = MagicMock()
+        downloads_menu = MagicMock()
+        config_menu = MagicMock()
+        profile_menu = MagicMock()
+        activity_menu = MagicMock()
+        menu_class.side_effect = [
+            top_menu,
+            downloads_menu,
+            config_menu,
+            profile_menu,
+            activity_menu,
+        ]
+        window = MainWindow.__new__(MainWindow)
+        window.root = MagicMock()
+        window.managed_firefox_downloading = False
+
+        window._build_menu()
+
+        top_menu.add_command.assert_not_called()
+        self.assertEqual(
+            [call.kwargs["label"] for call in top_menu.add_cascade.call_args_list],
+            ["Downloads", "IDs & Settings", "OCR profile", "Activity"],
+        )
+        self.assertEqual(
+            [call.kwargs["label"] for call in downloads_menu.add_command.call_args_list],
+            [
+                "Download managed Firefox",
+                "Download CSV format...",
+                "Download Undownloaded Certificates...",
+            ],
+        )
+        downloads_menu.entryconfigure.assert_called_once_with(
+            0, label="Download managed Firefox", state="normal"
+        )
+        window.root.configure.assert_called_once_with(menu=top_menu)
 
 
 if __name__ == "__main__":

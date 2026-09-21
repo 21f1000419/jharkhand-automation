@@ -44,6 +44,31 @@ from ui.download_certificates_dialog import (
 
 
 class DownloadCertificatesTests(unittest.TestCase):
+    def test_primary_stop_button_cancels_automatic_pdf_date_scan(self) -> None:
+        dialog = DownloadUndownloadedCertificatesDialog.__new__(
+            DownloadUndownloadedCertificatesDialog
+        )
+        dialog.is_running = False
+        dialog.export_stop_requested = False
+        dialog.current_controls = None
+        dialog.is_scanning_pdf_dates = True
+        dialog._pdf_scan_token = 7
+        dialog.reconcile_status_var = MagicMock()
+        dialog.stop_btn = MagicMock()
+        dialog._append_log = MagicMock()  # type: ignore[method-assign]
+
+        dialog._stop_export()
+
+        self.assertEqual(dialog._pdf_scan_token, 8)
+        self.assertFalse(dialog.is_scanning_pdf_dates)
+        dialog.reconcile_status_var.set.assert_called_once_with(
+            "Automatic PDF date extraction stopped."
+        )
+        dialog.stop_btn.configure.assert_called_once_with(state="disabled")
+        dialog._append_log.assert_called_once_with(
+            "Automatic PDF date extraction stopped by user."
+        )
+
     def test_extract_receipt_date(self) -> None:
         text = "Certificate details\nReceipt Date : 05-Sep-2026 12:15:13 pm\nReference"
 
