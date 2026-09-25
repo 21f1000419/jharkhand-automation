@@ -89,6 +89,7 @@ class QrItem:
     worker_label: str
     row: int
     quantity: int
+    paid: bool = False
 
 
 class MainWindow:
@@ -426,11 +427,21 @@ class MainWindow:
         qr_panel.rowconfigure(1, weight=1)
         self.qr_title_var = tk.StringVar(value="Waiting for payment QR codes")
         self.qr_detail_var = tk.StringVar(value="New QR codes will appear here without focusing the browser.")
-        ttk.Label(qr_panel, textvariable=self.qr_title_var, style="Status.TLabel", anchor="center").grid(
-            row=0, column=0, sticky="ew"
+        self.qr_title_label = ttk.Label(
+            qr_panel,
+            textvariable=self.qr_title_var,
+            style="Status.TLabel",
+            anchor="center",
         )
-        self.qr_image_label = ttk.Label(qr_panel, anchor="center")
-        self.qr_image_label.grid(row=1, column=0, sticky="nsew", pady=8)
+        self.qr_title_label.grid(row=0, column=0, sticky="ew")
+        qr_image_host = ttk.Frame(qr_panel)
+        qr_image_host.grid(row=1, column=0, sticky="nsew", pady=8)
+        qr_image_host.rowconfigure(0, weight=1)
+        qr_image_host.columnconfigure(0, weight=1)
+        self.qr_border_frame = tk.Frame(qr_image_host, background="#d1d5db", padx=5, pady=5)
+        self.qr_border_frame.grid(row=0, column=0)
+        self.qr_image_label = tk.Label(self.qr_border_frame, anchor="center", background="white")
+        self.qr_image_label.pack()
         ttk.Label(qr_panel, textvariable=self.qr_detail_var, anchor="center", wraplength=360).grid(
             row=2, column=0, sticky="ew"
         )
@@ -446,6 +457,13 @@ class MainWindow:
             nav, text="Next ›", command=lambda: self._move_qr(1), state="disabled"
         )
         self.qr_next_button.pack(side="left")
+        self.qr_paid_button = ttk.Button(
+            nav,
+            text="Mark paid",
+            command=self._mark_current_qr_paid,
+            state="disabled",
+        )
+        self.qr_paid_button.pack(side="left", padx=(12, 0))
 
     def _build_id_strip(self, parent: ttk.Frame) -> None:
         self.id_strip = ttk.Frame(parent)
@@ -711,8 +729,10 @@ class MainWindow:
         except (KeyError, TypeError, ValueError) as error:
             self.append_session_log(f"Invalid QR event ignored: {error}")
             return
+        was_empty = not self.qr_items
         self.qr_items.append(item)
-        self.qr_index = len(self.qr_items) - 1
+        if was_empty:
+            self.qr_index = 0
         self._render_qr()
 
     def _remove_qr_for_worker(self, dock_id: str) -> None:
@@ -728,8 +748,10 @@ class MainWindow:
         remove_qr_file(item.file_path)
         if not self.qr_items:
             self.qr_index = -1
-        elif index <= self.qr_index:
-            self.qr_index = len(self.qr_items) - 1
+        elif index < self.qr_index:
+            self.qr_index -= 1
+        elif index == self.qr_index:
+            self.qr_index = min(index, len(self.qr_items) - 1)
         self._render_qr()
 
     def _move_qr(self, offset: int) -> None:
@@ -737,6 +759,22 @@ class MainWindow:
             return
         self.qr_index = min(len(self.qr_items) - 1, max(0, self.qr_index + offset))
         self._render_qr()
+
+    def _mark_current_qr_paid(self) -> None:
+        if not 0 <= self.qr_index < len(self.qr_items):
+            return
+        self.qr_items[self.qr_index].paid = True
+        self._render_qr()
+
+    def _qr_accent_color(self, item: QrItem) -> str:
+        base_id = self._dock_base_id(item.dock_id or item.run_id)
+        return self._tab_accent_color(int(base_id)) if base_id.isdigit() else "#2563eb"
+
+    def _qr_display_label(self, item: QrItem) -> str:
+        base_id = self._dock_base_id(item.dock_id or item.run_id)
+        id_label = f"ID {base_id}" if base_id else "Payment QR"
+        worker_label = item.worker_label.strip()
+        return f"{id_label} | {worker_label}" if worker_label and worker_label != id_label else id_label
 
     def _tick_qr_carousel(self) -> None:
         now = time.time()
@@ -753,13 +791,19 @@ class MainWindow:
         if not self.qr_items or not 0 <= self.qr_index < len(self.qr_items):
             self.qr_photo = None
             self.qr_image_label.configure(image="")
+            self.qr_border_frame.configure(background="#d1d5db")
+            self.qr_title_label.configure(foreground="#374151")
             self.qr_title_var.set("Waiting for payment QR codes")
             self.qr_detail_var.set("New QR codes will appear here without focusing the browser.")
             self.qr_position_var.set("0 / 0")
             self.qr_previous_button.configure(state="disabled")
             self.qr_next_button.configure(state="disabled")
+            self.qr_paid_button.configure(text="Mark paid", state="disabled")
             return
         item = self.qr_items[self.qr_index]
+        accent_color = self._qr_accent_color(item)
+        self.qr_border_frame.configure(background=accent_color)
+        self.qr_title_label.configure(foreground=accent_color)
         try:
             with Image.open(item.file_path) as source:
                 image = source.convert("RGB")
@@ -770,15 +814,21 @@ class MainWindow:
             self.append_session_log(f"Could not display QR {item.qr_id}: {error}")
             self.qr_photo = None
             self.qr_image_label.configure(image="")
-        label = item.worker_label or f"ID {item.run_id}"
-        self.qr_title_var.set(label)
+        self.qr_title_var.set(self._qr_display_label(item))
         remaining = max(0, int(item.expires_at - time.time()))
         expiry = f"{remaining // 60:02d}:{remaining % 60:02d}"
-        self.qr_detail_var.set(f"CSV row {item.row} · Quantity {item.quantity} · Expires in {expiry}")
+        paid_status = " | Marked paid" if item.paid else ""
+        self.qr_detail_var.set(
+            f"CSV row {item.row} | Quantity {item.quantity} | Expires in {expiry}{paid_status}"
+        )
         self.qr_position_var.set(f"{self.qr_index + 1} / {len(self.qr_items)}")
         self.qr_previous_button.configure(state="normal" if self.qr_index > 0 else "disabled")
         self.qr_next_button.configure(
             state="normal" if self.qr_index < len(self.qr_items) - 1 else "disabled"
+        )
+        self.qr_paid_button.configure(
+            text="Paid" if item.paid else "Mark paid",
+            state="disabled" if item.paid else "normal",
         )
 
     def _add_tab_widget(self, tab_config: TabConfig) -> AutomationTab:
