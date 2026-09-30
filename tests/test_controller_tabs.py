@@ -13,6 +13,8 @@ from core.config import AppConfig
 from core.controller import (
     AutomationController,
     PortalSessionFactory,
+    egras_remaining_seconds,
+    is_egras_otp_page_url,
     worker_dock_id,
     worker_short_label,
 )
@@ -114,6 +116,20 @@ class AutomationControllerTabTests(unittest.TestCase):
                 return
             time.sleep(0.01)
         self.fail("controller did not reach the expected state")
+
+    def test_automatic_refresh_guard_accepts_only_the_egras_otp_url_and_280_second_timer(self) -> None:
+        self.assertTrue(
+            is_egras_otp_page_url(
+                "https://finance.jharkhand.gov.in/jegras/DepartmentLoginOtpverify.aspx?PDetails=x#no-back-button"
+            )
+        )
+        self.assertFalse(
+            is_egras_otp_page_url("https://finance.jharkhand.gov.in/jegras/Login.aspx")
+        )
+        self.assertFalse(is_egras_otp_page_url("https://example.test/jegras/DepartmentLoginOtpverify.aspx"))
+        self.assertEqual(egras_remaining_seconds("Time Remaining :  280 seconds"), 280)
+        self.assertEqual(egras_remaining_seconds("Time Remaining: 199 second"), 199)
+        self.assertIsNone(egras_remaining_seconds("OTP expires shortly"))
 
     def test_stop_only_closes_its_own_tab_and_events_have_run_ids(self) -> None:
         with patch("core.controller.WorkflowEngine", _BlockingWorkflow):

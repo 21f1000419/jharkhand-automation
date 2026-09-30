@@ -211,6 +211,7 @@ class MainWindow:
         self._build_workspace(container)
         self._build_id_strip(container)
         self.hidden_id_host = ttk.Frame(container)
+        self.root.bind_all("<KeyPress>", self._handle_qr_navigation_shortcut, add="+")
         self.root.after(1000, self._tick_qr_carousel)
 
     def _build_global_run_configuration(self, parent: ttk.Frame) -> None:
@@ -322,7 +323,10 @@ class MainWindow:
         self.start_menu_button = ttk.Menubutton(actions, text="Start ID", menu=self.start_menu)
         self.start_menu_button.pack(side="left", padx=(7, 0))
         ttk.Button(actions, text="Stop All", command=self._stop_all).pack(side="left", padx=(7, 0))
-        ttk.Button(actions, text="Show status", command=self._show_status_dock).pack(
+        self.status_dock_toggle_button = ttk.Button(
+            actions, text="Enable status dock", command=self._toggle_status_dock
+        )
+        self.status_dock_toggle_button.pack(
             side="left", padx=(16, 0)
         )
         ttk.Button(actions, text="Refresh browsers", command=self._refresh_portal_browsers).pack(
@@ -742,6 +746,22 @@ class MainWindow:
         self.qr_index = min(len(self.qr_items) - 1, max(0, self.qr_index + offset))
         self._render_qr()
 
+    def _handle_qr_navigation_shortcut(self, event: tk.Event[tk.Misc]) -> str | None:
+        """Navigate QR cards with A/D or Left/Right without hijacking text input."""
+        if not self.qr_items or event.widget.winfo_toplevel() is not self.root:
+            return None
+        widget_class = event.widget.winfo_class()
+        if widget_class in {"Entry", "TEntry", "Text", "TCombobox", "Spinbox", "TSpinbox"}:
+            return None
+        key = event.keysym.casefold()
+        if key in {"a", "left"}:
+            self._move_qr(-1)
+            return "break"
+        if key in {"d", "right"}:
+            self._move_qr(1)
+            return "break"
+        return None
+
     def _mark_current_qr_paid(self) -> None:
         if not 0 <= self.qr_index < len(self.qr_items):
             return
@@ -971,8 +991,20 @@ class MainWindow:
                             ready=tab.browser_recovery_ready,
                         )
         dock.show()
+        if hasattr(self, "status_dock_toggle_button"):
+            self.status_dock_toggle_button.configure(text="Disable status dock")
         if not any(tab.is_active for tab in self.tabs.values()) and not dock.has_cards:
             self.run_status_var.set("No active IDs to show")
+
+    def _toggle_status_dock(self) -> None:
+        dock = self.automation_status_window
+        if dock is not None and dock.exists and dock.is_visible:
+            self._record_ui_action("disable_status_dock_clicked")
+            dock.hide()
+            self.status_dock_toggle_button.configure(text="Enable status dock")
+            return
+        self._record_ui_action("enable_status_dock_clicked")
+        self._show_status_dock()
 
     def should_offer_browser_recovery(self, closing_tab: AutomationTab) -> bool:
         active_runs = sum(

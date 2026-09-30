@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
+import re
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
@@ -10,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from playwright.async_api import Page
 
@@ -25,6 +27,25 @@ from services.captcha_ocr import CaptchaSolver
 from services.gemini_web_ocr import GeminiWebCaptchaSolver
 
 DEFAULT_TAB_ID = "default"
+EGRAS_OTP_HOST = "finance.jharkhand.gov.in"
+EGRAS_OTP_PATH = "/jegras/departmentloginotpverify.aspx"
+EGRAS_FORCE_REFRESH_SECONDS = 280
+
+
+def is_egras_otp_page_url(url: str) -> bool:
+    """Return whether *url* is the eGRAS two-factor-authentication page."""
+    parts = urlsplit(url)
+    return (
+        parts.scheme in {"http", "https"}
+        and parts.hostname == EGRAS_OTP_HOST
+        and parts.path.casefold() == EGRAS_OTP_PATH
+    )
+
+
+def egras_remaining_seconds(timer_text: str) -> int | None:
+    """Read the numeric value from eGRAS' ``Time Remaining : N seconds`` label."""
+    match = re.search(r"time\s+remaining\s*:\s*(\d+)\s*seconds?\b", timer_text, re.I)
+    return int(match.group(1)) if match else None
 
 
 def _ocr_engine_label(engine: OcrEngine) -> str:
@@ -86,6 +107,7 @@ class RunSession:
     portal_browser_closed: bool = False
     parallel_runtime: ParallelBatchRuntime | None = None
     worker_number: int = 1
+    egras_force_refresh_done: bool = False
 
 
 class _LockedSolver:
@@ -848,7 +870,42 @@ class AutomationController:
             ):
                 self._on_portal_browser_disconnected(session, browser)
                 return
-            await asyncio.sleep(1)
+            if page is not None and not page.is_closed():
+                await self._auto_refresh_egras_otp_at_280_seconds(session, page)
+            await asyncio.sleep(0.25)
+
+    async def _auto_refresh_egras_otp_at_280_seconds(
+        self, session: RunSession, page: Page
+    ) -> None:
+        """Reload one eGRAS OTP page when its server timer reaches 280 seconds."""
+        if not is_egras_otp_page_url(page.url):
+            session.egras_force_refresh_done = False
+            return
+        try:
+            timer_text = await page.locator("#timer").text_content(timeout=500) or ""
+            seconds = egras_remaining_seconds(timer_text)
+        except Exception:
+            return
+        if seconds != EGRAS_FORCE_REFRESH_SECONDS:
+            session.egras_force_refresh_done = False
+            return
+        if session.egras_force_refresh_done:
+            return
+        # Set this before navigation so a timer that remains at 280 after the
+        # reload cannot trigger another immediate reload.
+        session.egras_force_refresh_done = True
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=15_000)
+        except Exception as error:
+            self._emit_session(
+                session,
+                self._event("log", f"Automatic eGRAS OTP refresh at 280 seconds failed: {error}"),
+            )
+            return
+        self._emit_session(
+            session,
+            self._event("log", "Automatically refreshed eGRAS OTP page at 280 seconds."),
+        )
 
     def _on_portal_browser_disconnected(self, session: RunSession, browser: PortalBrowserSession) -> None:
         if browser is not session.portal_browser or session.portal_browser_closed:

@@ -50,6 +50,22 @@ class StatusDockRoutingTests(unittest.TestCase):
         second.stop.assert_not_called()
         second.decide_error.assert_not_called()
 
+    def test_status_dock_toggle_hides_the_visible_dock(self) -> None:
+        window, _first, _second = self.window_with_tabs()
+        dock = MagicMock()
+        dock.exists = True
+        dock.is_visible = True
+        window.automation_status_window = dock
+        window.status_dock_toggle_button = MagicMock()
+
+        window._toggle_status_dock()
+
+        dock.hide.assert_called_once_with()
+        window._record_ui_action.assert_called_once_with("disable_status_dock_clicked")
+        window.status_dock_toggle_button.configure.assert_called_once_with(
+            text="Enable status dock"
+        )
+
     def test_browser_recovery_controls_target_only_the_closed_id(self) -> None:
         window, first, second = self.window_with_tabs()
         second.browser_recovery_pending = True
