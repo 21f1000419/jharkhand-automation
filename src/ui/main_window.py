@@ -55,6 +55,7 @@ from services.transaction_reconciliation import (
     write_reconciliation_text,
 )
 from ui.automation_status import AutomationStatusWindow
+from ui.browser_status import BrowserStatusPage
 from ui.download_certificates_dialog import DownloadUndownloadedCertificatesDialog
 from ui.run_tab import CUSTOM_BROWSER_OPTION as TAB_CUSTOM_BROWSER_OPTION
 from ui.run_tab import AutomationTab
@@ -131,6 +132,7 @@ class MainWindow:
         self.save_captcha_images_var = tk.BooleanVar(value=run_config.save_captcha_images)
         self.fresh_browser_var = tk.BooleanVar(value=run_config.fresh_browser_per_unit)
         self.retry_egras_otp_once_var = tk.BooleanVar(value=run_config.retry_egras_otp_once)
+        self.headless_portal_browser_var = tk.BooleanVar(value=run_config.headless_portal_browser)
         self.sms_server_url_var = tk.StringVar(value=run_config.sms_server_url or DEFAULT_SMS_SERVER_URL)
         self.portal_browser_var = tk.StringVar(value="")
         self.run_status_var = tk.StringVar(value="Idle")
@@ -151,6 +153,7 @@ class MainWindow:
         self.qr_index = -1
         self.qr_photo: ImageTk.PhotoImage | None = None
         self.worker_assignments: dict[str, tuple[int, int, str]] = {}
+        self._restart_pending_ids: set[int] = set()
 
         self._detect_portal_browsers()
         self.portal_browser_var.set(self._saved_browser_name())
@@ -208,7 +211,18 @@ class MainWindow:
         success_label.bind("<Button-2>", lambda _e: self._reset_global_success_count())
 
         self._build_global_run_configuration(container)
-        self._build_workspace(container)
+        self.main_notebook = ttk.Notebook(container)
+        self.main_notebook.pack(fill="both", expand=True, pady=(0, 8))
+        batch_page = ttk.Frame(self.main_notebook)
+        browser_status_page = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(batch_page, text="Batch & QR")
+        self.main_notebook.add(browser_status_page, text="Browser Status")
+        self._build_workspace(batch_page)
+        self.browser_status_page = BrowserStatusPage(
+            browser_status_page,
+            on_refresh=self._status_refresh,
+            on_reset=self._status_reset,
+        )
         self._build_id_strip(container)
         self.hidden_id_host = ttk.Frame(container)
         self.root.bind_all("<KeyPress>", self._handle_qr_navigation_shortcut, add="+")
@@ -296,6 +310,12 @@ class MainWindow:
             options, text="Retry eGRAS OTP once", variable=self.retry_egras_otp_once_var
         )
         retry_otp.pack(side="left", padx=(12, 0))
+        headless = ttk.Checkbutton(
+            options,
+            text="Run Jharkhand browser headless",
+            variable=self.headless_portal_browser_var,
+        )
+        headless.pack(side="left", padx=(12, 0))
         use_ocr = ttk.Checkbutton(options, text="Use OCR", variable=self.ocr_enabled_var)
         use_ocr.pack(side="left", padx=(12, 0))
         ocr = ttk.Combobox(
@@ -348,6 +368,7 @@ class MainWindow:
                 fresh,
                 save_captchas,
                 retry_otp,
+                headless,
                 use_ocr,
                 ocr,
                 copy_mode,
@@ -366,6 +387,7 @@ class MainWindow:
             self.save_captcha_images_var,
             self.fresh_browser_var,
             self.retry_egras_otp_once_var,
+            self.headless_portal_browser_var,
             self.sms_server_url_var,
         ):
             variable.trace_add("write", self._global_settings_changed)
@@ -465,6 +487,7 @@ class MainWindow:
     def _build_id_strip(self, parent: ttk.Frame) -> None:
         self.id_strip = ttk.Frame(parent)
         self.id_strip.pack(fill="x", pady=(2, 0))
+        self._id_strip_signature: tuple[int, ...] = ()
 
     def _global_settings_changed(self, *_args: object) -> None:
         self.root.after_idle(self.save_global_settings)
@@ -484,6 +507,7 @@ class MainWindow:
         run.save_captcha_images = self.save_captcha_images_var.get()
         run.fresh_browser_per_unit = self.fresh_browser_var.get()
         run.retry_egras_otp_once = self.retry_egras_otp_once_var.get()
+        run.headless_portal_browser = self.headless_portal_browser_var.get()
         browser = self.selected_portal_browser()
         if browser is not None:
             run.last_portal_browser_path = str(browser.executable)
@@ -670,6 +694,13 @@ class MainWindow:
             return "Choose or type an Article."
         if self.selected_portal_browser() is None:
             return "Choose an installed portal browser."
+        if self.headless_portal_browser_var.get() and not self.ocr_enabled_var.get():
+            return "Headless Jharkhand browser mode requires OCR for CAPTCHA entry."
+        if (
+            self.headless_portal_browser_var.get()
+            and self.selected_captcha_copy_mode() != CaptchaCopyMode.DIRECT
+        ):
+            return "Headless Jharkhand browser mode requires Direct CAPTCHA copy mode."
         return ""
 
     def render_batch_rows(self, rows: list[dict[str, str]]) -> None:
@@ -839,6 +870,8 @@ class MainWindow:
         initial_state = "Idle" if tab.is_enabled else "Disabled"
         self.tab_states[tab.tab_id] = initial_state
         self.update_tab_state(tab, initial_state, "")
+        if hasattr(self, "browser_status_page"):
+            self.browser_status_page.sync_tabs(self.tabs)
         return tab
 
     def _tab_accent_image(self, tab_id: int, *, enabled: bool) -> tk.PhotoImage:
@@ -969,6 +1002,44 @@ class MainWindow:
         if not _restore_and_activate_window(handle):
             self.run_status_var.set(f"Could not focus the browser window {run_id}")
 
+    def _status_refresh(self, run_id: str) -> None:
+        self._record_ui_action(f"id_{run_id}_status_refresh_clicked")
+        self.controller.refresh_portal(run_id)
+
+    def _dock_refresh(self, run_id: str) -> None:
+        """Compatibility wrapper for callers from earlier status-dock builds."""
+        self._status_refresh(run_id)
+
+    def _status_reset(self, run_id: str) -> None:
+        """Stop the ID cleanly, then start it again after session cleanup."""
+        tab = self._dock_tab(run_id)
+        if tab is None:
+            return
+        self._record_ui_action(f"id_{run_id}_status_reset_clicked")
+        if tab.is_active or tab.portal_session_open:
+            self._restart_pending_ids.add(tab.tab_id)
+            self.controller.stop(tab.run_id)
+            if hasattr(self, "browser_status_page"):
+                for target in self._dock_ids_for_tab(tab):
+                    self.browser_status_page.set_status(
+                        target, "Restarting", "Closing browsers before restart..."
+                    )
+            dock = self.automation_status_window
+            if dock is not None and dock.exists:
+                for target in self._dock_ids_for_tab(tab):
+                    if dock.has_run(target):
+                        dock.set_status(target, "Restarting", "Closing browsers before restart...")
+            return
+        self.root.after(100, tab.start)
+
+    def _dock_restart(self, run_id: str) -> None:
+        """Compatibility wrapper for callers from earlier status-dock builds."""
+        self._status_reset(run_id)
+
+    def _status_restart(self, run_id: str) -> None:
+        """Compatibility wrapper for the earlier Restart ID action name."""
+        self._status_reset(run_id)
+
     def _show_status_dock(self) -> None:
         self._record_ui_action("show_status_dock_clicked")
         dock = self._ensure_status_dock()
@@ -1064,9 +1135,11 @@ class MainWindow:
         quantity: int | None,
         dock_id: str | None = None,
     ) -> None:
+        target = dock_id or self._resolve_dock_id(tab)
+        if hasattr(self, "browser_status_page"):
+            self.browser_status_page.set_progress(target, row, quantity)
         dock = self.automation_status_window
         if dock is not None and dock.exists:
-            target = dock_id or self._resolve_dock_id(tab)
             if not dock.has_run(target):
                 dock.begin_run(
                     target,
@@ -1103,60 +1176,72 @@ class MainWindow:
     def refresh_id_strip(self) -> None:
         if not hasattr(self, "id_strip"):
             return
-        for widget in self.id_strip.winfo_children():
-            widget.destroy()
-        for column in range(self.id_strip.grid_size()[0]):
-            self.id_strip.columnconfigure(column, weight=0, uniform="")
-        self.id_buttons.clear()
         tabs = sorted(self.tabs.values(), key=lambda item: item.tab_id)
-        for column, tab in enumerate(tabs):
-            state = self.tab_states.get(tab.tab_id, "Idle" if tab.is_enabled else "Disabled")
-            detail = getattr(self, "tab_details", {}).get(tab.tab_id, "")
-            text = self._id_button_text(tab, state, detail)
-            enabled = tab.is_enabled
-            color = self._tab_accent_color(tab.tab_id) if enabled else "#9ca3af"
-            button = tk.Button(
+        signature = tuple(tab.tab_id for tab in tabs)
+        if signature != getattr(self, "_id_strip_signature", ()):
+            for widget in self.id_strip.winfo_children():
+                widget.destroy()
+            for column in range(self.id_strip.grid_size()[0]):
+                self.id_strip.columnconfigure(column, weight=0, uniform="")
+            self.id_buttons.clear()
+            for column, tab in enumerate(tabs):
+                color = self._tab_accent_color(tab.tab_id) if tab.is_enabled else "#9ca3af"
+                button = tk.Button(
+                    self.id_strip,
+                    command=partial(self._show_id_settings, tab.tab_id),
+                    background=color,
+                    activebackground=color,
+                    foreground="white",
+                    activeforeground="white",
+                    relief="flat",
+                    borderwidth=0,
+                    font=("Segoe UI", 9, "bold"),
+                    justify="center",
+                    width=1,
+                    height=5,
+                    wraplength=140,
+                    padx=5,
+                    pady=4,
+                    cursor="hand2",
+                )
+                self.id_strip.columnconfigure(column, weight=1, uniform="id-buttons")
+                button.grid(row=0, column=column, sticky="ew", padx=(0, 4))
+                self.id_buttons[tab.tab_id] = button
+            add_column = len(tabs)
+            self.id_strip.columnconfigure(add_column, weight=1, uniform="id-buttons")
+            tk.Button(
                 self.id_strip,
-                text=text,
-                command=partial(self._show_id_settings, tab.tab_id),
-                background=color,
-                activebackground=color,
+                text="+ Add ID",
+                command=self._add_tab,
+                background="#374151",
+                activebackground="#1f2937",
                 foreground="white",
                 activeforeground="white",
                 relief="flat",
                 borderwidth=0,
                 font=("Segoe UI", 9, "bold"),
-                justify="center",
                 width=1,
                 height=5,
-                wraplength=140,
                 padx=5,
                 pady=4,
                 cursor="hand2",
+            ).grid(row=0, column=add_column, sticky="ew")
+            self._id_strip_signature = signature
+
+        for tab in tabs:
+            state = self.tab_states.get(tab.tab_id, "Idle" if tab.is_enabled else "Disabled")
+            detail = getattr(self, "tab_details", {}).get(tab.tab_id, "")
+            text = self._id_button_text(tab, state, detail)
+            enabled = tab.is_enabled
+            color = self._tab_accent_color(tab.tab_id) if enabled else "#9ca3af"
+            self.id_buttons[tab.tab_id].configure(
+                text=text,
+                background=color,
+                activebackground=color,
             )
-            self.id_strip.columnconfigure(column, weight=1, uniform="id-buttons")
-            button.grid(row=0, column=column, sticky="ew", padx=(0, 4))
-            self.id_buttons[tab.tab_id] = button
-        add_column = len(tabs)
-        self.id_strip.columnconfigure(add_column, weight=1, uniform="id-buttons")
-        tk.Button(
-            self.id_strip,
-            text="+ Add ID",
-            command=self._add_tab,
-            background="#374151",
-            activebackground="#1f2937",
-            foreground="white",
-            activeforeground="white",
-            relief="flat",
-            borderwidth=0,
-            font=("Segoe UI", 9, "bold"),
-            width=1,
-            height=5,
-            padx=5,
-            pady=4,
-            cursor="hand2",
-        ).grid(row=0, column=add_column, sticky="ew")
         self._refresh_start_menu()
+        if hasattr(self, "browser_status_page"):
+            self.browser_status_page.sync_tabs(self.tabs)
         if hasattr(self, "id_settings_editors"):
             self._refresh_id_settings_lock_states()
 
@@ -1787,6 +1872,10 @@ class MainWindow:
             self.tab_details = {}
         self.tab_details[tab.tab_id] = detail.strip()
         dock_ids = self._dock_ids_for_tab(tab)
+        status_targets = [dock_id] if dock_id else dock_ids
+        if hasattr(self, "browser_status_page"):
+            for target in status_targets:
+                self.browser_status_page.set_status(target, state, detail)
         dock = self.automation_status_window
         if state == "Starting" and tab.is_enabled:
             dock = self._ensure_status_dock()
@@ -1897,9 +1986,22 @@ class MainWindow:
         if tab is not None:
             dock_id = str(event.data.get("dock_id", "") or "").strip() or None
             tab.handle_event(event)
+            if event.kind == "stage":
+                target = dock_id or self._resolve_dock_id(tab, event)
+                if hasattr(self, "browser_status_page"):
+                    self.browser_status_page.set_step(target, event.message)
+            if event.kind == "session_finished" and tab.tab_id in self._restart_pending_ids:
+                self._restart_pending_ids.discard(tab.tab_id)
+                self.root.after(150, tab.start)
             if event.kind == "qr_available":
                 self._append_qr(event)
             if event.kind in {"worker_stopped", "worker_finished"}:
+                if dock_id and hasattr(self, "browser_status_page"):
+                    self.browser_status_page.set_status(
+                        dock_id,
+                        "Complete" if event.kind == "worker_finished" else "Stopped",
+                        event.message,
+                    )
                 if dock_id:
                     getattr(self, "worker_assignments", {}).pop(dock_id, None)
                 dock = self.automation_status_window
@@ -2337,6 +2439,7 @@ class MainWindow:
         self.save_captcha_images_var.set(run.save_captcha_images)
         self.fresh_browser_var.set(run.fresh_browser_per_unit)
         self.retry_egras_otp_once_var.set(run.retry_egras_otp_once)
+        self.headless_portal_browser_var.set(run.headless_portal_browser)
         self.sms_server_url_var.set(run.sms_server_url)
         self.portal_browser_var.set(self._saved_browser_name())
         self.gemini_ready = bool(self.config.gemini_verified)

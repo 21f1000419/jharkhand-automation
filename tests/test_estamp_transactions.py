@@ -4,12 +4,13 @@ import asyncio
 import csv
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.estamp_transactions import (
+    _collect_table_pages,
     _collect_pending_status_transaction_ids,
     _has_reached_payment_date_lower_bound,
     _pending_status_transaction_ids,
@@ -86,6 +87,25 @@ class TransactionExportTests(unittest.TestCase):
 
         self.assertEqual([row[2] for row in name_selected], ["tx-start"])
 
+    def test_filters_successful_payments_by_date_and_time(self) -> None:
+        headers = ["Name", "Payment Date", "Transaction ID", "Status"]
+        rows = [
+            ["Before", "2026-09-04 10:58:11", "tx-before", "SUCCESS"],
+            ["Start", "2026-09-04 11:00:03", "tx-start", "SUCCESS"],
+            ["Inside", "2026-09-04 11:00:59", "tx-inside", "SUCCESS"],
+            ["End", "2026-09-04 11:02:05", "tx-end", "SUCCESS"],
+            ["After", "2026-09-04 11:03:00", "tx-after", "SUCCESS"],
+        ]
+
+        selected = _successful_rows_in_payment_date_range(
+            rows,
+            headers,
+            payment_date_from=datetime(2026, 9, 4, 11, 0, 3),
+            payment_date_to=datetime(2026, 9, 4, 11, 2, 5),
+        )
+
+        self.assertEqual([row[2] for row in selected], ["tx-start", "tx-inside", "tx-end"])
+
     def test_finds_name_filtered_pending_rows_regardless_of_blank_dates(self) -> None:
         headers = ["Name", "Payment Date", "Transaction ID", "Status", "Actions"]
         rows = [
@@ -150,6 +170,46 @@ class TransactionExportTests(unittest.TestCase):
             )
 
         self.assertEqual(pending_ids, ["tx-1", "tx-2"])
+        next_link.click.assert_awaited_once_with()
+
+    def test_date_filtered_export_visits_every_page_when_table_is_sorted_by_name(self) -> None:
+        headers = ["Name", "Payment Date", "Transaction ID", "Status"]
+        first_page = [["A Name", "2026-09-03 09:00:00", "tx-old", "SUCCESS", "", "user"]]
+        second_page = [
+            ["Z Name", "2026-09-04 11:00:59", "tx-match", "SUCCESS", "", "user"]
+        ]
+        page = MagicMock()
+        next_page = MagicMock()
+        next_page.get_attribute = AsyncMock(side_effect=["paginate_button", "disabled"])
+        next_link = MagicMock()
+        next_link.click = AsyncMock()
+        next_page.locator.return_value = next_link
+        page.locator.return_value = next_page
+
+        with (
+            patch(
+                "services.estamp_transactions._payment_table_headers",
+                new=AsyncMock(return_value=headers),
+            ),
+            patch(
+                "services.estamp_transactions._read_current_page",
+                new=AsyncMock(side_effect=[first_page, second_page]),
+            ),
+            patch("services.estamp_transactions._page_info", new=AsyncMock(return_value="page")),
+            patch("services.estamp_transactions._wait_for_page_change", new=AsyncMock()),
+        ):
+            exported_headers, rows = asyncio.run(
+                _collect_table_pages(
+                    page,
+                    lambda _message: None,
+                    "user",
+                    payment_date_from=datetime(2026, 9, 4, 11, 0, 0),
+                    payment_date_to=datetime(2026, 9, 4, 11, 2, 0),
+                )
+            )
+
+        self.assertEqual(exported_headers[-2:], ["eStamp Download URL", "User ID"])
+        self.assertEqual([row[2] for row in rows], ["tx-match"])
         next_link.click.assert_awaited_once_with()
 
     def test_appends_only_new_transaction_ids(self) -> None:

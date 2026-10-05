@@ -5,11 +5,55 @@ from unittest.mock import MagicMock, patch
 
 from core.models import UiEvent
 from ui.automation_status import AutomationStatusWindow
+from ui.browser_status import BrowserStatusPage
 from ui.main_window import MainWindow
 from ui.run_tab import AutomationTab
 
 
 class StatusDockRoutingTests(unittest.TestCase):
+    def test_status_table_uses_id_columns_and_browser_run_ids(self) -> None:
+        self.assertEqual(BrowserStatusPage._run_id(3, 1, 1), "3")
+        self.assertEqual(BrowserStatusPage._run_id(3, 1, 3), "3.1")
+        self.assertEqual(BrowserStatusPage._run_id(3, 3, 3), "3.3")
+
+    def test_status_table_matches_dock_status_colors(self) -> None:
+        self.assertEqual(BrowserStatusPage._status_color("Running"), "#2563eb")
+        self.assertEqual(BrowserStatusPage._status_color("Paused"), "#b45309")
+        self.assertEqual(BrowserStatusPage._status_color("Browser closed"), "#b91c1c")
+        self.assertEqual(BrowserStatusPage._status_color("Complete"), "#047857")
+
+    def test_status_event_updates_only_the_existing_cell(self) -> None:
+        page = BrowserStatusPage.__new__(BrowserStatusPage)
+        page.table_visible = True
+        page.states = {"2.3": "Running"}
+        page.details = {"2.3": "Filling form"}
+        page.progress = {"2.3": (7, 2)}
+        state_var = MagicMock()
+        detail_var = MagicMock()
+        state_label = MagicMock()
+        page.cell_state_vars = {"2.3": state_var}
+        page.cell_detail_vars = {"2.3": detail_var}
+        page.cell_state_labels = {"2.3": state_label}
+
+        page._update_cell("2.3")
+
+        state_var.set.assert_called_once_with("Running")
+        detail_var.set.assert_called_once_with("Row 7  |  Quantity 2\nFilling form")
+        state_label.configure.assert_called_once_with(foreground="#2563eb")
+
+    def test_simple_mode_switch_rebuilds_structure_only_once(self) -> None:
+        page = BrowserStatusPage.__new__(BrowserStatusPage)
+        page.simple_mode = False
+        page.table_visible = True
+        page.simple_mode_button = MagicMock()
+        page._render = MagicMock()  # type: ignore[method-assign]
+
+        page.toggle_simple_mode()
+
+        self.assertTrue(page.simple_mode)
+        page.simple_mode_button.configure.assert_called_once_with(text="Use detailed mode")
+        page._render.assert_called_once_with()
+
     def window_with_tabs(self) -> tuple[MainWindow, MagicMock, MagicMock]:
         window = MainWindow.__new__(MainWindow)
         first = MagicMock()
@@ -49,6 +93,38 @@ class StatusDockRoutingTests(unittest.TestCase):
         window.controller.decide_error.assert_called_once_with("2", "retry")
         second.stop.assert_not_called()
         second.decide_error.assert_not_called()
+
+    def test_status_table_refresh_targets_its_browser(self) -> None:
+        window, _first, _second = self.window_with_tabs()
+
+        window._dock_refresh("2.3")
+
+        window.controller.refresh_portal.assert_called_once_with("2.3")
+        window._record_ui_action.assert_called_once_with("id_2.3_status_refresh_clicked")
+
+    def test_status_table_reset_waits_for_cleanup_then_starts_id(self) -> None:
+        window, first, _second = self.window_with_tabs()
+        window._restart_pending_ids = set()
+        window.automation_status_window = MagicMock(exists=True)
+        window.automation_status_window.has_run.return_value = True
+        window.root = MagicMock()
+        window.root.after.side_effect = lambda _delay, callback: callback()
+        window.worker_assignments = {}
+        first.config.browser_count = 1
+        first.is_active = True
+        first.portal_session_open = True
+
+        window._status_reset("1")
+
+        window.controller.stop.assert_called_once_with("1")
+        window._record_ui_action.assert_called_once_with("id_1_status_reset_clicked")
+        self.assertEqual(window._restart_pending_ids, {1})
+        first.start.assert_not_called()
+
+        window._handle_event(UiEvent("session_finished", "Ready", {}, "1"))
+
+        self.assertEqual(window._restart_pending_ids, set())
+        first.start.assert_called_once_with()
 
     def test_status_dock_toggle_hides_the_visible_dock(self) -> None:
         window, _first, _second = self.window_with_tabs()

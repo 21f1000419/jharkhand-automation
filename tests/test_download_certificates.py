@@ -44,6 +44,26 @@ from ui.download_certificates_dialog import (
 
 
 class DownloadCertificatesTests(unittest.TestCase):
+    def test_export_datetime_combines_date_and_time(self) -> None:
+        parsed = DownloadUndownloadedCertificatesDialog._parse_export_datetime(
+            "2026-09-04", "11:02:05", "From"
+        )
+
+        self.assertEqual(parsed, datetime.datetime(2026, 9, 4, 11, 2, 5))
+
+    def test_export_datetime_rejects_invalid_time(self) -> None:
+        with self.assertRaisesRegex(ValueError, "HH:MM"):
+            DownloadUndownloadedCertificatesDialog._parse_export_datetime(
+                "2026-09-04", "25:00", "From"
+            )
+
+    def test_export_date_does_not_require_time(self) -> None:
+        parsed = DownloadUndownloadedCertificatesDialog._parse_export_date(
+            "2026-09-04", "From"
+        )
+
+        self.assertEqual(parsed, datetime.date(2026, 9, 4))
+
     def test_extract_receipt_date(self) -> None:
         text = "Certificate details\nReceipt Date : 05-Sep-2026 12:15:13 pm\nReference"
 

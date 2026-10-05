@@ -170,6 +170,7 @@ class RunOptions:
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
     retry_egras_otp_once: bool = True
+    headless_portal_browser: bool = False
     run_id: str = ""
     portal_profile_path: Path | None = None
     portal_window_accent: str = ""

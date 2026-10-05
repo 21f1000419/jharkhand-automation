@@ -502,6 +502,32 @@ class ServiceTests(unittest.TestCase):
         qr_option.evaluate.assert_awaited_once()
         pay_now.click.assert_awaited_once()
 
+    def test_upi_control_is_detected_after_sbi_redirect(self) -> None:
+        page = MagicMock()
+        page.url = "https://epay.sbi.co.in/payment/upi"
+        page.is_closed.return_value = False
+        page.wait_for_timeout = AsyncMock()
+        upi = MagicMock()
+        upi.click = AsyncMock()
+        portal = PortalAutomation(
+            page,
+            None,
+            RunControls(lambda _event: None),
+            AsyncMock(),
+            lambda _event: None,
+            MagicMock(),
+            "",
+            CaptchaCopyMode.DIRECT,
+        )
+        portal._stage = AsyncMock()  # type: ignore[method-assign]
+        portal._raise_if_gateway_suspended = AsyncMock()  # type: ignore[method-assign]
+
+        with patch("automation.portal.first_visible", new=AsyncMock(return_value=upi)):
+            asyncio.run(portal.select_upi())
+
+        upi.click.assert_awaited_once_with()
+        page.wait_for_timeout.assert_awaited_once_with(1_000)
+
     def test_upi_qr_unverified_hands_payment_to_user_without_failing(self) -> None:
         page = MagicMock()
         page.is_closed.return_value = False
@@ -1298,6 +1324,7 @@ class ServiceTests(unittest.TestCase):
                     captcha_copy_mode=CaptchaCopyMode.MOUSE_CURSOR,
                     payment_trigger_url="https://payment-trigger.example/start",
                     payment_trigger_method="POST",
+                    headless_portal_browser=True,
                 ),
             )
             store.save(config)
@@ -1312,6 +1339,7 @@ class ServiceTests(unittest.TestCase):
                 "https://payment-trigger.example/start",
             )
             self.assertEqual(reloaded.run_config.payment_trigger_method, "POST")
+            self.assertTrue(reloaded.run_config.headless_portal_browser)
 
     def test_config_store_handles_missing_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

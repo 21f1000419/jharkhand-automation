@@ -305,6 +305,10 @@ class AutomationController:
     def stop(self, tab_id: str | None = None) -> None:
         self._submit(self._stop_run(tab_id or DEFAULT_TAB_ID, "Stopped by user"))
 
+    def refresh_portal(self, tab_id: str) -> None:
+        """Reload the portal page for one status-table browser (or ID group)."""
+        self._submit(self._refresh_portal(tab_id))
+
     def decide_error(self, tab_id: str, action: str | None = None) -> None:
         """Apply an error decision. ``decide_error(action)`` targets the default tab."""
         if action is None:
@@ -516,6 +520,34 @@ class AutomationController:
             return_exceptions=True,
         )
         self._emit_session(sessions[0], self._event("portal_closed", "Portal browsers closed."))
+
+    async def _refresh_portal(self, tab_id: str) -> None:
+        single = self._worker_session(tab_id)
+        sessions = [single] if single is not None else self._sessions_for(tab_id)
+        sessions = [session for session in sessions if session is not None]
+        if not sessions:
+            self.emit(
+                self._event("status", "No active portal browser is available to refresh."),
+                run_id=split_worker_id(tab_id)[0],
+            )
+            return
+        for session in sessions:
+            page = session.portal_page
+            if page is None or page.is_closed():
+                self._emit_session(
+                    session,
+                    self._event("status", "This portal browser is not open yet."),
+                )
+                continue
+            try:
+                self._emit_session(session, self._event("status", "Refreshing portal page..."))
+                await page.reload(wait_until="domcontentloaded", timeout=30_000)
+                self._emit_session(session, self._event("status", "Portal page refreshed."))
+            except Exception as error:
+                self._emit_session(
+                    session,
+                    self._event("status", f"Portal refresh failed: {error}"),
+                )
 
     async def _stop_single_worker(self, session: RunSession, reason: str) -> None:
         """Stop one browser worker; remaining workers keep their queue and browsers."""
@@ -822,6 +854,7 @@ class AutomationController:
                     getattr(session.options, "portal_profile_path", None),
                     window_accent=getattr(session.options, "portal_window_accent", ""),
                     window_label=getattr(session.options, "portal_window_label", ""),
+                    headless=bool(getattr(session.options, "headless_portal_browser", False)),
                 )
             )
             session.portal_browser = browser

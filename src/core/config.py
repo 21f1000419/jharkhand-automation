@@ -34,6 +34,7 @@ class GlobalRunConfig:
     save_captcha_images: bool = True
     fresh_browser_per_unit: bool = False
     retry_egras_otp_once: bool = True
+    headless_portal_browser: bool = False
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> GlobalRunConfig:

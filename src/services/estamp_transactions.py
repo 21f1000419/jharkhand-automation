@@ -117,8 +117,8 @@ class TransactionExportTarget:
     window_accent: str = ""
     window_label: str = ""
     auto_login: bool = True
-    payment_date_from: date | None = None
-    payment_date_to: date | None = None
+    payment_date_from: date | datetime | None = None
+    payment_date_to: date | datetime | None = None
     payment_name_filter: str = ""
     payment_amount_filter: Decimal | None = None
     skip_status_updates: bool = False
@@ -528,17 +528,18 @@ def _pending_status_transaction_ids(
 def _has_reached_payment_date_lower_bound(
     rows: Sequence[Sequence[str]],
     headers: Sequence[str],
-    payment_date_from: date | None,
+    payment_date_from: date | datetime | None,
 ) -> bool:
     """Return whether a descending payment-date table has passed the lower bound."""
     if payment_date_from is None:
         return False
     payment_date_index = _header_index(headers, "payment date")
+    lower_bound = _payment_datetime_bound(payment_date_from, end_of_day=False)
     for row in rows:
         if len(row) <= payment_date_index:
             continue
-        payment_date = _parse_payment_date(row[payment_date_index])
-        if payment_date is not None and payment_date < payment_date_from:
+        payment_date = _parse_payment_datetime(row[payment_date_index])
+        if payment_date is not None and lower_bound is not None and payment_date < lower_bound:
             return True
     return False
 
@@ -614,8 +615,8 @@ async def _collect_table_pages(
     user_id: str = "",
     controls: RunControls | None = None,
     *,
-    payment_date_from: date | None = None,
-    payment_date_to: date | None = None,
+    payment_date_from: date | datetime | None = None,
+    payment_date_to: date | datetime | None = None,
     payment_name_filter: str = "",
     payment_amount_filter: Decimal | None = None,
 ) -> tuple[list[str], list[list[str]]]:
@@ -645,12 +646,6 @@ async def _collect_table_pages(
             f"({len(matching_rows)} matched on this page)..."
         )
 
-        if _has_reached_payment_date_lower_bound(
-            current_rows, raw_headers, payment_date_from
-        ):
-            report_status("Reached the lower payment-date filter bound.")
-            break
-
         next_page = page.locator(_NEXT_PAGE_SELECTOR)
         classes = (await next_page.get_attribute("class") or "").casefold()
         if "disabled" in classes:
@@ -667,8 +662,8 @@ def _successful_rows_in_payment_date_range(
     rows: Sequence[Sequence[str]],
     headers: Sequence[str],
     *,
-    payment_date_from: date | None,
-    payment_date_to: date | None,
+    payment_date_from: date | datetime | None,
+    payment_date_to: date | datetime | None,
     payment_name_filter: str = "",
     payment_amount_filter: Decimal | None = None,
 ) -> list[list[str]]:
@@ -676,6 +671,8 @@ def _successful_rows_in_payment_date_range(
     status_index = _header_index(headers, "status")
     payment_date_index = _header_index(headers, "payment date")
     name_index = 0 if payment_name_filter.strip() else None
+    lower_bound = _payment_datetime_bound(payment_date_from, end_of_day=False)
+    upper_bound = _payment_datetime_bound(payment_date_to, end_of_day=True)
     selected: list[list[str]] = []
     for row in rows:
         if len(row) <= max(status_index, payment_date_index):
@@ -692,12 +689,12 @@ def _successful_rows_in_payment_date_range(
                 continue
         if _clean_cell(row[status_index]).casefold() != "success":
             continue
-        payment_date = _parse_payment_date(row[payment_date_index])
-        if payment_date is None:
+        payment_datetime = _parse_payment_datetime(row[payment_date_index])
+        if payment_datetime is None:
             continue
-        if payment_date_from is not None and payment_date < payment_date_from:
+        if lower_bound is not None and payment_datetime < lower_bound:
             continue
-        if payment_date_to is not None and payment_date > payment_date_to:
+        if upper_bound is not None and payment_datetime > upper_bound:
             continue
         selected.append(list(row))
     return selected
@@ -742,14 +739,29 @@ def parse_payment_amount(value: str) -> Decimal | None:
     return amount if amount.is_finite() else None
 
 
-def _parse_payment_date(value: str) -> date | None:
+def _parse_payment_datetime(value: str) -> datetime | None:
     cleaned = _clean_cell(value)
     if not cleaned:
         return None
-    candidates = [cleaned, cleaned.split(" ", 1)[0]]
-    for candidate in candidates:
+    for date_format in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d-%b-%Y %H:%M:%S",
+        "%d-%b-%Y %H:%M",
+        "%d %b %Y %H:%M:%S",
+        "%d %b %Y %H:%M",
+    ):
         with suppress(ValueError):
-            return date.fromisoformat(candidate)
+            return datetime.strptime(cleaned, date_format)
+    for candidate in (cleaned, cleaned.split(" ", 1)[0]):
+        with suppress(ValueError):
+            return datetime.combine(date.fromisoformat(candidate), datetime.min.time())
         for date_format in (
             "%d/%m/%Y",
             "%d-%m-%Y",
@@ -758,8 +770,24 @@ def _parse_payment_date(value: str) -> date | None:
             "%d %b %Y",
         ):
             with suppress(ValueError):
-                return datetime.strptime(candidate, date_format).date()
+                return datetime.strptime(candidate, date_format)
     return None
+
+
+def _parse_payment_date(value: str) -> date | None:
+    """Compatibility wrapper for callers that only need the calendar date."""
+    parsed = _parse_payment_datetime(value)
+    return parsed.date() if parsed is not None else None
+
+
+def _payment_datetime_bound(
+    value: date | datetime | None, *, end_of_day: bool
+) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.combine(value, datetime.max.time() if end_of_day else datetime.min.time())
 
 
 async def _select_page_size(page: Page) -> None:
