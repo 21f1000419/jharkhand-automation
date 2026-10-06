@@ -80,11 +80,15 @@ class DownloadUndownloadedCertificatesDialog:
 
         self.export_date_from_var = tk.StringVar()
         self.export_date_to_var = tk.StringVar()
+        self.export_time_from_var = tk.StringVar(value="00:00:00")
+        self.export_time_to_var = tk.StringVar(value="23:59:59")
+        self.export_time_filter_enabled_var = tk.BooleanVar(value=False)
         self.export_date_filter_enabled_var = tk.BooleanVar(value=False)
         self.export_name_filter_var = tk.StringVar()
         self.export_amount_filter_var = tk.StringVar()
         self.skip_status_updates_var = tk.BooleanVar(value=False)
         self.export_date_entries: list[DateEntry] = []
+        self.export_time_entries: list[ttk.Entry] = []
         self.use_chrome_for_all_var = tk.BooleanVar(value=True)
         self.selection_summary_var = tk.StringVar()
         self.export_status_var = tk.StringVar(value="Ready")
@@ -208,7 +212,9 @@ class DownloadUndownloadedCertificatesDialog:
         ).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(date_filter, text="From").grid(row=0, column=1, sticky="w", padx=(12, 0))
+        ttk.Label(date_filter, text="From date").grid(
+            row=0, column=1, sticky="w", padx=(12, 0)
+        )
         from_date = DateEntry(
             date_filter,
             textvariable=self.export_date_from_var,
@@ -219,7 +225,9 @@ class DownloadUndownloadedCertificatesDialog:
         from_date.grid(
             row=0, column=2, sticky="w", padx=(6, 12)
         )
-        ttk.Label(date_filter, text="To").grid(row=0, column=3, sticky="w")
+        from_time = ttk.Entry(date_filter, textvariable=self.export_time_from_var, width=9)
+        from_time.grid(row=0, column=3, sticky="w", padx=(0, 12))
+        ttk.Label(date_filter, text="To date").grid(row=0, column=4, sticky="w")
         to_date = DateEntry(
             date_filter,
             textvariable=self.export_date_to_var,
@@ -228,30 +236,39 @@ class DownloadUndownloadedCertificatesDialog:
             state="readonly",
         )
         to_date.grid(
-            row=0, column=4, sticky="w", padx=(6, 12)
+            row=0, column=5, sticky="w", padx=(6, 12)
         )
-        ttk.Label(date_filter, text="Name contains").grid(row=0, column=5, sticky="w")
+        to_time = ttk.Entry(date_filter, textvariable=self.export_time_to_var, width=9)
+        to_time.grid(row=0, column=6, sticky="w")
+        ttk.Checkbutton(
+            date_filter,
+            text="Include time",
+            variable=self.export_time_filter_enabled_var,
+            command=self._update_date_filter_state,
+        ).grid(row=0, column=7, sticky="w", padx=(12, 0))
+        ttk.Label(date_filter, text="Name contains").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(date_filter, textvariable=self.export_name_filter_var, width=26).grid(
-            row=0, column=6, sticky="ew", padx=(6, 0)
+            row=1, column=1, columnspan=3, sticky="ew", padx=(6, 12), pady=(6, 0)
         )
         ttk.Label(date_filter, text="Amount").grid(
-            row=0, column=7, sticky="w", padx=(12, 0)
+            row=1, column=4, sticky="w", pady=(6, 0)
         )
         ttk.Entry(date_filter, textvariable=self.export_amount_filter_var, width=14).grid(
-            row=0, column=8, sticky="w", padx=(6, 0)
+            row=1, column=5, sticky="w", padx=(6, 0), pady=(6, 0)
         )
         ttk.Checkbutton(
             date_filter,
             text="Skip Update Status checks",
             variable=self.skip_status_updates_var,
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
         ttk.Label(
             date_filter,
             text="Only existing SUCCESS transactions will be checked for missing PDFs.",
             foreground="#555555",
-        ).grid(row=1, column=4, columnspan=5, sticky="w", pady=(6, 0))
-        date_filter.columnconfigure(6, weight=1)
+        ).grid(row=2, column=4, columnspan=3, sticky="w", pady=(6, 0))
+        date_filter.columnconfigure(3, weight=1)
         self.export_date_entries = [from_date, to_date]
+        self.export_time_entries = [from_time, to_time]
         self._update_date_filter_state()
 
         ids_group = ttk.LabelFrame(parent, text="Select Citizen IDs", padding=8)
@@ -475,12 +492,24 @@ class DownloadUndownloadedCertificatesDialog:
             messagebox.showwarning("Export transactions", str(error), parent=self.dialog)
             return
 
-        payment_date_from: datetime.date | None = None
-        payment_date_to: datetime.date | None = None
+        payment_date_from: datetime.date | datetime.datetime | None = None
+        payment_date_to: datetime.date | datetime.datetime | None = None
         if self.export_date_filter_enabled_var.get():
             try:
-                payment_date_from = self._parse_export_date(self.export_date_from_var.get(), "From")
-                payment_date_to = self._parse_export_date(self.export_date_to_var.get(), "To")
+                if self.export_time_filter_enabled_var.get():
+                    payment_date_from = self._parse_export_datetime(
+                        self.export_date_from_var.get(), self.export_time_from_var.get(), "From"
+                    )
+                    payment_date_to = self._parse_export_datetime(
+                        self.export_date_to_var.get(), self.export_time_to_var.get(), "To"
+                    )
+                else:
+                    payment_date_from = self._parse_export_date(
+                        self.export_date_from_var.get(), "From"
+                    )
+                    payment_date_to = self._parse_export_date(
+                        self.export_date_to_var.get(), "To"
+                    )
             except ValueError as error:
                 messagebox.showwarning("Export transactions", str(error), parent=self.dialog)
                 return
@@ -727,6 +756,22 @@ class DownloadUndownloadedCertificatesDialog:
         except ValueError as error:
             raise ValueError(f"{label} payment date must use YYYY-MM-DD.") from error
 
+    @classmethod
+    def _parse_export_datetime(
+        cls, date_value: str, time_value: str, label: str
+    ) -> datetime.datetime | None:
+        parsed_date = cls._parse_export_date(date_value, label)
+        if parsed_date is None:
+            return None
+        cleaned_time = time_value.strip()
+        for time_format in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed_time = datetime.datetime.strptime(cleaned_time, time_format).time()
+                return datetime.datetime.combine(parsed_date, parsed_time)
+            except ValueError:
+                continue
+        raise ValueError(f"{label} payment time must use HH:MM or HH:MM:SS.")
+
     @staticmethod
     def _parse_export_amount(value: str) -> Decimal | None:
         cleaned = value.strip()
@@ -738,9 +783,13 @@ class DownloadUndownloadedCertificatesDialog:
         return amount
 
     def _update_date_filter_state(self) -> None:
-        state = "readonly" if self.export_date_filter_enabled_var.get() else "disabled"
+        enabled = self.export_date_filter_enabled_var.get()
+        state = "readonly" if enabled else "disabled"
         for entry in self.export_date_entries:
             entry.configure(state=state)
+        time_enabled = enabled and self.export_time_filter_enabled_var.get()
+        for entry in self.export_time_entries:
+            entry.configure(state="normal" if time_enabled else "disabled")
 
     @staticmethod
     def _export_profile_path(profile_name: str, browser: PortalBrowser) -> Path:
@@ -926,6 +975,9 @@ class DownloadUndownloadedCertificatesDialog:
         if defaults.date_from is not None and defaults.date_to is not None:
             self.export_date_from_var.set(defaults.date_from.isoformat())
             self.export_date_to_var.set(defaults.date_to.isoformat())
+            self.export_time_from_var.set("00:00:00")
+            self.export_time_to_var.set("23:59:59")
+            self.export_time_filter_enabled_var.set(False)
             self.export_date_filter_enabled_var.set(True)
             self._update_date_filter_state()
         if defaults.first_party_name:

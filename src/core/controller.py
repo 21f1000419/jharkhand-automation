@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
+import re
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
@@ -10,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from playwright.async_api import Page
 
@@ -25,6 +27,25 @@ from services.captcha_ocr import CaptchaSolver
 from services.gemini_web_ocr import GeminiWebCaptchaSolver
 
 DEFAULT_TAB_ID = "default"
+EGRAS_OTP_HOST = "finance.jharkhand.gov.in"
+EGRAS_OTP_PATH = "/jegras/departmentloginotpverify.aspx"
+EGRAS_FORCE_REFRESH_SECONDS = 280
+
+
+def is_egras_otp_page_url(url: str) -> bool:
+    """Return whether *url* is the eGRAS two-factor-authentication page."""
+    parts = urlsplit(url)
+    return (
+        parts.scheme in {"http", "https"}
+        and parts.hostname == EGRAS_OTP_HOST
+        and parts.path.casefold() == EGRAS_OTP_PATH
+    )
+
+
+def egras_remaining_seconds(timer_text: str) -> int | None:
+    """Read the numeric value from eGRAS' ``Time Remaining : N seconds`` label."""
+    match = re.search(r"time\s+remaining\s*:\s*(\d+)\s*seconds?\b", timer_text, re.I)
+    return int(match.group(1)) if match else None
 
 
 def _ocr_engine_label(engine: OcrEngine) -> str:
@@ -86,6 +107,7 @@ class RunSession:
     portal_browser_closed: bool = False
     parallel_runtime: ParallelBatchRuntime | None = None
     worker_number: int = 1
+    egras_force_refresh_done: bool = False
 
 
 class _LockedSolver:
@@ -282,6 +304,10 @@ class AutomationController:
 
     def stop(self, tab_id: str | None = None) -> None:
         self._submit(self._stop_run(tab_id or DEFAULT_TAB_ID, "Stopped by user"))
+
+    def refresh_portal(self, tab_id: str) -> None:
+        """Reload the portal page for one status-table browser (or ID group)."""
+        self._submit(self._refresh_portal(tab_id))
 
     def decide_error(self, tab_id: str, action: str | None = None) -> None:
         """Apply an error decision. ``decide_error(action)`` targets the default tab."""
@@ -494,6 +520,34 @@ class AutomationController:
             return_exceptions=True,
         )
         self._emit_session(sessions[0], self._event("portal_closed", "Portal browsers closed."))
+
+    async def _refresh_portal(self, tab_id: str) -> None:
+        single = self._worker_session(tab_id)
+        sessions = [single] if single is not None else self._sessions_for(tab_id)
+        sessions = [session for session in sessions if session is not None]
+        if not sessions:
+            self.emit(
+                self._event("status", "No active portal browser is available to refresh."),
+                run_id=split_worker_id(tab_id)[0],
+            )
+            return
+        for session in sessions:
+            page = session.portal_page
+            if page is None or page.is_closed():
+                self._emit_session(
+                    session,
+                    self._event("status", "This portal browser is not open yet."),
+                )
+                continue
+            try:
+                self._emit_session(session, self._event("status", "Refreshing portal page..."))
+                await page.reload(wait_until="domcontentloaded", timeout=30_000)
+                self._emit_session(session, self._event("status", "Portal page refreshed."))
+            except Exception as error:
+                self._emit_session(
+                    session,
+                    self._event("status", f"Portal refresh failed: {error}"),
+                )
 
     async def _stop_single_worker(self, session: RunSession, reason: str) -> None:
         """Stop one browser worker; remaining workers keep their queue and browsers."""
@@ -800,6 +854,7 @@ class AutomationController:
                     getattr(session.options, "portal_profile_path", None),
                     window_accent=getattr(session.options, "portal_window_accent", ""),
                     window_label=getattr(session.options, "portal_window_label", ""),
+                    headless=bool(getattr(session.options, "headless_portal_browser", False)),
                 )
             )
             session.portal_browser = browser
@@ -848,7 +903,42 @@ class AutomationController:
             ):
                 self._on_portal_browser_disconnected(session, browser)
                 return
-            await asyncio.sleep(1)
+            if page is not None and not page.is_closed():
+                await self._auto_refresh_egras_otp_at_280_seconds(session, page)
+            await asyncio.sleep(0.25)
+
+    async def _auto_refresh_egras_otp_at_280_seconds(
+        self, session: RunSession, page: Page
+    ) -> None:
+        """Reload one eGRAS OTP page when its server timer reaches 280 seconds."""
+        if not is_egras_otp_page_url(page.url):
+            session.egras_force_refresh_done = False
+            return
+        try:
+            timer_text = await page.locator("#timer").text_content(timeout=500) or ""
+            seconds = egras_remaining_seconds(timer_text)
+        except Exception:
+            return
+        if seconds != EGRAS_FORCE_REFRESH_SECONDS:
+            session.egras_force_refresh_done = False
+            return
+        if session.egras_force_refresh_done:
+            return
+        # Set this before navigation so a timer that remains at 280 after the
+        # reload cannot trigger another immediate reload.
+        session.egras_force_refresh_done = True
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=15_000)
+        except Exception as error:
+            self._emit_session(
+                session,
+                self._event("log", f"Automatic eGRAS OTP refresh at 280 seconds failed: {error}"),
+            )
+            return
+        self._emit_session(
+            session,
+            self._event("log", "Automatically refreshed eGRAS OTP page at 280 seconds."),
+        )
 
     def _on_portal_browser_disconnected(self, session: RunSession, browser: PortalBrowserSession) -> None:
         if browser is not session.portal_browser or session.portal_browser_closed:

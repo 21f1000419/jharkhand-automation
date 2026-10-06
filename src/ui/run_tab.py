@@ -203,6 +203,7 @@ class AutomationTab:
             save_captcha_images=run_config.save_captcha_images,
             fresh_browser_per_unit=run_config.fresh_browser_per_unit,
             retry_egras_otp_once=run_config.retry_egras_otp_once,
+            headless_portal_browser=run_config.headless_portal_browser,
             run_id=self.run_id,
             portal_profile_path=profile_path,
             portal_window_accent=self.owner.tab_accent_color(self.tab_id),

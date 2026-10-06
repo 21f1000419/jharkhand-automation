@@ -35,7 +35,6 @@ CITIZEN_LOGIN_URL = "https://jharnibandhan.gov.in/Citizenentry/citizenlogin"
 CITIZEN_WELCOME_URL = "https://jharnibandhan.gov.in/Citizenentry/welcome"
 ESTAMP_URL = "https://jharnibandhan.gov.in/JHWebService/gras_payment_entry_estamp"
 MAIN_HOME_URL = "https://jharnibandhan.gov.in"
-SBI_HOSTED_PAYMENT_URL = "https://epay.sbi.bank.in/secure/AggregatorHostedListener"
 GATEWAY_SUSPENDED_TEXT = "pnb gateway has been temporarily suspended"
 PREPAYMENT_SUMMARY_TEXT = "summary of pre payment details"
 MAIN_OTP_POLL_TIMEOUT_SECONDS = 90
@@ -1235,14 +1234,20 @@ class PortalAutomation:
                     retryable=False,
                 )
             await self._raise_if_gateway_suspended()
-            if self.page.url.startswith(SBI_HOSTED_PAYMENT_URL):
-                upi = await first_visible(self.page, ["#activeUPI a.collapseup", "#activeUPI"], 500)
-                if upi is not None:
-                    await upi.click()
-                    self._record_prepayment_activity()
-                    await self.page.wait_for_timeout(1_000)
-                    self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
-                    return
+            # SBI changes and redirects its hosted-payment URL regularly. The
+            # UPI control itself is the reliable signal that this page is ready;
+            # do not block QR capture on one historic URL prefix.
+            upi = await first_visible(
+                self.page,
+                ["#activeUPI a.collapseup", "#activeUPI", 'a:has-text("UPI")'],
+                500,
+            )
+            if upi is not None:
+                await upi.click()
+                self._record_prepayment_activity()
+                await self.page.wait_for_timeout(1_000)
+                self.emit(UiEvent("log", "UPI selected on the SBI payment page."))
+                return
             await self.page.wait_for_timeout(500)
 
     async def _raise_if_gateway_suspended(self) -> None:

@@ -453,6 +453,16 @@ class AutomationStatusWindow:
         except tk.TclError:
             return False
 
+    @property
+    def is_visible(self) -> bool:
+        """Whether the dock is currently displayed rather than manually hidden."""
+        if not self.exists:
+            return False
+        try:
+            return self.window.state() != "withdrawn"
+        except tk.TclError:
+            return False
+
     def has_run(self, run_id: str) -> bool:
         return run_id in self.cards
 

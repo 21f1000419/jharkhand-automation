@@ -302,6 +302,7 @@ class PortalBrowserSession:
         *,
         window_accent: str = "",
         window_label: str = "",
+        headless: bool = False,
     ) -> None:
         self.choice = choice
         self.on_disconnect = on_disconnect
@@ -310,6 +311,7 @@ class PortalBrowserSession:
         )
         self.window_accent = window_accent
         self.window_label = window_label
+        self.headless = headless
         self._window_identity_script = _window_identity_script(window_accent, window_label)
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
@@ -354,9 +356,13 @@ class PortalBrowserSession:
                         "Firefox-based portal automation requires Playwright Firefox. "
                         "Choose 'Download managed Firefox' from the main menu, then try again."
                     )
-            launch_args = ["--start-maximized"] if self.choice.engine == BrowserEngine.CHROMIUM else []
+            launch_args = (
+                ["--start-maximized"]
+                if self.choice.engine == BrowserEngine.CHROMIUM and not self.headless
+                else []
+            )
             launch_options: dict[str, Any] = {
-                "headless": False,
+                "headless": self.headless,
                 "args": launch_args,
                 "accept_downloads": True,
                 "no_viewport": True,
@@ -377,8 +383,9 @@ class PortalBrowserSession:
             # Browser processes may start in parallel. Only native-window
             # identification needs serialization because it temporarily sets
             # the first page's title and enumerates top-level Windows windows.
-            async with _PORTAL_WINDOW_CAPTURE_LOCK:
-                await self._capture_window_handle()
+            if not self.headless:
+                async with _PORTAL_WINDOW_CAPTURE_LOCK:
+                    await self._capture_window_handle()
             return self.context
         except Exception:
             if self.context is not None:
