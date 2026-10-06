@@ -56,6 +56,7 @@ from services.transaction_reconciliation import (
 )
 from ui.automation_status import AutomationStatusWindow
 from ui.download_certificates_dialog import DownloadUndownloadedCertificatesDialog
+from ui.finance_transactions_dialog import FinanceTransactionsDialog
 from ui.run_tab import CUSTOM_BROWSER_OPTION as TAB_CUSTOM_BROWSER_OPTION
 from ui.run_tab import AutomationTab
 
@@ -113,6 +114,7 @@ class MainWindow:
         self.gemini_checking = False
         self.ocr_test_running = False
         self.transaction_export_running = False
+        self.finance_export_dialog: FinanceTransactionsDialog | None = None
         self.automation_status_window: AutomationStatusWindow | None = None
         self._closing = False
 
@@ -492,10 +494,16 @@ class MainWindow:
         self.managed_firefox_menu_index = 0
         self._update_managed_firefox_menu()
         menu.add_command(label="Download CSV format...", command=self._download_template)
-        menu.add_command(
-            label="Download Undownloaded Certificates...",
+        downloads_menu = tk.Menu(menu, tearoff=False)
+        downloads_menu.add_command(
+            label="Undownloaded certificates...",
             command=self._open_download_undownloaded_certificates_dialog,
         )
+        downloads_menu.add_command(
+            label="eGRAS payment transactions CSV...",
+            command=self._open_finance_transactions_dialog,
+        )
+        menu.add_cascade(label="Downloads", menu=downloads_menu)
 
         config_menu = tk.Menu(menu, tearoff=False)
         config_menu.add_command(
@@ -1517,6 +1525,13 @@ class MainWindow:
     def _open_download_undownloaded_certificates_dialog(self, initial_tab: int = 0) -> None:
         self._record_ui_action("download_undownloaded_certificates_clicked")
         DownloadUndownloadedCertificatesDialog(self, initial_tab=initial_tab)
+
+    def _open_finance_transactions_dialog(self) -> None:
+        self._record_ui_action("finance_transactions_csv_clicked")
+        if self.finance_export_dialog is not None and self.finance_export_dialog.dialog.winfo_exists():
+            self.finance_export_dialog.dialog.lift()
+            return
+        self.finance_export_dialog = FinanceTransactionsDialog(self)
 
     def _export_payment_transactions(self) -> None:
         self._open_download_undownloaded_certificates_dialog(initial_tab=0)

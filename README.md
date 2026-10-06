@@ -54,6 +54,24 @@ The **Portal browser** picker automatically finds installed Google Chrome, Micro
 
 ## CSV batches
 
+Use **Downloads > eGRAS payment transactions CSV...** in the application menu to export from
+[Jharkhand finance JEGRAS](https://finance.jharkhand.gov.in/jegras/Login.aspx). The dialog finds unique
+eGRAS usernames from the configured IDs and selects each account once. It uses the saved eGRAS username
+and password, the selected portal browser, and the configured CAPTCHA OCR engine. If OCR cannot complete
+login, enter the CAPTCHA and click Login in the opened browser.
+
+The export reads the OTP reference from the registered-user login message and fetches the already stored
+OTP using the existing `GET /api/egrass/otps/{referenceNumber}` endpoint. The SMS format is the same as
+the existing eGRAS flow, so no server changes or restart are needed. If the OTP is unavailable, enter it
+and click Verify OTP in the browser. Resend remains available through the portal.
+
+Optional filters include a case-insensitive remitter name substring, an exact amount, and independently
+enabled start/end **entry dates**, inclusive. The export searches Success, visits every matching history
+page including subsequent blocks behind `...`, and stops at the first entry older than the start date.
+Choose the CSV destination using Browse. The file contains all history columns plus the eGRAS username,
+with duplicate GRNs removed. A completed export replaces the chosen CSV; cancellation leaves it untouched.
+Accounts run one at a time. If some accounts fail, the app saves successful accounts and identifies the failures.
+
 Click **Download CSV Format**, fill and save the downloaded file, then use the global **Select...** button to load it. The
 template action never starts or selects a batch by itself. Input columns are:
 
