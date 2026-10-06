@@ -57,8 +57,10 @@ The **Portal browser** picker automatically finds installed Google Chrome, Micro
 Use **Downloads > eGRAS payment transactions CSV...** in the application menu to export from
 [Jharkhand finance JEGRAS](https://finance.jharkhand.gov.in/jegras/Login.aspx). The dialog finds unique
 eGRAS usernames from the configured IDs and selects each account once. It uses the saved eGRAS username
-and password, the selected portal browser, and the configured CAPTCHA OCR engine. If OCR cannot complete
-login, enter the CAPTCHA and click Login in the opened browser.
+and password, the selected portal browser, and the configured CAPTCHA OCR engine. CAPTCHA handling reuses
+the original eGRAS solver, including six-character validation, fresh-image retries, and manual input detection.
+Rejected CAPTCHAs and form resets trigger another attempt with refilled credentials and a refreshed CAPTCHA,
+without a fixed retry limit. Stop interrupts retries. With OCR disabled, enter the CAPTCHA and click Login.
 
 The export reads the OTP reference from the registered-user login message and fetches the already stored
 OTP using the existing `GET /api/egrass/otps/{referenceNumber}` endpoint. The SMS format is the same as
@@ -68,9 +70,26 @@ and click Verify OTP in the browser. Resend remains available through the portal
 Optional filters include a case-insensitive remitter name substring, an exact amount, and independently
 enabled start/end **entry dates**, inclusive. The export searches Success, visits every matching history
 page including subsequent blocks behind `...`, and stops at the first entry older than the start date.
-Choose the CSV destination using Browse. The file contains all history columns plus the eGRAS username,
-with duplicate GRNs removed. A completed export replaces the chosen CSV; cancellation leaves it untouched.
-Accounts run one at a time. If some accounts fail, the app saves successful accounts and identifies the failures.
+Click **Fetch** to start each selected account in its own browser, in parallel. Shared CAPTCHA OCR and
+clipboard capture are serialized; login, OTP lookup, and pagination otherwise run independently.
+Every page streams its matching transactions into the results table and commits them to a local SQLite
+checkpoint before clicking the next page. Duplicate GRNs are removed across accounts. Closing one browser
+does not stop the others, and its already fetched pages remain saved. Stop also keeps fetched pages.
+
+After the fetch finishes or stops, **Download CSV** becomes available for the saved results, including partial
+results if an account failed. Click Download CSV, choose a folder, and the app saves a timestamped
+`finance_success_*.csv` there. No destination is needed for Fetch. The CSV contains all history columns plus
+the eGRAS username. Download uses the filters
+applied during Fetch; change filters and fetch again to get different results.
+
+Checkpoints are kept in `%LOCALAPPDATA%\Compitcom\eStampAutomation\finance-checkpoints` and their path is
+shown in the dialog. Use **Open checkpoint...** to recover saved rows after closing the dialog or restarting
+the app, then Download CSV without logging in again. A checkpoint includes page counts, account completion
+or failure status, and the applied filters. It contains transaction data, but no passwords or OTPs. Checkpoint
+recovery exports saved pages; it does not automatically resume pagination from the interrupted page.
+Finance export progress and errors are also saved in the daily activity log under
+`%LOCALAPPDATA%\Compitcom\eStampAutomation\logs`. Each export has its own ID. The log records the selected
+filters, search progress, detected pager targets, cell clicks, confirmed page changes, and pagination waits.
 
 Click **Download CSV Format**, fill and save the downloaded file, then use the global **Select...** button to load it. The
 template action never starts or selects a batch by itself. Input columns are:

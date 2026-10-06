@@ -36,7 +36,10 @@ from playwright.async_api import (  # noqa: E402
 
 _PROCESS_LOCK = threading.Lock()
 _TRACKED_PROCESSES: set[subprocess.Popen[bytes]] = set()
-_PORTAL_WINDOW_CAPTURE_LOCK = asyncio.Lock()
+# Finance fetches use a separate event loop, recreated on each run. An asyncio
+# lock becomes bound to one loop when launches overlap, so use a process-wide
+# thread lock with non-blocking acquisition for native window identification.
+_PORTAL_WINDOW_CAPTURE_LOCK = threading.Lock()
 _SW_RESTORE = 9
 
 
@@ -164,9 +167,7 @@ class BrowserSession:
         await page.goto(create_url, wait_until="domcontentloaded", timeout=60_000)
         return page
 
-    async def new_portal_page(
-        self, initial_url: str = "about:blank", *, timeout_ms: int = 120_000
-    ) -> Page:
+    async def new_portal_page(self, initial_url: str = "about:blank", *, timeout_ms: int = 120_000) -> Page:
         context = await self.start()
         page = await context.new_page()
         await page.goto(initial_url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -325,9 +326,7 @@ class PortalBrowserSession:
     def is_active(self) -> bool:
         return self.context is not None and not self.closed_by_owner
 
-    async def new_portal_page(
-        self, initial_url: str = "about:blank", *, timeout_ms: int = 120_000
-    ) -> Page:
+    async def new_portal_page(self, initial_url: str = "about:blank", *, timeout_ms: int = 120_000) -> Page:
         context = await self.start()
         page, self._launch_page = self._launch_page, None
         if page is None or page.is_closed():
@@ -384,8 +383,12 @@ class PortalBrowserSession:
             # identification needs serialization because it temporarily sets
             # the first page's title and enumerates top-level Windows windows.
             if not self.headless:
-                async with _PORTAL_WINDOW_CAPTURE_LOCK:
+                while not _PORTAL_WINDOW_CAPTURE_LOCK.acquire(blocking=False):
+                    await asyncio.sleep(0.05)
+                try:
                     await self._capture_window_handle()
+                finally:
+                    _PORTAL_WINDOW_CAPTURE_LOCK.release()
             return self.context
         except Exception:
             if self.context is not None:
